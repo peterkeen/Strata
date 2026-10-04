@@ -43,6 +43,9 @@ def fixtures():
     code = '\n'.join(f'function rule{i}(x) {{ return x === {i} ? x + {i+1} : x - {i}; }}' for i in range(900))
     yield 'long-code', ('Find rule731 in this JavaScript source and compute rule731(731). '
                         'Return only JSON with key "answer" and a number.\n' + code), 1463
+    tail_code = '\n'.join(f'function rule{i}(x) {{ return x === {i} ? x + {i+1} : x - {i}; }}' for i in range(280))
+    yield 'long-code-tail', ('Find rule231 in this JavaScript source and compute rule231(231). '
+                             'Return only JSON with key "answer" and a number.\n' + tail_code), 463
     yield 'vision', [
         {'type': 'image_url', 'image_url': {'url': red_image()}},
         {'type': 'text', 'text': 'What is the dominant color of this image? Return only JSON with key "answer" and a lowercase English color name.'}], 'red'
