@@ -298,7 +298,8 @@ void reference_part(const Pair& p, cudaStream_t s) {
         blob[(size_t) e] = q;
     }
     const std::vector<float> x = make_x(T, rng, ZERO);
-    const std::vector<int32_t> ids = make_ids(T, E, rng, 2, 4);   // experts 0, 1 hot (several tiles), 60-63 unused
+    std::vector<int32_t> ids = make_ids(T, E, rng, 2, 4);   // experts 0, 1 hot (several tiles), 60-63 unused
+    for (int32_t& e : ids) if (e == 7 || e == 29) --e;       // unused interior ids: routed batches span these gaps
     const int64_t rows = (int64_t) T * K;
     const Routing r = sort_rows(ids, E);
     std::printf("%s - reference part: %d tokens, %d experts, rows per expert: max %d, experts without rows %d\n", p.name,
@@ -371,13 +372,16 @@ void reference_part(const Pair& p, cudaStream_t s) {
     if (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst)
         throw std::runtime_error(std::string(p.name) + ": the fused path's error is not comparable to MMQ's");
     // Tail batching changes launch partitions, not the per-pair math. Exercise one expert, the eight-slot
-    // staging cap, and a full range, including hot multi-tile experts and unused experts at the end.
+    // staging cap, and a full range, including hot multi-tile experts and unused interior/end experts.
+    // Empty expert ids must never dereference their null blobs, including when inside a launch range.
+    auto sparse_blob = blob;
+    for (int e = 0; e < E; ++e) if (r.cnt[(size_t) e] == 0) sparse_blob[(size_t) e] = nullptr;
     for (int width : {1, 8, fused::kMaxBatch}) {
         std::vector<int> cuts;
         for (int e = 0; e < E; e += width) cuts.push_back(e);
         cuts.push_back(E);
         ck(cudaMemsetAsync(fb.dm.p, 0xff, (size_t) rows * N * 4, s), "partition sentinel");
-        run_fused(p, geo, fb, x_dev.as<float>(), T, E, cuts, blob, s);
+        run_fused(p, geo, fb, x_dev.as<float>(), T, E, cuts, sparse_blob, s);
         ck(cudaStreamSynchronize(s), "partition sync");
         const auto yp = download(fb.dm, (size_t) rows * N);
         const auto sp = download_i(fb.slot, (size_t) rows);

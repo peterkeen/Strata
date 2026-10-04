@@ -2516,10 +2516,10 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                 fused::Batch b;
                                 b.e0 = b.e1 = order[j];
                                 int slots[STAGE], nslots = 0;
-                                // Only contiguous active ids: no dummy blob pointers. Never stage beyond this
-                                // batch before its products/release are queued, even if residents let it grow
-                                // beyond STAGE experts. The old per-expert lookahead would overwrite held slots.
-                                while (j < order.size() && order[j] == b.e1 && b.e1 - b.e0 < fused::kMaxBatch) {
+                                // Span inactive gaps without staging them: fused::group gives those ids no tiles,
+                                // so their null blob pointers are never read. Never stage beyond this batch
+                                // before its products/release are queued: lookahead would overwrite held slots.
+                                while (j < order.size() && order[j] - b.e0 < fused::kMaxBatch) {
                                     const int32_t e = order[j];
                                     const bool resident = m.host_res && m.cache &&
                                                           m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
@@ -2533,7 +2533,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                         b.blob[e - b.e0] = m.stage_dev[slot];
                                         slots[nslots++] = slot;
                                     }
-                                    ++b.e1;
+                                    b.e1 = e + 1;
                                     ++j;
                                 }
                                 if (nslots > 0) {
