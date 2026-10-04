@@ -29,6 +29,22 @@ def json_answer(text):
     return json.loads(text)
 
 
+def correct_answer(text, expected):
+    def matches(actual, wanted):
+        # Python considers True == 1; JSON booleans are not numeric answers.
+        if isinstance(actual, bool) != isinstance(wanted, bool):
+            return False
+        if isinstance(wanted, list):
+            return isinstance(actual, list) and len(actual) == len(wanted) and all(
+                matches(a, b) for a, b in zip(actual, wanted))
+        return actual == wanted
+    try:
+        data = json_answer(text)
+        return isinstance(data, dict) and set(data) == {'answer'} and matches(data['answer'], expected)
+    except (ValueError, IndexError):
+        return False
+
+
 def fixtures():
     yield 'arithmetic', 'What is 17 * 23? Return only JSON with one key "answer" and a number.', 391
     yield 'python-trace', 'Evaluate [x*x for x in range(6) if x % 2]. Return only JSON with key "answer" and the resulting array.', [1, 9, 25]
@@ -84,10 +100,7 @@ def main():
         if (args.skip_vision and name == 'vision') or (args.fixture and name not in args.fixture):
             continue
         record = request(name, content)
-        try:
-            record['passed'] = json_answer(record['choice']['message'].get('content') or '').get('answer') == expected
-        except (ValueError, AttributeError):
-            record['passed'] = False
+        record['passed'] = correct_answer(record['choice']['message'].get('content') or '', expected)
         record['expected'] = expected
         args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2) + '\n')
         print(json.dumps(record, ensure_ascii=False), flush=True)
