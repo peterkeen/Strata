@@ -59,6 +59,8 @@ def main():
     ap.add_argument('--label', required=True)
     ap.add_argument('--skip-vision', action='store_true')
     ap.add_argument('--baseline', type=Path, help='matched results: fail on new failures; report existing baseline failures explicitly')
+    ap.add_argument('--fixture', action='append', help='run only named quality fixtures (repeatable)')
+    ap.add_argument('--skip-performance', action='store_true')
     args = ap.parse_args()
     if args.output.exists():
         ap.error('output exists; use a new results file')
@@ -79,7 +81,7 @@ def main():
         return record
 
     for name, content, expected in fixtures():
-        if args.skip_vision and name == 'vision':
+        if (args.skip_vision and name == 'vision') or (args.fixture and name not in args.fixture):
             continue
         record = request(name, content)
         try:
@@ -92,7 +94,7 @@ def main():
 
     # Alternate branches to prohibit cached same-prefix repeats. Reproduce the
     # profiled short-remainder shape, while counting engine time rather than TTFT.
-    for words in (900, 1800):
+    for words in (() if args.skip_performance else (900, 1800)):
         for rep in range(2):
             for branch in ('A', 'B'):
                 line = ('alpha beta gamma delta epsilon zeta eta theta\n' if branch == 'A'
@@ -102,6 +104,8 @@ def main():
                 args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2) + '\n')
                 print(json.dumps(record, ensure_ascii=False), flush=True)
     quality = {r['name']: r for r in results if 'passed' in r}
+    if args.fixture and set(args.fixture) != quality.keys():
+        raise SystemExit('QUALITY GATE FAILED: unknown or skipped fixture')
     failed = [name for name, r in quality.items() if not r['passed']]
     if args.baseline:
         baseline = {r['name']: r for r in json.loads(args.baseline.read_text()) if 'passed' in r}
