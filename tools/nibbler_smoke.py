@@ -58,6 +58,7 @@ def main():
     ap.add_argument('--output', type=Path, required=True)
     ap.add_argument('--label', required=True)
     ap.add_argument('--skip-vision', action='store_true')
+    ap.add_argument('--baseline', type=Path, help='matched results: fail on new failures; report existing baseline failures explicitly')
     args = ap.parse_args()
     if args.output.exists():
         ap.error('output exists; use a new results file')
@@ -100,10 +101,19 @@ def main():
                 record = request(f'prefill-{words}-{rep}-{branch}', content, 8)
                 args.output.write_text(json.dumps(results, ensure_ascii=False, indent=2) + '\n')
                 print(json.dumps(record, ensure_ascii=False), flush=True)
-    failed = [r['name'] for r in results if r.get('passed') is False]
+    quality = {r['name']: r for r in results if 'passed' in r}
+    failed = [name for name, r in quality.items() if not r['passed']]
+    if args.baseline:
+        baseline = {r['name']: r for r in json.loads(args.baseline.read_text()) if 'passed' in r}
+        if quality.keys() != baseline.keys() or any(quality[n]['expected'] != baseline[n]['expected'] for n in quality):
+            raise SystemExit('QUALITY GATE FAILED: baseline fixtures do not match')
+        old_failures = [name for name, r in baseline.items() if not r['passed']]
+        failed = [name for name in failed if baseline[name]['passed']]
+        print('Existing baseline failures (not counted as passes): ' + ', '.join(old_failures), flush=True)
     if failed:
         raise SystemExit('QUALITY GATE FAILED: ' + ', '.join(failed))
-    print(f'PASS: {sum("passed" in r for r in results)} quality fixtures; performance recorded separately', flush=True)
+    print(f'PASS: {sum(r["passed"] for r in quality.values())}/{len(quality)} correct; '
+          'no new quality failures; performance recorded separately', flush=True)
 
 
 if __name__ == '__main__':
