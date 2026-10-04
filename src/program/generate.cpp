@@ -54,6 +54,7 @@
 #include "strata/program/logits_selection.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/spec/draft_policy.hpp"
+#include "strata/spec/output_limits.hpp"
 #include "strata/spec/suffix_drafter.hpp"
 #include "strata/kernels/cvec.hpp"
 #include "strata/core/progress.hpp"
@@ -5720,7 +5721,8 @@ int main(int argc, char** argv) {
                 }
                 const bool timed_round = !first_window;
                 const Clock::time_point round0 = Clock::now();
-                if (p + T > o.max_context) break;
+                T = strata::spec::bounded_window(T, max_new - produced_n, o.max_context - p);
+                if (T == 0) break;
                 window[0] = x;
                 for (int i = 1; i < T; ++i) window[(size_t) i] = from_sfx ? sbuf[(size_t) i - 1] : drafts[(size_t) i - 1];
                 drive.d.layers = 0;
@@ -5749,6 +5751,11 @@ int main(int argc, char** argv) {
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                // Commit only the inputs producing the returned prefix. Accepted
+                // drafts after EOS must not enter live or parked conversation state.
+                a = strata::spec::usable_outputs(outv.data(), a + 1, max_new - produced_n, [&](int32_t token) {
+                    return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) token) != o.eos_ids.end();
+                }) - 1;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
@@ -6568,11 +6575,12 @@ int main(int argc, char** argv) {
                 }
             }
             const bool timed_round = !first_window;
-            ++window_hist[(size_t) T];
-            if (p + T > o.max_context) {
+            T = strata::spec::bounded_window(T, o.max_new - (int64_t) produced.size(), o.max_context - p);
+            if (T == 0) {
                 std::fprintf(stderr, "strata generate: ran out of context at position %lld\n", (long long) p);
                 return 2;
             }
+            ++window_hist[(size_t) T];
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
@@ -6614,6 +6622,9 @@ int main(int argc, char** argv) {
                     if (f) std::fclose(f);
                 }
             }
+            a = strata::spec::usable_outputs(outv.data(), a + 1, o.max_new - (int64_t) produced.size(), [&](int32_t token) {
+                return o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) token) != o.eos_ids.end();
+            }) - 1;
             // plan v0.3 P6: the adaptive tier's host work (ranking, copy submission) runs on its own thread while the
             // GPU commits and drafts; it touches only the residency tables, which nothing reads until the next window
             std::thread adapt_thr;
