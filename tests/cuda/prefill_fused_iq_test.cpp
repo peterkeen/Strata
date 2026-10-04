@@ -371,12 +371,12 @@ void reference_part(const Pair& p, cudaStream_t s) {
     if (zmax != 0) throw std::runtime_error(std::string(p.name) + ": the all-zero token's outputs are not zero");
     if (ef.rms > 1.5 * em.rms || ef.worst > 2.0 * em.worst)
         throw std::runtime_error(std::string(p.name) + ": the fused path's error is not comparable to MMQ's");
-    // Tail batching changes launch partitions, not the per-pair math. Exercise one expert, the eight-slot
-    // staging cap, and a full range, including hot multi-tile experts and unused interior/end experts.
+    // Tail batching changes launch partitions, not the per-pair math. Exercise one expert, eight experts,
+    // a streamed-ring batch, and a full range, including hot multi-tile and unused interior/end experts.
     // Empty expert ids must never dereference their null blobs, including when inside a launch range.
     auto sparse_blob = blob;
     for (int e = 0; e < E; ++e) if (r.cnt[(size_t) e] == 0) sparse_blob[(size_t) e] = nullptr;
-    for (int width : {1, 8, fused::kMaxBatch}) {
+    for (int width : {1, 8, 32, fused::kMaxBatch}) {
         std::vector<int> cuts;
         for (int e = 0; e < E; e += width) cuts.push_back(e);
         cuts.push_back(E);

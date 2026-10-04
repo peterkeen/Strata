@@ -1997,8 +1997,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     const bool fused_l = (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
                     // A small remainder can use native fused products without
                     // streaming every expert. Keep the routed-only staging walk
-                    // and its eight-slot event ownership; the full-size fused
-                    // arena guarantees room for grouping/int8 scratch.
+                    // with batched slot ownership; the full-size fused arena
+                    // guarantees room for the ring and grouping/int8 scratch.
                     static const bool fused_tail_env = [] {
                         const char* v = std::getenv("STRATA_PREFILL_FUSED_TAIL");
                         return v != nullptr && v[0] == '1';
@@ -2350,6 +2350,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         }
                         // Stage ahead: the copy stream moves blobs host -> device while the compute stream works.
                         int stage_next = 0;
+                        // A fused arena already owns the larger ring. Use it for routed tails too, with
+                        // at most a third held per batch so later copies can overlap both products.
+                        const int stage_ring = fused_routed ? m.ring : STAGE;
                         std::vector<int> stage_of(order.size(), -1);
                         // the unpinned ones are copied to pinned buffers by the stager's threads, in this order
                         std::vector<int> job_of(order.size(), -1);
@@ -2376,7 +2379,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             const bool resident = m.host_res && m.cache && m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
                             if (resident) return true;
                             const int sl = stage_next;
-                            stage_next = (stage_next + 1) % STAGE;
+                            stage_next = (stage_next + 1) % stage_ring;
                             const auto th = Clock::now();
                             const bool pinned = m.src->pinned(l, e);   // pinned: never transient
                             const uint8_t* b = pinned ? m.src->blob(l, e) : nullptr;
@@ -2515,7 +2518,8 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             for (size_t j = 0; j < order.size();) {
                                 fused::Batch b;
                                 b.e0 = b.e1 = order[j];
-                                int slots[STAGE], nslots = 0;
+                                int slots[RING_MAX], nslots = 0;
+                                const int miss_cap = std::max(1, stage_ring / 3);
                                 // Span inactive gaps without staging them: fused::group gives those ids no tiles,
                                 // so their null blob pointers are never read. Never stage beyond this batch
                                 // before its products/release are queued: lookahead would overwrite held slots.
@@ -2523,7 +2527,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                                     const int32_t e = order[j];
                                     const bool resident = m.host_res && m.cache &&
                                                           m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
-                                    if (!resident && nslots == STAGE) break;
+                                    if (!resident && nslots == miss_cap) break;
                                     if (!stage_one(j)) return false;
                                     const int slot = stage_of[j];
                                     if (slot < 0) {
