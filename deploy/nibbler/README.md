@@ -31,7 +31,7 @@ hardware. As with other kernel changes, bitwise identity with MMQ is not promise
 
 An experimental `STRATA_PREFILL_BALANCE_TAIL=1` schedule is also retained for
 reproducible comparison, with host-only tests in `src/prefill/chunk_schedule_test.cpp`.
-It is **not enabled**: forcing a sparse 979-token tail above the 1024 streaming floor
+It is **not enabled**: forcing the short remainder above the 1024 streaming floor
 made the matched 9k probes about 11% slower than fused experts alone. Streaming every
 expert outweighed the kernel savings. Do not enable it for this deployment.
 
