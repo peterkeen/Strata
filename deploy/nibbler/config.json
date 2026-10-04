@@ -26,7 +26,7 @@
   "cwd": "/data/llm/Strata",
   "tokenizer": "/data/llm/Strata-data/packs/iq3_s/tokenizer-sharp",
   "model_name": "qwen3.8-flash-next-iq3_s",
-  "log": "/data/llm/Strata/strata-nibbler.log",
+  "log": "/data/llm/Strata-run/nibbler/engine.log",
   "lib_dirs": ["/usr/local/cuda-13.3/bin", "/usr/local/cuda-13.3/lib64"],
   "port": 8088,
   "gpu": 0,

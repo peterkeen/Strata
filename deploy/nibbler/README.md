@@ -45,10 +45,23 @@ standalone tests with `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`. Build target `stra
 install a copy as `engine/strata-nibbler`, not over the original `engine/strata`.
 Set executable permission on `deploy/nibbler/start-strata`.
 
+The router runs as `native-inference`, while the checkout is root-owned. Create
+`/data/llm/Strata-run/nibbler` owned by `native-inference:native-inference`, mode 0700.
+On initial deployment, copy the existing
+`strata-iq3_s-sharp-medium.shared-settings.json` into that directory as
+`config.shared-settings.json`, with the same service ownership. This preserves the
+existing shared Chat defaults (including medium reasoning). Do not recopy the
+shared settings on every restart: clearing/updating them must persist.
+
+The launcher refreshes the tracked config into the runtime directory on each start.
+The web app can write/clear its shared settings and append logs there, without write
+access to source files or the tracked deployment config.
+
 llama-swap still invokes `/opt/native-inference/bin/start-strata-sharp-medium`.
 That script delegates to this branch's `deploy/nibbler/start-strata PORT` after
 validation. Original production JSON remains unchanged. Requests retain the same
-model name and aliases. The branch engine log is `/data/llm/Strata/strata-nibbler.log`.
+model name and aliases. The branch engine log is
+`/data/llm/Strata-run/nibbler/engine.log`.
 
 Do not run upstream `update.sh`/setup on this deployment without reviewing its
 checkout/build/config rewriting behavior. Fetch upstream and merge/rebase this branch
