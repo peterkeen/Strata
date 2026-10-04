@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [ "$#" -ne 1 ] || [[ ! "$1" =~ ^[0-9]+$ ]]; then
+  echo "usage: start-strata PORT" >&2
+  exit 2
+fi
+cd /data/llm/Strata
+exec .venv/bin/python -u -m serve.server \
+  --engine strata --config deploy/nibbler/config.json \
+  --host 127.0.0.1 --port "$1"
