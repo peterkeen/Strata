@@ -1995,6 +1995,17 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                     const bool no_peer = !core::peer_portable();
                     const bool fused_nat = use_mmq && stream_all && no_peer && lay.native && fused::native_supported(mmq_gt, mmq_dt);
                     const bool fused_l = (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
+                    // A small remainder can use native fused products without
+                    // streaming every expert. Keep the routed-only staging walk
+                    // and its eight-slot event ownership; the full-size fused
+                    // arena guarantees room for grouping/int8 scratch.
+                    static const bool fused_tail_env = [] {
+                        const char* v = std::getenv("STRATA_PREFILL_FUSED_TAIL");
+                        return v != nullptr && v[0] == '1';
+                    }();
+                    const bool fused_routed = fused_tail_env && use_mmq && !stream_all && no_peer && lay.native &&
+                                              T >= 64 && fused_layout((size_t) m.T, m.src) &&
+                                              fused::native_supported(mmq_gt, mmq_dt);
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false;                // multi-GPU: the peer computed rows of this layer (MMQ path only)
                     if (fused_l) {
@@ -2134,7 +2145,10 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         const size_t mmq_gub = use_mmq ? mmq::matrix_bytes(mmq_gt, 1280, N) : 0;
                         const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
                         pt.mark(kPfGather, cs);
-                        if (use_mmq) {
+                        if (fused_routed) {
+                            fused::quantize_act_native(m.mixed, T, N, m.Xq, m.cs);
+                            fused::group(m.ids, T * K, (int) K, (int) m.g->n_expert, m.GU, m.slot_dev, m.src_dev, m.cs);
+                        } else if (use_mmq) {
                             // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`
                             mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs);
                             // each group's rows: absolute bounds (gate/up reads the layer's rows), relative ones (down
@@ -2430,6 +2444,21 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         // expert) is released once the blob is read
                         auto compute = [&](size_t j, const uint8_t* blob_dev, int slot) -> bool {
                             const int32_t e = order[j];
+                            if (fused_routed) {
+                                fused::Batch b;
+                                b.e0 = e;
+                                b.e1 = e + 1;
+                                b.blob[0] = blob_dev;
+                                const auto& f = lay.fmt[(size_t) l];
+                                const fused::NativeGeom ng{f.gu_type, f.d_type, f.gu_row, f.d_row, f.up_off, f.down_off};
+                                pt.mark(kPfGemmGU, cs);
+                                fused::experts_native(b, ng, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev,
+                                                      m.H, m.Dm, m.cs);
+                                // Both products read this blob, so do not let
+                                // staging reuse its slot after just gate/up.
+                                if (slot >= 0) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
+                                return true;
+                            }
                             pt.mark(kPfDequant, cs);
                             if (use_mmq) {
                                 // gather the expert into its group slot (GGUF blocks, unchanged or converted)
@@ -2568,9 +2597,9 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             return c;
                         };
                         // (fused: GU and H hold the grouping tables and int8 rows, not floats)
-                        const int64_t bgu = fused_l ? 0 : bad(m.GU, T * K * 1280), bdm = bad(m.Dm, T * K * N),
+                        const int64_t bgu = (fused_l || fused_routed) ? 0 : bad(m.GU, T * K * 1280), bdm = bad(m.Dm, T * K * N),
                                       bbo = bad(m.bo, T * N);
-                        const int64_t bh = m.H && !fused_l ? bad(m.H, T * K * 640) : -1;
+                        const int64_t bh = m.H && !fused_l && !fused_routed ? bad(m.H, T * K * 640) : -1;
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks) {
                             reported = stats_.chunks;

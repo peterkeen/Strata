@@ -21,7 +21,7 @@
   ],
   "env": {
     "STRATA_PF_FUSED": "1",
-    "STRATA_PREFILL_BALANCE_TAIL": "1"
+    "STRATA_PREFILL_FUSED_TAIL": "1"
   },
   "cwd": "/data/llm/Strata",
   "tokenizer": "/data/llm/Strata-data/packs/iq3_s/tokenizer-sharp",
