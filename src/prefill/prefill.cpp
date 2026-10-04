@@ -2444,21 +2444,6 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                         // expert) is released once the blob is read
                         auto compute = [&](size_t j, const uint8_t* blob_dev, int slot) -> bool {
                             const int32_t e = order[j];
-                            if (fused_routed) {
-                                fused::Batch b;
-                                b.e0 = e;
-                                b.e1 = e + 1;
-                                b.blob[0] = blob_dev;
-                                const auto& f = lay.fmt[(size_t) l];
-                                const fused::NativeGeom ng{f.gu_type, f.d_type, f.gu_row, f.d_row, f.up_off, f.down_off};
-                                pt.mark(kPfGemmGU, cs);
-                                fused::experts_native(b, ng, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev,
-                                                      m.H, m.Dm, m.cs);
-                                // Both products read this blob, so do not let
-                                // staging reuse its slot after just gate/up.
-                                if (slot >= 0) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
-                                return true;
-                            }
                             pt.mark(kPfDequant, cs);
                             if (use_mmq) {
                                 // gather the expert into its group slot (GGUF blocks, unchanged or converted)
@@ -2524,7 +2509,50 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
                             m.gemm.f16(m.Hh + o0 * 640, m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
                             return true;
                         };
-                        if (!stream_all) {
+                        if (fused_routed) {
+                            const auto& f = lay.fmt[(size_t) l];
+                            const fused::NativeGeom ng{f.gu_type, f.d_type, f.gu_row, f.d_row, f.up_off, f.down_off};
+                            for (size_t j = 0; j < order.size();) {
+                                fused::Batch b;
+                                b.e0 = b.e1 = order[j];
+                                int slots[STAGE], nslots = 0;
+                                // Only contiguous active ids: no dummy blob pointers. Never stage beyond this
+                                // batch before its products/release are queued, even if residents let it grow
+                                // beyond STAGE experts. The old per-expert lookahead would overwrite held slots.
+                                while (j < order.size() && order[j] == b.e1 && b.e1 - b.e0 < fused::kMaxBatch) {
+                                    const int32_t e = order[j];
+                                    const bool resident = m.host_res && m.cache &&
+                                                          m.host_res[(size_t) l * m.g->n_expert + e] >= 0;
+                                    if (!resident && nslots == STAGE) break;
+                                    if (!stage_one(j)) return false;
+                                    const int slot = stage_of[j];
+                                    if (slot < 0) {
+                                        b.blob[e - b.e0] = m.cache->device_slot(m.host_res[(size_t) l * m.g->n_expert + e]);
+                                        ++stats_.experts_resident;
+                                    } else {
+                                        b.blob[e - b.e0] = m.stage_dev[slot];
+                                        slots[nslots++] = slot;
+                                    }
+                                    ++b.e1;
+                                    ++j;
+                                }
+                                if (nslots > 0) {
+                                    // All copies are on one stream: the last event covers the batch.
+                                    pt.mark(kPfWaitCopy, cs);
+                                    cudaStreamWaitEvent(m.cs, m.copied[slots[nslots - 1]], 0);
+                                }
+                                pt.mark(kPfGemmGU, cs);
+                                fused::experts_native(b, ng, (int) m.g->n_expert, T * K, m.GU, m.Xq, m.src_dev,
+                                                      m.H, m.Dm, m.cs);
+                                if (nslots > 0) {
+                                    // Both products read these blobs. One event after down releases every slot;
+                                    // stage_one must wait on this mapped event before any later overwrite.
+                                    const int rel = slots[nslots - 1];
+                                    cudaEventRecord(m.used[rel], m.cs);
+                                    for (int i = 0; i < nslots; ++i) m.used_of[slots[i]] = rel;
+                                }
+                            }
+                        } else if (!stream_all) {
                             size_t staged = 0;
                             const size_t lookahead = STAGE - 1;
                             for (size_t j = 0; j < order.size(); ++j) {
