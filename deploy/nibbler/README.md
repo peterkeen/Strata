@@ -7,7 +7,6 @@ This hardware-specific config retains the installed IQ3_S model, sharp tokenizer
 262144 context, INT8 KV with 32768 resident cells, MTP and GPU vision. It enables:
 
 - Native fused prompt experts: `STRATA_PF_FUSED=1`.
-- Routed-only native fused tails: `STRATA_PREFILL_FUSED_TAIL=1`.
 - A 4096 MiB host conversation cache, at most four parked entries, and a 4096 MiB
   physical RAM floor. The budget is not four guaranteed full-context slots.
 
@@ -16,12 +15,19 @@ Verification windows are bounded by remaining output/context, and only inputs
 producing the actually emitted prefix enter persistent state. Unit tests live in
 `src/spec/output_limits_test.cpp`.
 
-Routed fused tails keep the existing chunks and only stage experts actually routed
-by a small remainder (64 tokens or more). They use native fused products rather than
-MMQ repacking/dequantization, release staging slots only after both expert products,
-and require a full-size fused arena with all native layer formats supported. Peer
-execution and incompatible layouts retain MMQ. As with other kernel changes,
-bitwise identity with the old floating-point path is not promised.
+An experimental `STRATA_PREFILL_FUSED_TAIL=1` path keeps the existing chunks and
+only stages experts routed by a small remainder (64 tokens or more). It batches
+expert-id ranges, skips inactive ids, and uses the already allocated fused ring,
+with at most a third of its slots held per batch so copies can overlap compute.
+Slots are released only after both expert products. A full-size fused arena with
+all native formats supported is required; peers/incompatible layouts retain MMQ.
+Native CUDA tests cover launch widths 1/8/32/128 and null pointers for inactive ids.
+
+It is **not enabled** (`STRATA_PREFILL_FUSED_TAIL=0`): the final matched 9k median
+was 5.479 s versus 5.451 s with fused full chunks and existing MMQ tails. The initial
+one-expert version was about 4% slower; batching removed most of that regression
+but did not produce a reliable speed win. Keep the established fallback for this
+hardware. As with other kernel changes, bitwise identity with MMQ is not promised.
 
 An experimental `STRATA_PREFILL_BALANCE_TAIL=1` schedule is also retained for
 reproducible comparison, with host-only tests in `src/prefill/chunk_schedule_test.cpp`.
