@@ -250,3 +250,66 @@ The pre-existing `nibbler.local.keen.land` allowed-host addition is preserved in
 the local/deployed working config, not included in this feature's staged change.
 PR #1 was already merged as the historical full-resident milestone; the streamed
 continuation is published as a follow-up rather than rewriting that merge.
+
+## Production admission incident and server-only fix (2026-10-05)
+
+After the streamed continuation merged, three overlapping client requests exposed
+Python admission/cancellation defects not covered by the earlier bounded-output
+HTTP gate. This was not an observed CUDA OOM: the original engine process remained
+alive. A read-only Python stack dump found a request holding `ctl` while waiting
+for a free slot; the request path stopped progressing and the router returned 502s.
+
+The server-only correction:
+
+- New admissions wait for usable slot/backing capacity **before** taking `ctl`,
+  and recheck availability after acquiring it. Paused owners can resume even
+  when other waiters cannot acquire a slot or fit their backing reservation.
+- Yield ownership is copied into request-local cleanup state and cleared before
+  handing off `ctl`. Cancellation no longer leaves a stale `YIELDED` marker for
+  the next unrelated request to interpret as its own protected paused slot.
+- Shared-KV preemption requires an otherwise idle pool and room for both output
+  reservations. Paused reservations are published before the control handoff,
+  so a late unlimited request cannot steal admission and strand their owner.
+  Legacy independent-slot preemption remains supported.
+
+Omitted or non-positive output limits still mean the remaining logical context.
+With unified KV this can reserve nearly the entire aggregate backing pool, so
+such requests may legitimately serialize. Bounded output caps are needed when
+concurrent prompt/output reservations must fit together; no context ceiling or
+memory budget was reduced by this fix.
+
+Final validation and rollout evidence:
+
+- Python suite: 308 tests, seven skipped, no failures. New deterministic tests
+  reproduce full-slot lock starvation, cancelled-yield marker leakage, acquisition
+  races, late capacity-blocked waiters, and paused-owner resumption.
+- Actual production model/GPU/HTTP: three bounded requests with 36202/6202/802
+  prompt tokens and 128/1024/64 output caps all complete. Sampling observes two
+  slots decoding together and additional admissions waiting. This also passes
+  after cancellation and subsequent reuse.
+- Three requests with omitted output limits (36189/6189/789 prompt tokens) all
+  complete, without unsafe preemption of the whole-pool reservation.
+- A distinct 36212-token prompt demonstrably yields while two other clients
+  compete; closing that stream does not strand either waiter. A later healthy
+  answer and sampled zero running/waiting requests verify recovery.
+- Only the Qwen backend was reloaded through llama-swap. Engine binary, tracked
+  config and shared Chat settings hashes remain unchanged. Two slots,
+  262144 backing/context, 32768 GPU residency, 4096 MiB parking and 2048 MiB VRAM
+  reserve are retained. These synthetic checks are not a throughput benchmark.
+
+Evidence under `/data/llm/Strata-tests/multislot-20261005/` includes
+`admission-deadlock.py-stack.txt`, incident metrics/logs,
+`admission-hotfix.http.json`, CPU test logs, and server-source rollback artifacts.
+Two initial gated attempts automatically restored the previous source: an
+idle-only assertion conflicted with real traffic, then a reused-prefix cancellation
+fixture did not actually yield. Those attempts are not counted as passing; the
+final gate uses a distinct prompt and observes its own yield explicitly.
+
+Deployed Python server SHA-256:
+`fc9a631650d08f37fc7bb861d0047e44770b2e41559f7769c5b11610b29a4e1a`.
+
+Server-only rollback (restores the preceding server, including its known bugs):
+
+```
+ssh root@nibbler /data/llm/Strata-tests/multislot-20261005/rollback-admission-hotfix.sh
+```
