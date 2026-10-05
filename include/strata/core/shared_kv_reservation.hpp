@@ -39,6 +39,12 @@ inline bool shared_kv_pressure_due(int64_t produced, int64_t at_wait) {
     return produced >= at_wait && produced - at_wait >= shared_kv_pressure_quantum;
 }
 
+// Internal HANDOFF (2) may retain a valid completed-prefill cache; actual
+// cancellation (1), partial reads and disabled caches must still release.
+inline bool shared_kv_handoff_cache(int stop, bool prompt_complete, bool cache_valid) {
+    return stop == 2 && prompt_complete && cache_valid;
+}
+
 // A late BSTOP arriving after a slot already published its terminal BDONE must not
 // fabricate a second ack: the frontend sees exactly one BDONE per owner, and a
 // stray cancel can otherwise collide with the next owner's BGEN drain. Only slots

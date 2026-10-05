@@ -5632,7 +5632,9 @@ int main(int argc, char** argv) {
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        std::atomic<bool> stop_req{false};
+        // 0: running, 1: actual cancellation, 2: internal serving-path handoff.
+        // A real STOP always wins; a later HANDOFF cannot downgrade it.
+        std::atomic<int> stop_req{0};
         std::mutex in_mu;
         std::condition_variable in_cv;
         std::deque<std::string> in_lines;
@@ -5668,7 +5670,12 @@ int main(int argc, char** argv) {
             };
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { stop_req.store(true); continue; }
+                if (l == "STOP") { stop_req.store(1); continue; }
+                if (l == "HANDOFF" && unified_kv) {
+                    int running = 0;
+                    stop_req.compare_exchange_strong(running, 2);
+                    continue;
+                }
                 std::lock_guard<std::mutex> lk(in_mu);
                 in_lines.push_back(l);
                 in_cv.notify_one();
@@ -5685,7 +5692,7 @@ int main(int argc, char** argv) {
             in_lines.pop_front();
             return true;
         };
-        sp.should_stop = [&] { return stop_req.load(); };
+        sp.should_stop = [&] { return stop_req.load() != 0; }; // partial reads abort for cancel OR handoff
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -5755,7 +5762,7 @@ int main(int argc, char** argv) {
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
                         o.kv_unified ? 1 : 0, (long long) (unified_kv ? unified_kv->capacity_cells() : 0),
                         (long long) (unified_kv ? unified_kv->resident_cells() : 0),
-                        unified_kv ? (" kv_incremental=1 kv_reserve_ahead=" +
+                        unified_kv ? (" kv_handoff=1 kv_incremental=1 kv_reserve_ahead=" +
                                       std::to_string(strata::core::shared_kv_reserve_ahead)).c_str() : "",
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0)).c_str() : "");
@@ -6044,10 +6051,17 @@ int main(int argc, char** argv) {
             const int64_t produced = sl.produced;
             const double ms = sl.active ? std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count() : 0;
             if (std::strcmp(reason, "pressure") == 0 && !park_slot_target(b)) return false;
-            if (!unified_kv->release(size_t(b) + 1, err)) return false;
+            const bool handoff = std::strcmp(reason, "handoff") == 0;
+            const bool keep = handoff && o.prompt_cache > 0 && !sl.img && !sl.ids.empty();
+            if (!(keep ? unified_kv->truncate(size_t(b) + 1, int64_t(sl.ids.size()), err)
+                       : unified_kv->release(size_t(b) + 1, err))) return false;
             err.clear(); // handled shortage/cache miss must not poison another slot or an interleaved prefill
-            sl = BSlot{};
-            // Release and publish BEFORE acknowledgement; no fabricated BT.
+            if (keep) {
+                // Target-only state remains an idle cache, not a protected owner.
+                // The last emitted token is unfed; frontend continuation includes it.
+                sl.active = false; sl.stop = false; sl.partial = false; sl.cached = true;
+            } else sl = BSlot{};
+            // Publish release or idle-cache disposition BEFORE acknowledgement; no fabricated BT.
             std::printf("BDONE %d %lld %s %.1f\n", b, (long long) produced, reason, ms);
             std::fflush(stdout);
             return true;
@@ -6059,7 +6073,7 @@ int main(int argc, char** argv) {
                 // or a prefill chunk interleaves. It cancels main as well as the
                 // destination; never acknowledge then resurrect it via BADM 1.
                 const bool live_admit = (b == admit_slot && main_required_end >= 0);
-                if (live_admit) stop_req.store(true);
+                if (live_admit) stop_req.store(1);
                 const auto& sl = bs[size_t(b)];
                 // A late BSTOP addressing an already-released slot (BDONE pressure/
                 // length/stop already published, or an idle cached slot) must not
@@ -6070,6 +6084,13 @@ int main(int argc, char** argv) {
             }
             bs[size_t(b)].stop = true;
             return true;
+        };
+        auto handoff_slot = [&](int b) -> bool {
+            // Only an active decoder can transfer. Late handoffs, like late
+            // BSTOP, owe no second terminal acknowledgement. Partial admissions
+            // are NOT decode sources and retain their existing cancellation path.
+            if (!unified_kv || b < 0 || b >= int(bs.size()) || !bs[size_t(b)].active) return true;
+            return finish_shared_slot(b, "handoff");
         };
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
@@ -6418,8 +6439,10 @@ int main(int argc, char** argv) {
                 {
                     std::lock_guard<std::mutex> lk(in_mu);
                     for (auto it = in_lines.begin(); it != in_lines.end();) {
-                        if (it->rfind("BSTOP ", 0) == 0) {
-                            if (!stop_slot(std::atoi(it->c_str() + 6))) return -1;
+                        if (it->rfind("BSTOP ", 0) == 0 || it->rfind("BHANDOFF ", 0) == 0) {
+                            const bool transfer = it->rfind("BHANDOFF ", 0) == 0;
+                            const int b = std::atoi(it->c_str() + (transfer ? 9 : 6));
+                            if (!(transfer ? handoff_slot(b) : stop_slot(b))) return -1;
                             it = in_lines.erase(it);
                         } else ++it;
                     }
@@ -6462,6 +6485,10 @@ int main(int argc, char** argv) {
             if (line.rfind("BSTOP ", 0) == 0) {
                 const int b = std::atoi(line.c_str() + 6);
                 if (!stop_slot(b)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                continue;
+            }
+            if (line.rfind("BHANDOFF ", 0) == 0 && unified_kv) {
+                if (!handoff_slot(std::atoi(line.c_str() + 9))) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 continue;
             }
             if (line.rfind("BYIELD", 0) == 0) continue;   // for a prompt read that has ended meanwhile
@@ -6519,7 +6546,7 @@ int main(int argc, char** argv) {
                 BusyScope() { strata::core::progress().busy.store(true); strata::core::progress_at("request"); }
                 ~BusyScope() { strata::core::progress().busy.store(false); strata::core::progress_at("idle"); }
             } busy_scope;
-            stop_req.store(false);   // a STOP that arrived between requests is stale
+            stop_req.store(0);       // a STOP that arrived between requests is stale
             err.clear();
             const bool geni = line.rfind("GENI ", 0) == 0;
             if (!geni && line.rfind("GEN ", 0) != 0) {
@@ -7262,9 +7289,10 @@ int main(int argc, char** argv) {
                     {   // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
                         std::lock_guard<std::mutex> lk(in_mu);
                         for (auto it = in_lines.begin(); it != in_lines.end();) {
-                            if (it->rfind("BSTOP ", 0) == 0) {
-                                const int b = std::atoi(it->c_str() + 6);
-                                if (!stop_slot(b)) { batch_fatal = true; e = err; return false; }
+                            if (it->rfind("BSTOP ", 0) == 0 || it->rfind("BHANDOFF ", 0) == 0) {
+                                const bool transfer = it->rfind("BHANDOFF ", 0) == 0;
+                                const int b = std::atoi(it->c_str() + (transfer ? 9 : 6));
+                                if (!(transfer ? handoff_slot(b) : stop_slot(b))) { batch_fatal = true; e = err; return false; }
                                 it = in_lines.erase(it);
                             } else if (it->rfind("BYIELD ", 0) == 0) {
                                 ys = std::atoi(it->c_str() + 7);
@@ -7762,6 +7790,12 @@ int main(int argc, char** argv) {
             //      [prompt tokens read]   (#471: fewer than <prompt> - <reused> when a cancel stopped the read)
             //      [offloaded]   (#588: the decode's routed experts the GPU read over PCIe or another GPU computed;
             //                    not in [lookups])
+            // HANDOFF is sent only after decode output. A partial prompt read
+            // is never a valid transferred live source. Keep target/draft
+            // provenance unchanged; slot clone-back still suppresses private MTP.
+            if (unified_kv && std::strcmp(finish, "cancel") == 0 &&
+                    strata::core::shared_kv_handoff_cache(stop_req.load(), !cancelled, live_ok))
+                finish = "handoff";
             if (unified_kv && (std::strcmp(finish, "pressure") == 0 || std::strcmp(finish, "cancel") == 0)) {
                 if (std::strcmp(finish, "pressure") == 0 && !park_current(0)) {
                     std::printf("ERR pressure parking: %s\n", err.c_str()); return 1;

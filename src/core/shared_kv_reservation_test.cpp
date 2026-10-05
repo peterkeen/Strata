@@ -1,6 +1,7 @@
 #include "strata/core/shared_kv_pages.hpp"
 #include "strata/core/shared_kv_reservation.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -96,6 +97,19 @@ int main() {
     check(shared_kv_stop_ack(true, false, false), "active decoder cancels and releases");
     check(shared_kv_stop_ack(false, true, false), "protected partial read cancels and releases");
     check(shared_kv_stop_ack(false, false, true), "live admission still writing cancels and releases");
+
+    for (int stop = 0; stop <= 2; ++stop)
+        for (unsigned flags = 0; flags < 4; ++flags)
+            check(shared_kv_handoff_cache(stop, (flags & 1) != 0, (flags & 2) != 0) ==
+                      (stop == 2 && flags == 3), "only internal handoff of valid completed prompt keeps cache");
+    std::atomic<int> stop{1};
+    int running = 0;
+    check(!stop.compare_exchange_strong(running, 2) && stop.load() == 1,
+          "handoff cannot downgrade an existing true cancellation");
+    stop.store(0); running = 0;
+    check(stop.compare_exchange_strong(running, 2) && stop.load() == 2, "running request can hand off");
+    stop.store(1);
+    check(!shared_kv_handoff_cache(stop.load(), true, true), "true cancellation overrides pending handoff");
 
     std::printf("shared_kv_reservation: %d checks passed\n", checks);
 }

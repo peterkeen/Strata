@@ -76,14 +76,14 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 ## How the server uses the slots
 
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.
-- **When a second request arrives**, the first is stopped (`STOP`) and continues in a batch slot with its prompt
-  plus what it generated so far - the engine's prompt cache holds exactly that, so nothing is read again - and the
-  new request is admitted next to it. A request in a slot decodes **without MTP drafts** (one token per window).
+- **When a second request arrives**, the first hands off (`HANDOFF` with unified `kv_handoff=1`, otherwise legacy
+  `STOP`) and continues in a batch slot with its prompt plus what it generated so far. A valid prefix is retained
+  for admission instead of treating this internal transition as cancellation. The new request is admitted next to it. A request in a slot decodes **without MTP drafts** (one token per window).
 - **A request left alone in a slot** (the others finished, nobody waits) goes back to the solo path: the slot is
-  stopped, the engine copies its sessions back and decodes with MTP drafts again (at most twice per request; with
-  `--prompt-cache 0` it stays in the slot; `STRATA_PARALLEL_SOLO=0` turns it off). The draft layer's own K/V was
-  built for another conversation then, but measured it accepted as many drafts (140 of 172) as a draft layer that
-  read the conversation (140 of 173).
+  handed off (`BHANDOFF` with unified `kv_handoff=1`, otherwise legacy `BSTOP`) and its sessions become an idle
+  prefix cache (at most twice per request; with `--prompt-cache 0` it stays in the slot; `STRATA_PARALLEL_SOLO=0`
+  turns it off). Unified slot clone-back is target-only: private MTP/suffix proposals remain suppressed until a
+  full residual prompt replay rebuilds coherent draft history. It does not use an unrelated conversation's draft KV.
 - **More requests than slots** wait for a free one (`/metrics` -> `live.slots` shows each slot: idle, reading or
   decoding, its tokens and tok/s; `live.running` the requests in flight).
 - **Each admission** reads the request's prompt through the usual prompt path (prompt cache and conversation
@@ -226,8 +226,10 @@ On top of `GEN` / `GENI`:
 | `BGENI <slot> <max_new> [keys] <file> <ids>` | in | the same with images |
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
-| `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
-| `BSTOP <slot>` | in | end that slot at its next window; in unified mode, also release a paused prefill and acknowledge it with `BDONE` |
+| `BDONE <slot> <generated> <stop/length/cancel/pressure/handoff> <ms>` | out | the slot is free again; unified natural completion/handoff may keep an idle cache, cancellation/pressure releases backing |
+| `BSTOP <slot>` | in | cancel that slot; in unified mode, release active or paused ownership before `BDONE`; late stops of already-completed owners owe no second acknowledgement |
+| `HANDOFF` | in | with `INFO kv_handoff=1`, end solo decode with `DONE ... handoff ...`, retaining a valid completed-prefill cache; incomplete reads still cancel |
+| `BHANDOFF <slot>` | in | with `INFO kv_handoff=1`, end active slot decode with `BDONE ... handoff ...`, retaining target-only idle cache/checkpoints; late handoffs owe no second acknowledgement |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |
