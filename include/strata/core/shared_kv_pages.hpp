@@ -93,7 +93,13 @@ public:
     // The source must already contain that prefix: validate before releasing any
     // destination pages. A self-clone is a truncate to end_page (including zero),
     // not a no-op; an incomplete self-prefix is rejected without mutation.
-    bool clone_prefix(size_t from, size_t to, size_t end_page, std::string& error) {
+    // When provided, released receives only IDs whose last reference was dropped,
+    // appended in tail-pop order. Existing entries are never cleared. Invalid
+    // input leaves released and ownership unchanged; allocation failure throws
+    // before ownership or output contents change. The caller must invalidate
+    // these IDs in its shared device cache before publishing/reusing them.
+    bool clone_prefix(size_t from, size_t to, size_t end_page, std::string& error,
+                      std::vector<int32_t>* released = nullptr) {
         if (from >= mappings_.size() || to >= mappings_.size()) {
             error = "SharedKvPages sequence index out of range";
             return false;
@@ -102,14 +108,14 @@ public:
             error = "SharedKvPages source prefix is incomplete";
             return false;
         }
-        if (from == to) return truncate(to, end_page, error);
+        if (from == to) return truncate(to, end_page, error, released);
 
         // Allocate the replacement before releasing destination ownership. The
         // distinct source pins every referenced page throughout replacement.
         std::vector<int32_t> prefix(mappings_[from].begin(),
                                     mappings_[from].begin() + end_page);
         error.clear();
-        release_tail(to, 0);
+        release_tail(to, 0, released);
         for (int32_t page : prefix) ++refcounts_[static_cast<size_t>(page)];
         mappings_[to].swap(prefix);
         return true;
@@ -117,20 +123,23 @@ public:
 
     // Non-bool accessors throw std::out_of_range for an invalid sequence rather
     // than indexing unchecked. Releasing an already empty sequence is harmless.
-    void release(size_t seq) {
+    // released has the same append/last-reference/exception contract as clone_prefix.
+    void release(size_t seq, std::vector<int32_t>* released = nullptr) {
         check_sequence(seq);
-        release_tail(seq, 0);
+        release_tail(seq, 0, released);
     }
 
     // Discard pages at/after end_page; a bound beyond the current mapping is a
     // valid no-op. This never grows a sequence. Invalid sequences return false.
-    bool truncate(size_t seq, size_t end_page, std::string& error) {
+    // released has the same append/last-reference/exception contract as clone_prefix.
+    bool truncate(size_t seq, size_t end_page, std::string& error,
+                  std::vector<int32_t>* released = nullptr) {
         if (seq >= mappings_.size()) {
             error = "SharedKvPages sequence index out of range";
             return false;
         }
         error.clear();
-        release_tail(seq, end_page);
+        release_tail(seq, end_page, released);
         return true;
     }
 
@@ -159,12 +168,29 @@ private:
         return page;
     }
 
-    void release_tail(size_t seq, size_t end_page) {
+    void release_tail(size_t seq, size_t end_page, std::vector<int32_t>* released) {
         auto& pages = mappings_[seq];
+        if (released) {
+            // A sequence never repeats a physical ID, so exactly these pages
+            // will reach zero. Reserve before touching mappings/refcounts/free_.
+            size_t count = 0;
+            for (size_t tail = pages.size(); tail > end_page; --tail) {
+                if (refcounts_[static_cast<size_t>(pages[tail - 1])] == 1) ++count;
+            }
+            if (count > released->max_size() - released->size()) {
+                throw std::length_error("SharedKvPages released output is too large");
+            }
+            if (count != 0) released->reserve(released->size() + count);
+        }
         while (pages.size() > end_page) {
             const int32_t page = pages.back();
             pages.pop_back();
-            if (--refcounts_[static_cast<size_t>(page)] == 0) free_.push_back(page);
+            if (--refcounts_[static_cast<size_t>(page)] == 0) {
+                // Both vectors have sufficient capacity: these pushes cannot
+                // allocate after the ownership mutation has started.
+                free_.push_back(page);
+                if (released) released->push_back(page);
+            }
         }
     }
 

@@ -95,9 +95,11 @@ struct SessionState {
 /// [layer_lo, layer_hi) carves only that range's per-layer state (a split stage runs a slice of the model);
 /// the default full range is byte-identical to the old whole-model carve.  Pure arithmetic - safe to call for
 /// a candidate range before anything is allocated, which is how the layer-split search prices a placement.
-/// Opt-in `share_kv` borrows the owner's resident K/V and RoPE at matching global QSA ordinals, keeping all
-/// sequence mappings/indexer/staging private. Invalid borrowing returns 0; the owner must outlive borrowers.
-/// Borrowed sizing exactly matches init's arena consumption; default sizing retains its legacy padding.
+/// Opt-in `share_kv` borrows the owner's resident or explicitly unified-stream K/V and RoPE at matching
+/// global QSA ordinals, keeping sequence mappings/indexer/staging private. Invalid borrowing returns 0;
+/// owner lifetime remains external. qsa_set_kv_unified(true) gives mode-1 owners one backing pool/global
+/// CLOCK cache per layer. Borrowed and opt-in unified session sizing exactly match init's arena consumption;
+/// default non-unified sizing retains its legacy padding.
 uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int64_t layer_lo = 0,
                        int64_t layer_hi = -1, const SessionState* share_kv = nullptr);
 /// Carves `base` (DEVICE memory) into `s`.  Returns the bytes used.  Same range convention as `session_bytes`.

@@ -3278,11 +3278,14 @@ def make_handler(svc: Service):
             if version:
                 props["build_info"] = "Strata " + str(version)
             # In unified mode n_ctx is each slot's logical ceiling, NOT a guaranteed independent allocation.
-            # kv_capacity_cells is the total shared physical budget; do not divide it by total_slots.
+            # kv_capacity_cells is the total shared backing budget; do not divide it by total_slots.
+            # kv_resident is effective streaming residency (0: fully resident); kv_resident_capacity_cells,
+            # when reported, is actual allocated GPU capacity. Neither changes the logical n_ctx.
             if "kv_unified" in info:
                 props["kv_unified"] = bool(int(info["kv_unified"]))
-            if "kv_capacity_cells" in info:
-                props["kv_capacity_cells"] = int(info["kv_capacity_cells"])
+            for key in ("kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells"):
+                if key in info:
+                    props[key] = int(info[key])
             self._json(200, props)
 
         def _control_body(self) -> bool:

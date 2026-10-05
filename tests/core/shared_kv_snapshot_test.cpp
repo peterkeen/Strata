@@ -24,6 +24,11 @@
 
 namespace {
 size_t copy_calls = 0, copied_bytes = 0, fail_copy = 0;
+#if defined(SHARED_KV_SNAPSHOT_STANDALONE)
+size_t invalidate_calls = 0;
+const int32_t* invalidated_logical_pages = nullptr;
+int64_t invalidated_begin = -1, invalidated_end = -1;
+#endif
 int checks = 0;
 void check(bool ok, const char* label) {
     ++checks;
@@ -40,12 +45,31 @@ extern "C" cudaError_t __wrap_cudaGetLastError() { return cudaSuccess; }
 extern "C" const char* __wrap_cudaGetErrorString(cudaError_t) { return "injected host transfer failure"; }
 
 #if defined(SHARED_KV_SNAPSHOT_STANDALONE)
-// Resident restores must not call block movers, even for hybrid K8V4.
+// Host emulation tests the snapshot's invalidation arguments and isolation,
+// not the real CUDA invalidation kernel. Shared restores must never globally
+// reset the cache or invoke ring movers, including resident hybrid K8V4.
 namespace strata::core {
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState&) { std::abort(); }
 }
 namespace strata::kernels {
 void kv_stream_reset(const KvStreamMap&, void*) { std::abort(); }
+void kv_stream_invalidate(const KvStreamMap& m, const int32_t* logical_pages,
+                          int64_t begin, int64_t end, void*) {
+    ++invalidate_calls;
+    invalidated_logical_pages = logical_pages;
+    invalidated_begin = begin; invalidated_end = end;
+    for (int64_t p = begin; p < end; ++p) {
+        const int32_t backing = logical_pages ? logical_pages[p] : int32_t(p);
+        if (backing < 0 || backing >= m.n_blocks) continue;
+        const int32_t slot = m.page_table[backing];
+        m.page_table[backing] = -1;
+        if (slot >= 0 && slot < m.n_slots && m.slot_block[slot] == backing) {
+            m.slot_block[slot] = -1;
+            m.slot_stamp[slot] = -1;
+            m.slot_ref[slot] = 0;
+        }
+    }
+}
 void kv_ring_restore(const QsaAttnPools&, const KvHostPools&, int, int64_t, int64_t,
                      int64_t, const QsaShapes&, void*) { std::abort(); }
 }
@@ -131,7 +155,7 @@ void check_scattered(ConversationKv& image, const Fixture& dst) {
     for (size_t i = 0; i < 4; ++i) {
         if (!dst.page_bytes[i]) continue;
         std::vector<uint8_t> logical(dst.page_bytes[i]);
-        std::vector<bool> used(size_t(dst.st.n_slots));
+        std::vector<bool> used(size_t(dst.st.kv_mode == 1 ? dst.st.n_pages : dst.st.n_slots));
         for (size_t p = 0; p < pages; ++p) {
             check(buffers[i]->read(logical.data(), p * logical.size(), logical.size()), "read canonical page");
             const size_t slot = size_t(dst.st.shared_page_table[p]);
@@ -196,6 +220,7 @@ void invalid_mappings(int format) {
         uint64_t hash = 123;
         check(!conversation_kv_capture_bytes(image, f.st, f.g, 13, true, bytes, error), label);
         check(!conversation_kv_save(image, f.st, f.g, 13, true, error, 13), "invalid mapping rejected even for reusable logical pages");
+        check(conversation_kv_validate_image(saved, f.st, f.g, 13, true, error), "canonical image does not require prepared mappings");
         check(!conversation_kv_validate(saved, f.st, f.g, 13, true, error), "invalid mapping prevalidation");
         check(!conversation_kv_restore(saved, f.st, f.g, 13, true, error), "invalid mapping restore rejected before writes");
         check(!conversation_kv_verify(saved, f.st, f.g, 13, true, hash, error), "invalid mapping verify rejected before reads");
@@ -207,8 +232,20 @@ void invalid_mappings(int format) {
     f.st.shared_page_table.back() = int32_t(f.st.n_slots); reject("late physical ID at pool limit rejected");
     f.st.shared_page_table.back() = std::numeric_limits<int32_t>::max(); reject("huge physical ID rejected");
     f.st.shared_page_table = {5, 1, 6, 2};
-    f.st.kv_mode = 1; reject("shared streaming rejected");
-    f.st.kv_mode = 2; reject("shared ring rejected");
+    // This resident fixture has no host pools or streaming metadata.
+    // Hybrid streaming also remains unsupported.
+    f.st.kv_mode = 1;
+    if (format != 3) reject("unprepared shared streaming rejected");
+    else {
+        std::string error;
+        check(!conversation_kv_validate_image(image, f.st, f.g, 13, true, error), "unsupported hybrid streaming fails closed");
+    }
+    f.st.kv_mode = 2;
+    if (format != 3) reject("shared ring rejected");
+    else {
+        std::string error;
+        check(!conversation_kv_validate_image(image, f.st, f.g, 13, true, error), "unsupported hybrid ring fails closed");
+    }
     f.st.kv_mode = 0;
     {
         // The logical one-page payload fits size_t, but physical slot 5's
@@ -259,7 +296,156 @@ void incremental(int format) {
     check(conversation_kv_save(retained, f.st, f.g, 5, true, error, 3), "logical rewind capture");
     check(equal(retained, short_full), "rewind recopies partial logical page");
 }
-void large_segment_crossing() {
+#if defined(SHARED_KV_SNAPSHOT_STANDALONE)
+struct StreamingFixture : Fixture {
+    std::array<std::vector<uint8_t>, 4> gpu;
+    std::vector<int32_t> logical, view, backing_table, slot_block, stamp, ref, ctl, miss_block, miss_slot;
+    explicit StreamingFixture(int format) : Fixture(format, 12, 32),
+        logical(32, -1), view(32, -1), backing_table(12, -1), slot_block(3, -1),
+        stamp(3, 0), ref(3, 0), ctl(strata::kernels::kKvCtlInts, 77), miss_block(3), miss_slot(3) {
+        st.kv_mode = 1; st.n_pages = 12; st.n_slots = 3;
+        st.host.k_pool = st.k_pool; st.host.v_pool = st.v_pool;
+        st.host.k_q = st.k_q; st.host.v_q = st.v_q;
+        st.host.k_q4 = st.k_q4; st.host.v_q4 = st.v_q4;
+        st.host.k_scale = st.k_scale; st.host.v_scale = st.v_scale;
+        for (size_t i = 0; i < 4; ++i) gpu[i].resize(3 * page_bytes[i], 0xb7);
+        st.k_pool = reinterpret_cast<uint16_t*>(gpu[0].data()); st.v_pool = reinterpret_cast<uint16_t*>(gpu[1].data());
+        st.k_q = reinterpret_cast<int8_t*>(gpu[0].data()); st.v_q = reinterpret_cast<int8_t*>(gpu[1].data());
+        st.k_q4 = gpu[0].data(); st.v_q4 = gpu[1].data();
+        st.k_scale = reinterpret_cast<uint16_t*>(gpu[2].data()); st.v_scale = reinterpret_cast<uint16_t*>(gpu[3].data());
+        st.page_table = view.data();
+        st.map = {backing_table.data(), slot_block.data(), stamp.data(), ref.data(), ctl.data(),
+                  miss_block.data(), miss_slot.data(), 12, 3};
+        st.host.logical_pages = logical.data(); st.host.resident_pages = backing_table.data();
+        st.host.n_logical_pages = 32; st.host.n_backing_pages = 12; st.host.n_resident_slots = 3;
+        st.shared_page_table = {11, 7, 10, 6};
+        publish();
+    }
+    void publish() {
+        std::fill(logical.begin(), logical.end(), -1);
+        std::copy(st.shared_page_table.begin(), st.shared_page_table.end(), logical.begin());
+    }
+    void cache(int32_t backing, int32_t slot) {
+        backing_table[size_t(backing)] = slot; slot_block[size_t(slot)] = backing;
+        stamp[size_t(slot)] = 41; ref[size_t(slot)] = 1;
+    }
+};
+void streamed_roundtrip(int format, int64_t upto, bool index, bool coalesced) {
+    StreamingFixture source(format), destination(format);
+    Fixture identity(format, 32, 32);
+    if (coalesced) { source.st.shared_page_table = {7, 8, 9, 10}; source.publish(); }
+    source.fill(); source.canonical_into(identity, size_t((upto + 3) / 4));
+    auto expected = identity.save(upto, index);
+    const size_t active = size_t(std::count_if(source.page_bytes.begin(), source.page_bytes.end(),
+                                             [](size_t bytes) { return bytes != 0; }));
+    size_t calls = copy_calls;
+    auto image = source.save(upto, index);
+    if (coalesced) check(copy_calls - calls == (upto ? active + size_t(index) : 0), "contiguous host-backed gather uses one copy per payload");
+    check(equal(image, expected), "shared stream gathers high backing IDs from host, not GPU slots");
+    check(image.bytes() == conversation_kv_bytes(source.st, source.g, upto, index), "shared stream capture admission");
+    segment_inside_pages(image);
+    destination.st.shared_page_table = coalesced ? std::vector<int32_t>{4, 5, 6, 7} : std::vector<int32_t>{8, 5, 9, 4};
+    destination.publish();
+    destination.cache(destination.st.shared_page_table[0], 0);
+    destination.cache(2, 1);
+    destination.cache(destination.st.shared_page_table[2], 2);
+    const auto before_table = destination.backing_table;
+    const auto gpu = destination.gpu;
+    const auto mapping = destination.st.shared_page_table;
+    const auto counters = destination.ctl;
+    const size_t invalidations = invalidate_calls;
+    std::string error;
+    calls = copy_calls;
+    check(conversation_kv_restore(image, destination.st, destination.g, upto, index, error), "shared stream restores into changed host backing mapping");
+    if (coalesced) check(copy_calls - calls == (upto ? 2 * (active + size_t(index)) : 0), "contiguous host scatter coalesces pages within partial buffer segments");
+    check(destination.st.shared_page_table == mapping && destination.gpu == gpu, "host restore never allocates pages or rewrites GPU payloads");
+    check_scattered(image, destination);
+    const int64_t pages = image.cells / image.page_size;
+    check(invalidate_calls == invalidations + (pages > 0), "shared restore invalidates once, empty restore is a no-op");
+    if (pages) check(invalidated_logical_pages == destination.st.host.logical_pages &&
+                     invalidated_begin == 0 && invalidated_end == pages, "invalidate uses device backing table and complete rounded logical extent");
+    for (size_t b = 0; b < before_table.size(); ++b) {
+        const bool overwritten = std::find(mapping.begin(), mapping.begin() + pages, int32_t(b)) != mapping.begin() + pages;
+        check(destination.backing_table[b] == (overwritten ? -1 : before_table[b]), "only overwritten cached backing pages evicted");
+    }
+    check(destination.backing_table[2] == 1 && destination.slot_block[1] == 2 &&
+          destination.stamp[1] == 41 && destination.ref[1] == 1 && destination.ctl == counters,
+          "unrelated sequence's cached backing and CLOCK counters survive restore");
+    for (int32_t slot : {0, 2}) if (destination.slot_block[size_t(slot)] == -1)
+        check(destination.stamp[size_t(slot)] == -1 && destination.ref[size_t(slot)] == 0, "affected slot metadata cleared");
+    uint64_t a = 0, b = 0;
+    check(conversation_kv_verify(expected, identity.st, identity.g, upto, index, a, error), "identity host-stream oracle verification");
+    check(conversation_kv_verify(image, destination.st, destination.g, upto, index, b, error) && a == b,
+          "shared host-stream verification has canonical fingerprint after remapping");
+    check(equal(image, destination.save(upto, index)), "shared host-stream byte-exact round trip");
+}
+void streamed_invalid_targets(int format) {
+    StreamingFixture f(format);
+    f.fill();
+    auto image = f.save(13);
+    auto reject = [&] {
+        const size_t calls = copy_calls, invalidations = invalidate_calls;
+        const auto before = f.data;
+        const auto cache = f.backing_table;
+        std::string error;
+        check(conversation_kv_validate_image(image, f.st, f.g, 13, true, error), "canonical streamed image ignores destination mapping readiness");
+        check(!conversation_kv_restore(image, f.st, f.g, 13, true, error), "unprepared streamed target rejected");
+        check(copy_calls == calls && invalidate_calls == invalidations && f.data == before && f.backing_table == cache,
+              "invalid streamed target has zero copies, invalidations or writes");
+    };
+    f.st.shared_page_table.back() = 12; reject();
+    f.st.shared_page_table.back() = -1; reject();
+    f.st.shared_page_table.clear(); reject();
+    f.st.shared_page_table = {11, 7, 10, 6};
+    f.st.host.logical_pages = nullptr; reject();
+    f.st.host.logical_pages = f.view.data(); reject();
+    f.st.host.logical_pages = f.backing_table.data(); reject();
+    f.st.host.logical_pages = f.logical.data();
+    f.st.host.resident_pages = f.view.data(); reject(); f.st.host.resident_pages = f.backing_table.data();
+    f.st.host.n_logical_pages = 3; reject(); f.st.host.n_logical_pages = 32;
+    f.st.host.n_backing_pages = 11; reject(); f.st.host.n_backing_pages = 12;
+    f.st.host.n_resident_slots = 2; reject(); f.st.host.n_resident_slots = 3;
+    f.st.map.n_blocks = 11; reject(); f.st.map.n_blocks = 12;
+    f.st.page_table = f.backing_table.data(); reject();
+    f.st.page_table = nullptr; reject();
+}
+#endif
+
+void coalesced_runs(int format) {
+    Fixture fragmented(format, 8, 32), contiguous(format, 8, 32);
+    fragmented.st.shared_page_table = {7, 1, 6, 2};
+    contiguous.st.shared_page_table = {1, 2, 3, 4};
+    fragmented.fill();
+    auto canonical = fragmented.save(13);
+    std::string error;
+    check(conversation_kv_restore(canonical, contiguous.st, contiguous.g, 13, true, error), "seed identical logical bytes in contiguous backing run");
+    const size_t active = size_t(std::count_if(contiguous.page_bytes.begin(), contiguous.page_bytes.end(),
+                                             [](size_t bytes) { return bytes != 0; }));
+    size_t calls = copy_calls;
+    auto contiguous_image = contiguous.save(13);
+    check(copy_calls - calls == active + 1, "contiguous capture uses one CUDA copy per payload, not per four-cell page");
+    calls = copy_calls;
+    auto fragmented_image = fragmented.save(13);
+    check(copy_calls - calls == 4 * active + 1, "fragmented capture splits only at physical discontinuities");
+    check(equal(canonical, contiguous_image) && equal(canonical, fragmented_image), "coalesced and fragmented captures preserve canonical content parity");
+    // Segment 1 ends 17 bytes into a page; segment 2 starts there and crosses
+    // three more logical pages. The run must stop/start at the segment boundary.
+    segment_inside_pages(canonical);
+    calls = copy_calls;
+    check(conversation_kv_restore(canonical, contiguous.st, contiguous.g, 13, true, error), "coalesced scatter handles partial first and last visit pages");
+    check(copy_calls - calls == 2 * (active + 1), "coalesced scatter respects two visit segments per payload");
+    calls = copy_calls;
+    check(conversation_kv_restore(canonical, fragmented.st, fragmented.g, 13, true, error), "fragmented scatter handles matching partial offsets");
+    check(copy_calls - calls == 5 * active + 2, "fragmented scatter splits page runs without crossing segment storage");
+    uint64_t a = 0, b = 0;
+    calls = copy_calls;
+    check(conversation_kv_verify(canonical, contiguous.st, contiguous.g, 13, true, a, error), "verify coalesced partial-page visits");
+    check(copy_calls - calls == 2 * (active + 1), "coalesced verification also avoids per-page driver calls");
+    check(conversation_kv_verify(canonical, fragmented.st, fragmented.g, 13, true, b, error) && a == b,
+          "coalesced and fragmented verification fingerprints agree");
+}
+
+void large_segment_crossing(bool coalesced) {
     // Hybrid K pages are 1536 B: the fixed 16 MiB segment boundary splits a
     // physical page. V pages are 864 B, and scales 48 B, so translation must
     // independently use all three strides as well as split large visits.
@@ -268,16 +454,20 @@ void large_segment_crossing() {
     source.st.shared_page_table.resize(pages);
     destination.st.shared_page_table.resize(pages);
     for (int64_t p = 0; p < pages; ++p) {
-        source.st.shared_page_table[size_t(p)] = int32_t((p * 37) % slots);
-        destination.st.shared_page_table[size_t(p)] = int32_t((p * 41 + 7) % slots);
+        source.st.shared_page_table[size_t(p)] = int32_t(coalesced ? p : (p * 37) % slots);
+        destination.st.shared_page_table[size_t(p)] = int32_t(coalesced ? p + 7 : (p * 41 + 7) % slots);
     }
     source.fill();
     const int64_t upto = pages * 4 - 3; // Preserve padded bytes of the last page.
+    size_t calls = copy_calls;
     auto image = source.save(upto);
+    if (coalesced) check(copy_calls - calls == 5, "large contiguous capture uses five segment copies, not tens of thousands of page copies");
     check(image.k.size() > ConversationBuffer::segment_bytes &&
           ConversationBuffer::segment_bytes % source.page_bytes[0] != 0, "large fixture genuinely splits a K page at segment boundary");
     std::string error;
+    calls = copy_calls;
     check(conversation_kv_restore(image, destination.st, destination.g, upto, true, error), "scatter across fixed 16 MiB boundary");
+    if (coalesced) check(copy_calls - calls == 5, "large contiguous scatter respects split segment/page boundaries in five copies");
     check_scattered(image, destination);
     auto restored = destination.save(upto);
     check(equal(image, restored), "large segmented shared A/B/A exactness");
@@ -292,7 +482,16 @@ int main() {
         for (int64_t upto : {0, 1, 3, 4, 5, 13, 16}) for (bool index : {false, true}) roundtrip(format, upto, index);
         invalid_mappings(format);
         incremental(format);
+        coalesced_runs(format);
     }
-    large_segment_crossing();
+#if defined(SHARED_KV_SNAPSHOT_STANDALONE)
+    for (int format : {0, 1, 2}) {
+        for (int64_t upto : {0, 1, 5, 13}) for (bool index : {false, true})
+            for (bool coalesced : {false, true}) streamed_roundtrip(format, upto, index, coalesced);
+        streamed_invalid_targets(format);
+    }
+#endif
+    large_segment_crossing(false);
+    large_segment_crossing(true);
     std::printf("shared_kv_snapshot_test: %d host-only checks passed\n", checks);
 }
