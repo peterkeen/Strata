@@ -36,6 +36,27 @@ The engine never refuses a count it cannot run: it says so in its log and runs w
 window holds 8 rows), as many as fit in VRAM, or none (one request at a time) when not two fit. The server reads
 the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says it (`concurrency.serving`).
 
+### Elastic shared KV capacity (opt-in)
+
+Add `--kv-unified` to the engine's `args` beside `"parallel": N` (or native
+`--batch N`). Attention KV pages then come from one shared pool instead of one
+pool per slot; recurrent state, PLE history and the QSA indexer remain private.
+Slots can use unequal shares, and cached prefixes share pages with copy-on-write.
+
+The first version requires a single session GPU, full-resident KV
+(`--kv-resident 0`), no conversation parking (`--conversation-cache-mib 0`),
+and no layer split/pipeline groups. Unsupported combinations are rejected.
+Expert streaming/caching is unaffected. `--max-context` is the total physical
+cell budget **and** each request's logical context ceiling, not a per-slot
+partition. Admissions reserve prompt/output space before writing; idle caches
+are reclaimable, and active requests keep decoding while admission waits for
+capacity. This does not yet support 262K logical context with only 32K KV
+resident on the GPU.
+
+See [MULTI_SLOT_UNIFIED_KV.md](MULTI_SLOT_UNIFIED_KV.md) for configuration,
+restrictions, measured validation and the remaining shared-streaming work.
+All per-slot memory estimates below describe the default independent-pool mode.
+
 ### What a slot costs, and what setup recommends
 
 Every slot's session takes VRAM that the expert cache would otherwise hold: 0.56 GiB at a 32K context with 8-bit
@@ -206,7 +227,7 @@ On top of `GEN` / `GENI`:
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
 | `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
-| `BSTOP <slot>` | in | end that slot at its next window |
+| `BSTOP <slot>` | in | end that slot at its next window; in unified mode, also release a paused prefill and acknowledge it with `BDONE` |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |

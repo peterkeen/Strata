@@ -399,6 +399,9 @@ class StrataEngine:
     silence_s = ENGINE_SILENCE_S         # #481: main() sets the config's engine_silence_s (survives restart())
     silent_note = None                   # #481: why the server ended a silent engine (death_note says it)
     batch = 0                            # --batch: the engine's batch slots (0: one request at a time)
+    # This recoverable error has terminal replies: ERR -> DONE for GEN, ERR -> DONE -> BADM for BGEN.
+    # Other legacy errors may be ERR-only; never wait for a terminal they do not promise.
+    ADMISSION_REJECTION = "ERR unified KV admission:"
 
     # `last`: the figures of the engine's last DONE line.  With batch slots several requests run at once, each on its
     # own thread, so each one reads its own request's figures (Service.run records them); one at a time, the one dict.
@@ -432,6 +435,7 @@ class StrataEngine:
         self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
+        self.solo_active = False          # batch-capable engine running GEN instead of a batch slot
         self.silent_note = None
         try:                            # a ready-made engine's BUILD.json says its version
             self.info["version"] = json.loads((Path(exe).parent / "BUILD.json").read_text()).get("version")
@@ -714,6 +718,12 @@ class StrataEngine:
         except OSError:                                  # the pipe is gone: the engine died (not the client)
             raise EngineDied(f"the engine stopped unexpectedly (exit code {self.exit_code()})") from None
 
+    def _parse_yielded(self, line):
+        """YIELDED records engine ownership even when received by an early-close drain."""
+        f = line.split()
+        if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
+            self._yielded = (int(f[1]), int(f[2]))
+
     def _control(self, cancel, on_token, stop_when=None):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
@@ -752,10 +762,9 @@ class StrataEngine:
                 self._ctl_result = ("badm", len(f) >= 3 and f[2] == "1")
                 return
             elif line.startswith("YIELDED "):            # the read gave way (BYIELD): <slot> <tokens read>
-                f = line.split()
-                if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
-                    self._yielded = (int(f[1]), int(f[2]))
+                self._parse_yielded(line)
             elif line.startswith("ERR"):
+                self._ctl_result = ("rejected" if line.startswith(self.ADMISSION_REJECTION) else "error", None)
                 raise ValueError(line[4:].strip())
             if line.startswith("DONE") and self._ctl_mode == "solo":
                 self._ctl_result = ("done", None)
@@ -763,7 +772,8 @@ class StrataEngine:
 
     def _drain_control(self, until: str, timeout: float = 300.0):
         """After a consumer left early: read the control lines up to the next `until` line (DONE or BADM) so the next
-        request does not read this one's leftovers.  Returns that line (None: the engine ended or never answered)."""
+        request does not read this one's leftovers. Unified admission rejection promises DONE/BADM after ERR;
+        legacy ERR-only errors are themselves terminal. Returns the terminal line (None: ended/no answer)."""
         end = time.monotonic() + timeout
         while time.monotonic() < end:
             try:
@@ -772,16 +782,21 @@ class StrataEngine:
                 break
             if line is None:
                 return None
+            if line.startswith("YIELDED "):
+                self._parse_yielded(line)
             if line.startswith("DONE"):
                 self._parse_done(line)
-            if line.startswith(until) or line.startswith("ERR"):
+            if line.startswith(until) or (line.startswith("ERR") and
+                                          not line.startswith(self.ADMISSION_REJECTION)):
                 return line
         return None
 
     def _release_slot_when_done(self, slot: int, stream: list[int] | None = None):
         """A slot whose consumer left (a stop token, a stop string, a disconnect): BSTOP it and free it once the engine
-        says BDONE (in the background).  `stream`: the prompt and every token of it so far - with the tokens still to
-        come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
+        says BDONE (in the background). Also used for unified paused reads: BSTOP releases their reservation and
+        emits BDONE without a decode window. `stream`: the prompt and every token of it so far - with the tokens still
+        to come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
+        slot_q, proc = self.slot_q[slot], self.proc
         try:
             self._send(f"BSTOP {slot}")
         except EngineDied:
@@ -791,7 +806,7 @@ class StrataEngine:
             tail = list(stream or [])
             while time.monotonic() < end:
                 try:
-                    line = self.slot_q[slot].get(timeout=5.0)
+                    line = slot_q.get(timeout=5.0)
                 except queue.Empty:
                     continue
                 if line is None:
@@ -804,6 +819,10 @@ class StrataEngine:
                         tail = []
                 if line.startswith("BDONE "):
                     break
+            else:
+                return                                  # no ack: keep it unavailable, never reuse protected KV
+            if self.proc is not proc:
+                return                                  # an old process's ack must not free its successor's slot
             self.slot_held[slot] = tail[:-1] if stream and tail else []
             with self.slot_cv:
                 self.slot_busy[slot] = False
@@ -881,6 +900,7 @@ class StrataEngine:
         holding = True
         btrace("ctl acquired")
         slot, gen0, reserved = None, None, None
+        paused = None            # request-local engine ownership; _yielded is reused by the next ctl holder
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
         stop_sent = False
         yields, solo_again = 0, 0
@@ -897,6 +917,7 @@ class StrataEngine:
                     head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     phase = "solo"
+                    self.solo_active = True
                     self._ctl_mode, self._ctl_result, self._yielded = "solo", None, None
                     def others():
                         with self.slot_cv:
@@ -917,12 +938,14 @@ class StrataEngine:
                                     self._send(f"BYIELD {reserved}")
                             yield None
                     phase = "none"                          # its DONE is read
+                    self.solo_active = False
                     while pending:
                         t = pending.pop(0)
                         out.append(t)
                         yield t
                     if self._yielded is not None and reserved is not None and self._yielded[0] == reserved:
                         slot, reserved = reserved, None     # gave way: the read goes on in that slot (below)
+                        paused = slot
                     elif reserved is not None:              # it did not give way: the slot is free again
                         with self.slot_cv:
                             self.slot_busy[reserved] = False
@@ -948,6 +971,7 @@ class StrataEngine:
                                 if cancel.is_set():
                                     return
                     if self._yielded is not None:           # it gave way: the others waiting then go first
+                        paused = slot                       # retain ownership across a cancelled resume wait
                         self.slot_held[slot] = list(prompt[:self._yielded[1]])
                         self._yielded = None
                         yields += 1
@@ -966,6 +990,7 @@ class StrataEngine:
                             "started": time.time(), "first_token": None}
                     self.slot_live[slot] = live
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
+                    paused = None                          # sent the resume: ctl now owns admission cleanup
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
                     phase = "admit"
                     self._ctl_mode, self._ctl_result, self._yielded = "batch", None, None
@@ -983,6 +1008,8 @@ class StrataEngine:
                             yield None
                     cont = bool(self._ctl_result and self._ctl_result[1])
                     phase = "slot" if cont else "none"
+                    if self._yielded is not None and self._yielded[0] == slot:
+                        paused = slot                       # includes a yield followed by client cancellation
                     while pending:
                         t = pending.pop(0)
                         out.append(t)
@@ -1051,15 +1078,26 @@ class StrataEngine:
             btrace("finally phase", phase, "slot", slot, "holding", holding)
             try:
                 if phase == "solo":
-                    self._send("STOP")
-                    self._drain_control("DONE")
-                elif phase == "admit":
+                    try:
+                        if self._ctl_result != ("error", None):  # an observed legacy ERR already ended it
+                            self._send("STOP")
+                            self._drain_control("DONE")
+                    finally:
+                        self.solo_active = False
+                elif phase == "admit" and self._ctl_result != ("error", None):
                     line = self._drain_control("BADM")
                     if line and line.startswith("BADM ") and line.split()[2:3] == ["1"]:
                         phase = "slot"
             except EngineDied:
                 pass
             if holding:
+                # The drain can be the first reader to see YIELDED. Capture it before another ctl holder resets it.
+                if self._yielded is not None:
+                    yielded_slot = self._yielded[0]
+                    if yielded_slot == reserved:
+                        slot, reserved = reserved, None
+                    if yielded_slot == slot:
+                        paused = slot
                 self.ctl.release()
             if reserved is not None:
                 with self.slot_cv:
@@ -1068,10 +1106,12 @@ class StrataEngine:
             if slot is not None:
                 self.slot_live[slot] = None
                 self.slot_used[slot] = time.time()
-                if phase == "slot":
+                # Unified paused reads own protected capacity and promise BDONE on BSTOP. Legacy independent
+                # engines leave only a passive prefix cache on yield and do not promise that acknowledgement.
+                if phase == "slot" or (paused == slot and (self.info or {}).get("kv_unified")):
                     self.slot_held[slot] = []
                     stream = list(prompt) + out[gen0:] if gen0 is not None and len(out) > gen0 else None
-                    self._release_slot_when_done(slot, stream)    # freed at its BDONE
+                    self._release_slot_when_done(slot, stream)    # freed at its BDONE, including paused reservations
                 else:
                     with self.slot_cv:
                         self.slot_busy[slot] = False
@@ -1177,7 +1217,7 @@ class StrataEngine:
                     done = True
                     return
                 elif line.startswith("ERR"):
-                    done = True
+                    done = not line.startswith(self.ADMISSION_REJECTION)  # rejection still owes DONE
                     raise ValueError(line[4:].strip())
         finally:
             if not done:                                  # the consumer stopped early: stop the engine, drain to DONE
@@ -1200,7 +1240,8 @@ class StrataEngine:
                     except queue.Empty:
                         raise self._silent("the engine did not finish the request after it was stopped (STOP) "
                                            f"within {allow:.0f} s") from None
-                    if line is None or line.startswith("ERR"):
+                    if line is None or (line.startswith("ERR") and
+                                        not line.startswith(self.ADMISSION_REJECTION)):
                         break
                     if line.startswith("DONE"):
                         self._parse_done(line)
@@ -1712,6 +1753,30 @@ class Service:
     def loaded(self) -> bool:
         return not hasattr(self.engine, "alive") or self.engine.alive()
 
+    def serving_slots(self) -> int:
+        """The engine's supported count, never the requested --batch/parallel count."""
+        return max(1, int(getattr(self.engine, "batch", 0) or 0))
+
+    def slots(self) -> list[dict]:
+        """llama.cpp-style slots: n_ctx is a logical limit, even with a shared physical KV budget."""
+        if not self.loaded():
+            return []
+        with self.status_lock:
+            busy = bool(self.status.get("busy"))
+        live = list(getattr(self.engine, "slot_live", []) or [])  # snapshot: request threads replace entries
+        processing = [bool(live[b] and live[b].get("state") in ("reading", "decoding"))
+                      if b < len(live) else False for b in range(self.serving_slots())]
+        # A batch-capable engine runs an isolated request with GEN (no slot_live entry). Represent it as slot 0;
+        # service busy/live_reqs also includes requests waiting for admission, so it cannot identify a solo GEN.
+        # Older/fake engines have no solo_active flag: retain their service-status fallback when no slot is active.
+        solo = getattr(self.engine, "solo_active", busy and not any(processing))
+        if not getattr(self.engine, "batch", 0):
+            solo = busy
+        if solo:
+            processing[0] = True
+        return [{"id": b, "n_ctx": self.engine.max_context, "is_processing": active}
+                for b, active in enumerate(processing)]
+
     def set_aliases(self, aliases) -> None:
         """#297: the config's `aliases` - a list of names (or one comma-separated string), like llama-server's --alias.
         ValueError for anything else."""
@@ -2097,8 +2162,7 @@ class Service:
             "cache_max_tokens": ctx,
             "context": {"native": ctx, "max_positions": ctx},
             # one request at a time (more wait their turn), or "parallel": N batch slots (#465)
-            "concurrency": {"serving": max(1, int(getattr(self.engine, "batch", 0) or 0)),
-                            "requested": max(1, int(getattr(self.engine, "batch", 0) or 0))},
+            "concurrency": {"serving": self.serving_slots(), "requested": self.serving_slots()},
             "dialects": ["/v1/chat/completions", "/v1/messages", "/v1/responses"],
             "vision": {"enabled": images, "available": images, "error": None},
             "activity": {"requests": totals["requests"] + int(busy), "in_flight": int(busy) + int(s.get("queued") or 0),
@@ -3064,11 +3128,7 @@ def make_handler(svc: Service):
                     self._props()
             elif path == "/slots":
                 if self._authorized():
-                    loaded = not hasattr(svc.engine, "alive") or svc.engine.alive()
-                    with svc.status_lock:
-                        busy = bool(svc.status.get("busy"))
-                    slot = {"id": 0, "n_ctx": svc.engine.max_context, "is_processing": busy}
-                    self._json(200, [slot] if loaded else [])
+                    self._json(200, svc.slots())
             elif path == "/v1/status":
                 if self._authorized():
                     self._json(200, svc.v1_status())
@@ -3208,14 +3268,21 @@ def make_handler(svc: Service):
                                "presence_penalty", "frequency_penalty", "penalty_last_n")}
             params["n_predict"] = svc.shared.get("max_tokens", -1)
             props = {"default_generation_settings": {"n_ctx": svc.engine.max_context, "params": params},
-                     "total_slots": 1, "model_alias": svc.model, "chat_template": svc.template.source,
+                     "total_slots": svc.serving_slots(), "model_alias": svc.model, "chat_template": svc.template.source,
                      "modalities": {"vision": svc.vision is not None}, "models_autoload": hasattr(svc.engine, "restart"),
                      "is_sleeping": not svc.loaded()}
             if getattr(svc.engine, "model_path", None):
                 props["model_path"] = svc.engine.model_path
-            version = getattr(svc.engine, "info", {}).get("version")
+            info = getattr(svc.engine, "info", {}) or {}
+            version = info.get("version")
             if version:
                 props["build_info"] = "Strata " + str(version)
+            # In unified mode n_ctx is each slot's logical ceiling, NOT a guaranteed independent allocation.
+            # kv_capacity_cells is the total shared physical budget; do not divide it by total_slots.
+            if "kv_unified" in info:
+                props["kv_unified"] = bool(int(info["kv_unified"]))
+            if "kv_capacity_cells" in info:
+                props["kv_capacity_cells"] = int(info["kv_capacity_cells"])
             self._json(200, props)
 
         def _control_body(self) -> bool:
