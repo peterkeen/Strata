@@ -142,6 +142,21 @@ class UnifiedReporting(unittest.TestCase):
         self.assertEqual(props["default_generation_settings"]["n_ctx"], 262144)
         self.assertEqual([slot["n_ctx"] for slot in self.get("/slots")], [262144, 262144])
 
+    def test_incremental_capability_reports_headroom_not_a_logical_output_cap(self):
+        self.start(requested=2, max_context=262144,
+                   info={"kv_unified": 1, "kv_capacity_cells": 262144, "kv_resident": 32768,
+                         "kv_incremental": 1, "kv_reserve_ahead": 256})
+        props = self.get("/props")
+        self.assertIs(props["kv_incremental"], True)
+        self.assertEqual(props["kv_reserve_ahead"], 256)
+        self.assertEqual(props["default_generation_settings"]["n_ctx"], 262144)
+        self.assertEqual(props["default_generation_settings"]["params"]["n_predict"], -1)
+        self.assertEqual([slot["n_ctx"] for slot in self.get("/slots")], [262144, 262144])
+        metrics = self.get("/metrics")
+        self.assertEqual(metrics["engine"]["kv_incremental"], 1)
+        self.assertEqual(metrics["engine"]["kv_reserve_ahead"], 256)
+        self.assertEqual(metrics["live"]["pressure_waiting"], [])
+
     def test_unified_fully_resident_reports_actual_rounded_capacity(self):
         self.start(requested=2, max_context=4097,
                    info={"kv_unified": 1, "kv_capacity_cells": 4100, "kv_resident": 0,

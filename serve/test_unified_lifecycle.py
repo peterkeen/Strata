@@ -87,12 +87,15 @@ while True:
 
 
 class UnifiedLifecycle(unittest.TestCase):
-    def start(self, scenario):
+    def start(self, scenario, incremental=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         script = self.root / "engine.py"
-        script.write_text(FAKE_UNIFIED, encoding="utf-8")
+        fake = FAKE_UNIFIED
+        if incremental:
+            fake = fake.replace("kv_capacity_cells=4096", "kv_capacity_cells=4096 kv_incremental=1 kv_reserve_ahead=256")
+        script.write_text(fake, encoding="utf-8")
         popen = server.subprocess.Popen
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: popen([sys.executable, str(script), *cmd[1:]], **kw)):
@@ -154,8 +157,8 @@ class UnifiedLifecycle(unittest.TestCase):
     def test_non_batched_observed_rejection_then_next_request(self):
         self.rejection(solo=True, early_close=False, batch=False)
 
-    def yielded(self, solo, early_close):
-        self.start("yield")
+    def yielded(self, solo, early_close, incremental=False):
+        self.start("yield", incremental=incremental)
         engine = self.engine
         engine.slot_order = [0]  # force reuse of the paused slot, not an unrelated free one
         cancel, waiting = threading.Event(), threading.Event()
@@ -217,6 +220,12 @@ class UnifiedLifecycle(unittest.TestCase):
 
     def test_admission_yield_during_close_drain_stops_before_reuse(self):
         self.yielded(solo=False, early_close=True)
+
+    def test_incremental_solo_yield_cancelled_wait_keeps_ack_and_clears_global_yield(self):
+        self.yielded(solo=True, early_close=False, incremental=True)
+
+    def test_incremental_admission_yield_close_drain_keeps_ack_and_clears_global_yield(self):
+        self.yielded(solo=False, early_close=True, incremental=True)
 
     def legacy_error(self, solo, batch=True):
         self.start("legacy")

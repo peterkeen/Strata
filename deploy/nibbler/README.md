@@ -1,9 +1,10 @@
 # Nibbler branch deployment
 
-Branch: `feature/multi-slot-unified-kv`, incorporating the original
+Branch: `feature/incremental-unified-kv`, incorporating the original
 `nibbler/prefill-and-conversation-cache` deployment and upstream batch serving.
-The full-resident milestone was merged in fork PR #1; the streamed continuation
-is tracked separately. Detailed evidence: [unified KV work log](../../docs/MULTI_SLOT_UNIFIED_KV.md).
+The full-resident, streamed and admission-fix milestones merged in fork PRs #1,
+#2 and #3. Historical evidence: [unified KV work log](../../docs/MULTI_SLOT_UNIFIED_KV.md).
+Current implementation/gates: [incremental allocation work log](../../docs/INCREMENTAL_UNIFIED_KV.md).
 
 This hardware-specific config retains the installed IQ3_S model, sharp tokenizer,
 262144 context, INT8 KV with 32768 resident cells, MTP and GPU vision. It enables:
@@ -16,6 +17,11 @@ This hardware-specific config retains the installed IQ3_S model, sharp tokenizer
   The old 700 MiB reserve failed a three-slot graph-instantiation probe.
 - A 4096 MiB host conversation cache, at most four parked entries, and a 4096 MiB
   physical RAM floor. The budget is not four guaranteed full-context slots.
+- Incremental engines reserve known prompts plus at most 256 output cells, then
+  preflight every exact write/COW extent. Optional headroom shortage does not
+  preempt a request. Actual exhaustion releases a safely parked owner and the
+  frontend continues its same stream through original IDs plus all returned
+  tokens. No logical context or omitted-output-limit semantics are changed.
 
 The branch fixes speculative output-cap/EOS overcommit in both serving and CLI.
 Verification windows are bounded by remaining output/context, and only inputs
@@ -76,7 +82,15 @@ intentionally; the external launcher expects this branch's deployment files.
 
 ## Rollback
 
-For this shared-streaming rollout, restore the immediately preceding binary and
+For the incremental-allocation rollout, restore only its saved binary and Python
+server from `/data/llm/Strata-tests/multislot-20261005/`:
+`incremental-baseline.strata` and `incremental-baseline.server.py`. The operator
+script `rollback-incremental.sh` unloads/reloads only the Qwen backend and uses
+atomic replacements. This rollout does **not** change tracked/runtime configs or
+shared Chat settings; do not overwrite them with older copies. Final gate results
+and installation hashes are recorded in the incremental allocation work log.
+
+For the earlier shared-streaming rollout, restore the immediately preceding binary and
 both tracked/runtime configs from `/data/llm/Strata-tests/multislot-20261005/`.
 The launcher refreshes the tracked config on each start: restoring only the
 runtime JSON is insufficient. Keep `config.shared-settings.json` unchanged.
@@ -101,5 +115,7 @@ Validation evidence and limitations are recorded in `validation.md` when deploym
 is completed. Performance/quality probes are local smoke gates, not proof that every
 model workload has unchanged quality. Shared streaming removes replicated main
 attention KV, not private recurrent/indexer/PLE state or captured graphs. Parallel
-windows retain upstream's restrictions on MTP drafts and penalties; promotion to
-solo can use stale MTP proposal history, which target verification checks.
+windows retain upstream's restrictions on MTP drafts and penalties. Target-only
+slot/canonical transfers suppress private MTP/suffix proposals until a full
+residual prompt replay rebuilds coherent history; the ring allocation and graph
+addresses remain private and unchanged.
