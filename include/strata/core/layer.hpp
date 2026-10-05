@@ -44,6 +44,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace strata::core {
 
@@ -226,6 +227,9 @@ struct QsaState {
     int32_t* page_table = nullptr;   ///< (n_pages,) logical page -> physical page (-1: not resident, streamed)
     int64_t n_pages = 0;
     int64_t max_cells = 0;
+    strata::kernels::QsaShapes kv_shapes{}; ///< allocation geometry, checked when borrowing K/V
+    bool shared_kv = false;             ///< orchestrator also marks the owner; zero must not clear the pool
+    std::vector<int32_t> shared_page_table; ///< host logical -> physical mapping, private to this sequence
 
     /// KV STREAMING (docs/kv-streaming-design.md, `kv_stream.hpp`). `kv_mode` 0: every page in VRAM, identity
     /// table (n_slots == n_pages, no host copy). 1: streamed - the authoritative K/V in `host`, `n_slots` pages
@@ -270,7 +274,11 @@ struct QsaState {
 /// Plan v0.3 P7: the RoPE cos/sin table (max_cells x n_rot/2 x 2 floats, 64 MiB at 262K) is identical in every
 /// QSA layer. `with_rope = false` sizes a state that borrows it; `share_rope` points `st` at another state's table
 /// instead of building a copy (the session builds it once, in the first QSA layer).
-uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope = true, int64_t ring_cells = 0);
+/// `share_kv` borrows fully resident K/V AND RoPE, irrespective of `with_rope`/`share_rope`. Geometry must
+/// match and max_cells must fit the owner. No streamed/ring borrowing; invalid requests return 0 in both
+/// bytes/init. The owner must outlive the borrower. Borrowed sizes are the exact arena bytes init consumes.
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope = true, int64_t ring_cells = 0,
+                         const QsaState* share_kv = nullptr);
 /// KV streaming: keep `cells` cells of each QSA layer in VRAM and the rest in pinned host memory (0: all in VRAM,
 /// the default). Set before sizing and initializing the session; a context that fits in `cells` is not streamed.
 /// Also puts the MTP drafter's K/V in a ring of its window (`ring_cells` of qsa_state_bytes/init; -1 forces a fully
@@ -305,13 +313,15 @@ inline int qsa_kv_format(const QsaState& st) {
     return st.kv_q4 ? strata::kernels::kKvQ4 : st.kv_int8 ? strata::kernels::kKvInt8 : strata::kernels::kKvF16;
 }
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
-                        const QsaState* share_rope = nullptr, int64_t ring_cells = 0);
+                        const QsaState* share_rope = nullptr, int64_t ring_cells = 0,
+                        const QsaState* share_kv = nullptr);
 /// KV streaming: the pools a reader sees (the VRAM slots) and, when streamed, make the selection's blocks resident.
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st);
 void qsa_kv_resolve(const QsaState& st, const ModelGeometry& g, const int32_t* ids, const int32_t* steps, int64_t n_q,
                     int64_t cap, void* stream);
 /// Zeroes the pools AND the indexer, so a fresh sequence matches the reference's own `zeros()`.  The KV pool
 /// matters even for cells that are never attended, because `kv_gather` reads whatever the selection names.
+/// Shared states preserve K/V and both mappings, resetting only private indexer/state/step staging.
 void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream);
 
 // ================================ PER-STAGE TIMING, DEBUG ONLY ================================

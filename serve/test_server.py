@@ -1700,6 +1700,26 @@ class WebApp(unittest.TestCase):
         self.assertNotIn("build_info", props)
         self.assertNotIn("model_path", props)
 
+    def test_multi_slot_reporting_with_a_fake_engine(self):
+        engine = self.svc.engine
+        # A fake engine need not implement solo_active/slots_view or the real engine's scheduler locks.
+        with mock.patch.object(engine, "batch", 2, create=True), \
+                mock.patch.object(engine, "slot_live", [None, {"state": "decoding"}], create=True):
+            try:
+                with self.svc.status_lock:
+                    self.svc.status["busy"] = True
+                self.assertEqual(json.loads(self.get("/props")[2])["total_slots"], 2)
+                self.assertEqual(json.loads(self.get("/slots")[2]),
+                                 [{"id": 0, "n_ctx": CTX, "is_processing": False},
+                                  {"id": 1, "n_ctx": CTX, "is_processing": True}])
+                engine.slot_live[1] = None
+                self.assertEqual(json.loads(self.get("/slots")[2]),
+                                 [{"id": 0, "n_ctx": CTX, "is_processing": True},
+                                  {"id": 1, "n_ctx": CTX, "is_processing": False}])
+            finally:
+                with self.svc.status_lock:
+                    self.svc.status["busy"] = False
+
     def test_discovery_does_not_restart_a_dead_engine(self):
         self.svc.engine.alive = lambda: False
         try:

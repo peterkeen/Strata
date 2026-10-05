@@ -3,6 +3,7 @@
 #include "conversation_checked.hpp"
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -27,7 +28,7 @@ bool valid_extent(const QsaState& st, int64_t upto, std::string& error) {
 bool layout(const QsaState& st, const ModelGeometry& g, int64_t upto, bool index, Layout& l, std::string& error) {
     if (!valid_extent(st, upto, error)) return false;
     if (st.kv_hybrid && (st.kv_mode != 0 || st.kv_q4 || st.kv_int8)) {
-        error = "conversation snapshot: hybrid K8V4 requires an identity layout and distinct format flags";
+        error = "conversation snapshot: hybrid K8V4 requires resident K/V and distinct format flags";
         return false;
     }
     const auto s = strata::kernels::qsa_real_shapes();
@@ -82,12 +83,43 @@ std::array<void*, 5> pools(const QsaState& st, bool resident = false) {
 }
 
 bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error) {
+    if (st.shared_kv && st.kv_mode != 0) {
+        error = "conversation snapshot: shared K/V requires resident mode";
+        return false;
+    }
     if (upto < 0 || upto > st.max_cells || st.n_pages < 0 || l.cells / l.page_size > st.n_pages ||
         st.kv_mode < 0 || st.kv_mode > 2 || st.n_slots <= 0 ||
-        (st.kv_mode == 0 && st.n_slots < st.n_pages) ||
+        (st.kv_mode == 0 && !st.shared_kv && st.n_slots < st.n_pages) ||
         l.pooled_rows > st.idx_pooled_rows || (st.kv_mode != 0 && !st.host.present())) {
         error = "conversation snapshot: invalid K/V extent or missing authoritative host pool";
         return false;
+    }
+    if (st.shared_kv) {
+        const size_t pages = size_t(l.cells / l.page_size);
+        if (st.shared_page_table.size() < pages) {
+            error = "conversation snapshot: incomplete shared K/V page mapping";
+            return false;
+        }
+        int32_t max_slot = -1;
+        // Only the rounded logical prefix is needed. The rest of the sequence's
+        // capacity may be unmapped, and n_slots is pool capacity, not n_pages.
+        for (size_t page = 0; page < pages; ++page) {
+            const int32_t slot = st.shared_page_table[page];
+            if (slot < 0 || slot >= st.n_slots) {
+                error = "conversation snapshot: invalid shared K/V physical page";
+                return false;
+            }
+            max_slot = std::max(max_slot, slot);
+        }
+        // Check physical byte offsets for every payload before any restore
+        // writes. Hybrid K8V4 has different K, V and scale page strides.
+        if (pages) for (size_t bytes : {l.data, l.value_data, l.scales, l.value_scales}) {
+            size_t extent = 0;
+            if (!conversation_detail::product(extent, {uint64_t(max_slot) + 1, bytes / pages})) {
+                error = "conversation snapshot: shared K/V physical byte offset overflow";
+                return false;
+            }
+        }
     }
     if (st.kv_mode == 1) {
         const auto& m = st.map;
@@ -102,6 +134,26 @@ bool valid(const QsaState& st, const Layout& l, int64_t upto, std::string& error
                                                     : !st.k_pool || !st.v_pool))) {
         error = "conversation snapshot: invalid draft ring";
         return false;
+    }
+    return true;
+}
+
+// ConversationBuffer segments are independent of K/V pages: one visit can
+// cross several pages or start partway through one. Keep snapshot offsets
+// logical, but split each piece before translating into the shared pool.
+// The indexer's pooled rows remain private, contiguous per-sequence storage.
+template<class Pointer, class Fn>
+bool visit_pool_piece(const QsaState& st, size_t payload, size_t page_bytes,
+                      Pointer p, size_t n, size_t at, Fn fn) {
+    if (!st.shared_kv || payload == 4) return fn(p, n, at);
+    while (n) {
+        const size_t within = at % page_bytes;
+        const size_t count = std::min(n, page_bytes - within);
+        const size_t slot = size_t(st.shared_page_table[at / page_bytes]);
+        if (!fn(p, count, slot * page_bytes + within)) return false;
+        p += count;
+        at += count;
+        n -= count;
     }
     return true;
 }
@@ -168,8 +220,13 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
                                   : l.cells ? (sizes[i] / size_t(l.cells)) * size_t(whole_cells) : 0;
         if (keep > dst[i]->size()) { error = "conversation snapshot: missing reusable prefix"; return false; }
         dst[i]->resize(sizes[i]);
+        const size_t page_bytes = l.cells ? sizes[i] / size_t(l.cells / l.page_size) : 0;
         if (!dst[i]->visit(keep, sizes[i] - keep, [&](uint8_t* p, size_t n, size_t at) {
-                return transfer(p, src[i] ? static_cast<const uint8_t*>(src[i]) + at : nullptr, n, error);
+                return visit_pool_piece(st, i, page_bytes, p, n, at,
+                    [&](uint8_t* piece, size_t count, size_t offset) {
+                        return transfer(piece, src[i] ? static_cast<const uint8_t*>(src[i]) + offset : nullptr,
+                                        count, error);
+                    });
             })) return false;
         if (reused_bytes) *reused_bytes += keep;
     }
@@ -202,10 +259,17 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
     if (!conversation_kv_validate(image, st, g, upto, index, error)) return false;
     const std::array<const ConversationBuffer*,5> src = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto dst = pools(st);
-    for (size_t i = 0; i < src.size(); ++i)
+    // The runtime must reserve writable destination pages (including COW)
+    // before calling restore. Snapshots never allocate or change mappings.
+    for (size_t i = 0; i < src.size(); ++i) {
+        const size_t page_bytes = image.cells ? src[i]->size() / size_t(image.cells / image.page_size) : 0;
         if (!src[i]->visit(0, src[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
-                return transfer(static_cast<uint8_t*>(dst[i]) + at, p, n, error);
+                return visit_pool_piece(st, i, page_bytes, p, n, at,
+                    [&](const uint8_t* piece, size_t count, size_t offset) {
+                        return transfer(static_cast<uint8_t*>(dst[i]) + offset, piece, count, error);
+                    });
             })) return false;
+    }
     // VRAM slots still contain the outgoing conversation. Resolve must refill
     // them from the restored authoritative pools before any attention reads.
     if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, nullptr);
@@ -242,10 +306,15 @@ bool conversation_kv_verify(const ConversationKv& image, const QsaState& st, con
     };
     const std::array<const ConversationBuffer*, 5> saved = {&image.k, &image.v, &image.k_scale, &image.v_scale, &image.pooled};
     const auto authoritative = pools(st);
-    for (size_t i = 0; i < saved.size(); ++i)
+    for (size_t i = 0; i < saved.size(); ++i) {
+        const size_t page_bytes = image.cells ? saved[i]->size() / size_t(image.cells / image.page_size) : 0;
         if (!saved[i]->visit(0, saved[i]->size(), [&](const uint8_t* p, size_t n, size_t at) {
-                return compare(static_cast<const uint8_t*>(authoritative[i]) + at, p, n, true);
+                return visit_pool_piece(st, i, page_bytes, p, n, at,
+                    [&](const uint8_t* piece, size_t count, size_t offset) {
+                        return compare(static_cast<const uint8_t*>(authoritative[i]) + offset, piece, count, true);
+                    });
             })) return false;
+    }
     if (st.kv_mode == 2 && image.cells > 0) {
         const auto resident = pools(st, true);
         const int64_t end = image.cells / image.page_size;

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [ "$#" -ne 1 ] || [[ ! "$1" =~ ^[0-9]+$ ]]; then
+  echo "usage: start-strata PORT" >&2
+  exit 2
+fi
+cd /data/llm/Strata
+# llama-swap runs as native-inference, not root. Keep mutable settings/logs out
+# of the root-owned source checkout; refresh only the config, not Chat defaults.
+runtime=/data/llm/Strata-run/nibbler
+cp deploy/nibbler/config.json "$runtime/config.json"
+exec .venv/bin/python -u -m serve.server \
+  --engine strata --config "$runtime/config.json" \
+  --host 127.0.0.1 --port "$1"
