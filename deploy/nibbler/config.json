@@ -1,5 +1,6 @@
 {
   "exe": "/data/llm/Strata/engine/strata-nibbler",
+  "parallel": 2,
   "args": [
     "--pack", "/data/llm/Strata-data/packs/iq3_s",
     "--native", "/data/llm/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
@@ -13,8 +14,9 @@
     "--max-context", "262144",
     "--kv", "int8",
     "--kv-resident", "32768",
+    "--kv-unified",
     "--vision",
-    "--vram-reserve-mib", "700",
+    "--vram-reserve-mib", "2048",
     "--conversation-cache-mib", "4096",
     "--conversation-cache-slots", "4",
     "--conversation-cache-min-free-mib", "4096"

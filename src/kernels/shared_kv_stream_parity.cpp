@@ -1,6 +1,6 @@
-// Model-free shared streaming regression. Build manually against strata_kernels + CUDA runtime (no CMake
-// changes). Also run the existing kv_stream_parity for legacy attention/ring coverage. No GPU/model required
-// at compile time, but execution requires CUDA. One-layer logical prefill staging is separate workspace, NOT
+// Model-free shared streaming regression. CUDA-only CMake/CTest target linked to strata_prefill (which
+// provides native batch append) and strata_kernels. Also run kv_stream_parity for legacy attention/ring
+// coverage. Returns 77 when no CUDA device/driver is available. One-layer staging is separate workspace, NOT
 // part of the shared --kv-resident cache budget; decode below only resolves selected pages.
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -118,6 +118,14 @@ void batch(Pools& p, const int32_t* table, const float* key, const float* val, c
     else strata::prefill::kv_append(key, val, 8, 0, table, s.page_size, p.p.k_pool, p.p.v_pool,
                                     p.p.k_q, p.p.v_q, p.p.k_scale, p.p.v_scale, cs, host, stage);
 }
+void gather(const Pools& p, const int32_t* table, const int32_t* ids, const int32_t* step,
+            const k::QsaShapes& s, int fmt, uint16_t* key, uint16_t* val, cudaStream_t cs) {
+    if (fmt == k::kKvF16)
+        k::kv_gather_step(p.p.k_pool, p.p.v_pool, table, ids, step, 8, s, key, val, cs);
+    else if (fmt == k::kKvInt8)
+        k::kv_gather_q8_step(p.p.k_q, p.p.v_q, p.p.k_scale, p.p.v_scale, table, ids, step, 8, s, key, val, cs);
+    else k::kv_gather_q4_step(p.p.k_q4, p.p.v_q4, table, ids, step, 8, s, key, val, cs);
+}
 void run(int fmt) {
     constexpr int L = 1536, B = L * 2, S = 1024, CAP = L;
     const auto s = k::qsa_real_shapes();
@@ -148,6 +156,9 @@ void run(int fmt) {
     auto* q = mem.alloc<float>(s.n_head * s.head_dim);
     auto* scratch = mem.alloc<float>(k::qsa_decode_attn_scratch_floats(CAP, s));
     auto* out = mem.alloc<float>(s.n_head * s.head_dim); auto* expected = mem.alloc<float>(s.n_head * s.head_dim);
+    const size_t gather_values = 8 * s.n_head_kv * s.head_dim;
+    auto* gather_k = mem.alloc<uint16_t>(gather_values); auto* gather_v = mem.alloc<uint16_t>(gather_values);
+    auto* gather_ref_k = mem.alloc<uint16_t>(gather_values); auto* gather_ref_v = mem.alloc<uint16_t>(gather_values);
     put(q, std::vector<float>(s.n_head * s.head_dim, 0.25f));
     auto sync = [&] { ck(cudaStreamSynchronize(cs), "sync"); };
     auto values = [&](float scale) {
@@ -211,8 +222,12 @@ void run(int fmt) {
     select({0}); resolve(ha, view_a); check_page(0, ha, view_a, ref_a);
 
     // Resident stale view: force A's reader slot to B's. Metadata-only HIP DMA writer still uses global A.
-    const auto pt = get(m.page_table, B); const int b_slot = pt[L + 1];
-    require(b_slot >= 0 && b_slot != pt[0], "distinct resident slots");
+    const auto pt = get(m.page_table, B);
+    // The CLOCK victim is intentionally nondeterministic (parallel miss reservation). Select an actual
+    // surviving B page rather than assuming B's logical page 1 survived A's preceding resolve.
+    int b_slot = -1;
+    for (int b = L; b < B; ++b) if (pt[b] >= 0 && pt[b] != pt[0]) { b_slot = pt[b]; break; }
+    require(b_slot >= 0, "distinct resident slots");
     auto wrong = get(view_a, L); wrong[0] = b_slot; put(view_a, wrong);
     const auto other = slots.page(b_slot), host_before = host.page(0);
     auto metadata_only = ha;
@@ -243,6 +258,11 @@ void run(int fmt) {
         host.copy_page(i, stage, i);
     }
     select({0, 1, 2, 3, 4, 5, 6, 7}); resolve(ha, view_a); attention(ref_a, view_a);
+    // The existing non-fused gather readers consume the very same materialized private table unchanged.
+    gather(ref_a, identity, ids, steps, s, fmt, gather_ref_k, gather_ref_v, cs);
+    gather(slots, view_a, ids, steps, s, fmt, gather_k, gather_v, cs); sync();
+    require(get(gather_ref_k, gather_values) == get(gather_k, gather_values) &&
+            get(gather_ref_v, gather_values) == get(gather_v, gather_values), "bitwise gather parity");
 
     // Reuse a captured writer -> resolve -> attention graph after COW/recycling publishes changed backing.
     select({0}); values(7.f);
@@ -351,6 +371,13 @@ void run(int fmt) {
 }
 } // namespace
 int main() {
+    int devices = 0;
+    const cudaError_t available = cudaGetDeviceCount(&devices);
+    if (available != cudaSuccess || devices <= 0) {
+        std::fprintf(stderr, "SKIP: shared_kv_stream_parity: %s\n",
+                     available != cudaSuccess ? cudaGetErrorString(available) : "no CUDA devices");
+        return 77;
+    }
     std::puts("shared_kv_stream_parity: synthetic shared KV (1024 resident slots, 1536 logical pages/sequence)");
     run(k::kKvF16); run(k::kKvInt8); run(k::kKvQ4); std::puts("PASS"); return 0;
 }

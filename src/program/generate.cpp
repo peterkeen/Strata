@@ -625,7 +625,7 @@ void usage() {
                  "                       give VRAM back to other programs between requests and take it back later\n"
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
-                 "  --kv-unified        --serve --batch: share --max-context KV cells across all slots (resident KV only)\n"
+                 "  --kv-unified        --serve --batch: share --max-context backing cells and --kv-resident GPU cache\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
                  "  --trim-stage-weights an explicit --layer-split: each GPU loads only its own layers' dense weights\n"
                  "  --prompt-cache-every N  --serve: also checkpoint every N fresh prompt tokens (default 16384, 0 = off)\n"
@@ -6253,8 +6253,8 @@ int main(int argc, char** argv) {
             return true;
         };
         // 1: reserved; 0: recoverable capacity/cancellation; -1: fatal mapping
-        // or device failure. Optional oversized parked tails may try without
-        // waiting/reclaiming so a fitting request can fall back to prompt replay.
+        // or device failure. Optional parked images try without waiting or
+        // reclaiming so source selection can keep a fitting shared prefix.
         auto reserve_unified = [&](int64_t begin, int64_t end, bool wait) -> int {
             for (;;) {
                 if (stop_req.load()) return 0;
@@ -6628,6 +6628,19 @@ int main(int argc, char** argv) {
                 incoming.reset();
                 err.clear();
             }
+            // A canonical image must be restored into a wholly private extent.
+            // Check its cost BEFORE releasing the current branch or evicting any
+            // slot source: sharing an existing prefix can fit when a fresh full
+            // restore cannot. Parking is optional, not a reason to reject that
+            // fitting request or discard its live/checkpoint alternative.
+            if (incoming && unified_kv) {
+                const int64_t restore_end = std::max<int64_t>(request_end, int64_t(incoming->live.ids.size()));
+                if (unified_kv->page_count(restore_end) > unified_kv->pages().free_pages_after_release(0)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip restore (private image exceeds "
+                                         "available shared capacity); keep live/slot prefix or prompt replay\n");
+                    incoming.reset();
+                }
+            }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
             if ((!from_live || incoming || slot_source >= 0) && !park_current(incoming ? incoming->bytes() : 0)) {
@@ -6642,20 +6655,20 @@ int main(int argc, char** argv) {
                 live.clear(); live_imgs.clear(); checks.clear(); live_ok = false;
                 conversations.limit_reuse(0);
                 const int64_t restore_end = std::max<int64_t>(request_end, int64_t(incoming->live.ids.size()));
-                const int r = reserve_unified(0, restore_end, restore_end <= request_end);
+                const int r = reserve_unified(0, restore_end, false);
                 if (r < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
-                if (r == 0 && restore_end > request_end) {
-                    // An optional obsolete saved tail must not reject a fitting
-                    // request. No cache-source eviction occurred on this try.
-                    std::fprintf(stderr, "strata serve: conversation cache: skip restore (saved tail needs "
-                                         "more shared capacity); use slot prefix or prompt replay\n");
+                if (r == 0) {
+                    // Preflight made shortage impossible without an ownership
+                    // change; STOP may still cancel the actual preparation.
+                    // Never evict the slot alternative for an optional image.
                     incoming.reset();
                     resume = 0;
                     from_live = false;
                     err.clear();
-                } else if (r == 0) {
-                    if (!reject_unified()) return 1;
-                    continue;
+                    if (stop_req.load()) {
+                        if (!reject_unified()) return 1;
+                        continue;
+                    }
                 } else slot_source = -1;
             } else if (incoming) slot_source = -1;
             if (slot_source >= 0) {

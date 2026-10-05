@@ -228,7 +228,7 @@ struct QsaState {
     int64_t n_pages = 0;
     int64_t max_cells = 0;
     strata::kernels::QsaShapes kv_shapes{}; ///< allocation geometry, checked when borrowing K/V
-    bool shared_kv = false;             ///< orchestrator also marks the owner; zero must not clear the pool
+    bool shared_kv = false;             ///< allocation marks borrowers/stream owners; orchestrator marks resident owner
     std::vector<int32_t> shared_page_table; ///< CPU logical -> backing page (GPU page in mode 0), per sequence
 
     /// KV STREAMING (docs/kv-streaming-design.md, `kv_stream.hpp`). `kv_mode` 0: every page in VRAM, identity

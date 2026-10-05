@@ -381,6 +381,123 @@ void released_reservation_failure() {
     invariants(pool, 2);
 }
 
+void check_release_forecasts(const SharedKvPages& pool, size_t sequences) {
+    const auto before = snapshot(pool, sequences);
+    const SharedKvPages control = pool;
+    for (size_t seq = 0; seq < sequences; ++seq) {
+        SharedKvPages actual = control;
+        actual.release(seq);
+        // A valid const query must not allocate either.
+        allocation_fault::after = 0;
+        const size_t forecast = pool.free_pages_after_release(seq);
+        const bool did_not_allocate = allocation_fault::after == 0;
+        allocation_fault::after = -1;
+        check(did_not_allocate, "release forecast does not allocate");
+        check(forecast == actual.free_pages(), "forecast equals release on independent allocator copy");
+        check(forecast >= pool.free_pages() && forecast <= pool.capacity(), "release forecast within capacity");
+    }
+    unchanged(pool, before);
+    // Compare every ID in the eventual allocation order, not just counters.
+    SharedKvPages queried = pool;
+    SharedKvPages unqueried = control;
+    for (size_t seq = 0; seq < sequences; ++seq) {
+        queried.release(seq);
+        unqueried.release(seq);
+    }
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(queried.ensure(0, 0, queried.capacity(), copies, error), "queried allocator fully recovers");
+    check(unqueried.ensure(0, 0, unqueried.capacity(), copies, error), "unqueried allocator fully recovers");
+    check(queried.mapping(0) == unqueried.mapping(0), "const forecasts preserve all free-list ordering and refcounts");
+}
+
+void free_after_release() {
+    SharedKvPages pool(20, 4);
+    const SharedKvPages& view = pool;
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(view.free_pages_after_release(0) == 20, "empty mapping forecasts current free capacity");
+    check_release_forecasts(view, 4);
+    check(pool.ensure(0, 0, 6, copies, error), "forecast unique source setup");
+    check(view.free_pages_after_release(0) == 20, "unique source release restores full capacity");
+    check_release_forecasts(view, 4);
+    check(pool.clone_prefix(0, 1, 4, error), "forecast first shared prefix");
+    check(pool.clone_prefix(0, 2, 2, error), "forecast three-way shared head");
+    check(view.free_pages_after_release(0) == 16, "source forecast counts only two unique tail pages");
+    check(view.free_pages_after_release(1) == 14 && view.free_pages_after_release(2) == 14,
+          "multiply referenced prefixes add no free capacity");
+    check_release_forecasts(view, 4);
+    check(pool.ensure(1, 4, 7, copies, error), "forecast includes unwritten reserved tail pages");
+    check(view.free_pages_after_release(0) == 13 && view.free_pages_after_release(1) == 14,
+          "forecast distinguishes unique source tail from separate reservation");
+    check_release_forecasts(view, 4);
+    check(pool.ensure(0, 1, 3, copies, error) && copies.size() == 2, "forecast mixed shared and COW-private pages");
+    check(view.free_pages_after_release(0) == 13 && view.free_pages_after_release(1) == 13,
+          "forecast counts noncontiguous last references after COW");
+    check_release_forecasts(view, 4);
+    const auto before = snapshot(pool, 4);
+    check_throws<std::out_of_range>([&] { (void)view.free_pages_after_release(4); }, "forecast invalid sequence throws");
+    check_throws<std::out_of_range>([&] { (void)view.free_pages_after_release(std::numeric_limits<size_t>::max()); },
+                                    "forecast maximal sequence throws");
+    unchanged(pool, before);
+    check_release_forecasts(view, 4);
+    pool.release(0);
+    check(view.free_pages_after_release(0) == pool.free_pages(), "already released mapping contributes zero");
+    check_release_forecasts(view, 4);
+    check(pool.clone_prefix(1, 1, 0, error), "forecast self clone releases complete mapping");
+    check(view.free_pages_after_release(1) == pool.free_pages(), "self-released mapping contributes zero");
+    check_release_forecasts(view, 4);
+    pool.release(2);
+    check(view.free_pages_after_release(3) == 20, "fully recovered pool forecast");
+    check_release_forecasts(view, 4);
+}
+
+void protected_prefix_restore_capacity() {
+    constexpr size_t page_tokens = 4;
+    constexpr size_t capacity = 262144 / page_tokens; // 65,536 physical pages.
+    constexpr size_t protected_pages = 196608 / page_tokens; // 49,152 pages.
+    constexpr size_t image_pages = 200704 / page_tokens; // 50,176 pages.
+    constexpr size_t request_pages = 208900 / page_tokens; // 52,225 pages.
+    SharedKvPages pool(capacity, 2);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(1, 0, protected_pages, copies, error), "regression protected prefix setup");
+    check(pool.clone_prefix(1, 0, protected_pages, error), "regression main shares protected prefix");
+    check(pool.ensure(0, protected_pages, protected_pages + 8, copies, error), "regression main has unique output reservation");
+    const auto before = snapshot(pool, 2);
+    const SharedKvPages& view = pool;
+    const size_t available = view.free_pages_after_release(0);
+    check(pool.free_pages() == 16376 && available == 16384, "main release would free only eight unique pages");
+    check(available * page_tokens == 65536, "protected prefix leaves 65,536 tokens of free capacity");
+    check(image_pages > available && request_pages > available, "fresh canonical image and full request cannot fit");
+    check(request_pages - protected_pages == 3073 && request_pages - protected_pages <= available,
+          "shared protected prefix needs only 3,073 additional pages");
+    unchanged(pool, before); // Capacity decision must retain the live/slot-prefix alternative.
+
+    SharedKvPages fresh = pool;
+    fresh.release(0);
+    check(fresh.free_pages() == available, "large-pool forecast equals actual main release");
+    const auto released = snapshot(fresh, 2);
+    check(!fresh.ensure(0, 0, image_pages, copies, error), "fresh canonical image restore is inadmissible");
+    check(copies.empty(), "failed image restore has no copies");
+    unchanged(fresh, released);
+    check(!fresh.ensure(0, 0, request_pages, copies, error), "fresh full-request reservation is inadmissible");
+    unchanged(fresh, released);
+    check(fresh.clone_prefix(1, 0, protected_pages, error), "protected prefix can be cloned after release");
+    check(fresh.ensure(0, protected_pages, request_pages, copies, error) && copies.empty(),
+          "cloned protected prefix plus tail fits without COW");
+    check(fresh.free_pages() == 13311, "cloned-prefix reservation leaves 13,311 free pages");
+
+    check(pool.ensure(0, protected_pages, request_pages, copies, error) && copies.empty(),
+          "retained live-prefix alternative also fits without destructive release");
+    check(pool.mapping(0) == fresh.mapping(0), "retained and clone alternatives produce the same deterministic mapping");
+    check(pool.mapping(1) == before.mappings[1] && pool.free_pages() == 13311,
+          "protected source survives fallback with identical remaining capacity");
+    pool.release(0);
+    pool.release(1);
+    check(pool.free_pages() == capacity, "large-pool regression completely recovers capacity");
+}
+
 // Deterministic model test: simulate GPU page copies and single-token writes.
 // Track logical contents independently, so any premature recycling, missing
 // reference, extra reference, or missing/incorrect COW corrupts an assertion.
@@ -496,5 +613,7 @@ int main() {
     released_records();
     invalid_released_output();
     released_reservation_failure();
+    free_after_release();
+    protected_prefix_restore_capacity();
     std::printf("shared_kv_pages_test: %zu checks passed\n", checks);
 }

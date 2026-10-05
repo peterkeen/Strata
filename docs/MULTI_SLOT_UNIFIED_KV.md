@@ -116,9 +116,137 @@ Parity probes freeze expert placement, use `STRATA_IQ_MT_MIN=1`,
 `--pcie-frac 0`, and disable prefill borrowing where appropriate. Their short
 aggregate token rates are not production throughput benchmarks.
 
+## Shared streaming continuation (validated for two-slot rollout)
+
+Shared streaming now keeps the original logical context and bounded parking:
+
+```
+--kv-unified --batch 2 --max-context 262144 --kv-resident 32768
+--conversation-cache-mib 4096 --conversation-cache-slots 4
+--conversation-cache-min-free-mib 4096 --vram-reserve-mib 2048
+```
+
+The Python config uses `"parallel": 2` instead of a manual `--batch` option.
+One pinned authoritative backing pool and one GPU residency/CLOCK cache exist
+per attention layer. The allocator has 262144 aggregate backing cells; each
+request retains a 262144 logical ceiling, and GPU residency is 32768 cells,
+not that amount multiplied by the number of slots. Private logical-to-backing
+maps and selected logical-to-GPU reader views are allocated before capture.
+Writers consult the shared backing-to-GPU map, never stale reader views.
+
+COW copies authoritative host rows. Last-reference releases, recycled IDs and
+restored ranges invalidate the corresponding backing cache entries. Prefill
+has separate, logically addressed staging workspace; it is not part of the
+32768-cell persistent GPU cache budget. Private recurrence, indexer, PLE,
+MTP and captured graph allocations still consume memory.
+
+Canonical snapshot validation does not require a ready destination mapping.
+Outgoing conversations are parked before destructive preparation. An optional
+canonical restore is skipped, without discarding a fitting live/slot prefix,
+if its fresh private pages cannot fit. Contiguous backing runs are coalesced
+for transfers. The parking budget is separate from pinned authoritative KV
+and does not guarantee four full-length parked histories.
+
+The default MTP window retains its private ring. A full-context MTP window
+(`0`, or at least the context) instead allocates private **fully resident**
+draft KV, with an explicit allocation error if it cannot fit. It never becomes
+an unmanaged shared-stream owner. Slot promotion still has upstream's stale
+MTP-proposal history: target verification preserves returned-token semantics,
+but draft acceptance/performance need not equal a clean solo conversation.
+Shared transfers discard retained canonical-buffer provenance.
+
+Current nibbler evidence, alongside the original milestone artifacts:
+
+- Native engine and all test targets build; 80 of 83 CTest targets pass. The
+  same three missing-data fixtures fail before inference.
+- Shared allocator: 135660 checks. Updated real-CUDA allocation/private-draft
+  fixture: 2857 checks, including production-used MTP ring-boundary checks.
+- New shared CUDA parity passes FP16, INT8 and Q4: COW/recycling, stale-view
+  writers, private reader materialization, mapped staging, CLOCK eviction,
+  multi-query protection, graph replay and overflow canaries. Existing streamed
+  parity and private-ring restore also pass for all three formats.
+- Python server: 299 tests, seven skipped, no failures. CPU-only smoke harness
+  tests: 66 passed across the original and new harnesses.
+- Two-slot model probe at 262144 / 32768 / 4096: both 64-token outputs match
+  solo references with 2048 MiB reserve. Startup free VRAM was 1461 MiB in
+  that private probe. These frozen-placement short rates are not benchmarks.
+- `streaming-short.json` passes positive canonical A→B→A parking/restore,
+  unequal overlapping requests, cached partial-tail branches at offsets 1/2/3,
+  cancellation and same-slot readmission. This harness disables MTP drafts.
+- Private HTTP reports two 262144-context slots and the shared backing/GPU
+  capacities correctly; solo and concurrent early-close tests pass, followed
+  by clean next answers. That probe excluded the separate vision process.
+- `streaming-long.json`: all 28 stages pass with overlapping 20000/20004-token
+  histories, 40516 reserved cells, positive restore diagnostics and solo parity.
+- `streaming-over-resident.json`: all 28 stages pass with overlapping
+  35000/35004-token histories. Each individual history exceeds the 32768-cell
+  GPU cache, with 262144 aggregate backing retained.
+- `streaming-pressure.json`: 30 stages pass at 24576 backing / 20480 resident.
+  BSTOP acknowledgement precedes waiting output/admission, with solo parity.
+- A repeat three-slot upstream interleaving probe at 2048 MiB reserve passes
+  every comparison: long prefill, BYIELD/resume, next turn, checkpoint reuse and
+  slot-to-solo MTP transitions. An explicit full-context `--mtp-window 0` probe
+  also passes two-slot/solo parity with drafts enabled.
+- The production-settings private HTTP gate retains adaptive/fused-prefill,
+  MTP and GPU vision. Early-close recovery passes; a synthetic red PNG produces
+  `red`. Startup free VRAM was 1674 MiB in the first such probe. The exited-child
+  broken-pipe cleanup regression is fixed; the final probe exits cleanly (0).
+- Read-only adversarial review's optional-restore and full-context-MTP High
+  findings are fixed. Its focused recheck found no new blocker.
+
+The original **700 MiB reserve is not a safe three-slot deployment gate**:
+that private interleaving probe had only 115 MiB free at startup. Its initial
+three outputs and next-turn reuse matched solo, but a later graph instantiation
+failed out of memory. Do not report that probe as passing. The larger-reserve
+repeat, longer overlapping histories, backing pressure and production-settings
+HTTP/vision gates pass. The tracked deployment uses two slots, not three.
+
+Model diagnostic misses/RAM reads alone do not prove CLOCK eviction. Forced
+churn is established by the synthetic CUDA regression, not by short sparse-QSA
+model histories. Device-failure injection, exhaustive long-context stress and
+production throughput remain outside the current evidence.
+
 ## Deployment safety
 
 User permits interrupting nibbler evals for this work. SSH as `root@nibbler`
 works; `pete@nibbler` is denied. Do not stop unrelated services. Existing
-production launcher/binary/config remain rollback baseline. Native build uses
-CUDA 13.3, GCC 15, architecture 120, Release, conversation tests enabled.
+launcher is unchanged; the preceding binary and both configs are saved as
+rollback artifacts. Native build uses CUDA 13.3, GCC 15, architecture 120,
+Release, conversation tests enabled.
+
+## Controlled rollout (2026-10-05)
+
+Deployed through the existing llama-swap launcher, without restarting the router
+or unrelated services. Only `qwen3.8-flash-next-iq3_s` was unloaded/reloaded;
+the inactive standalone `strata.service` was not started. Live `/props` reports
+`total_slots=2`, `kv_unified=true`, `kv_capacity_cells=262144`, and both
+`kv_resident`/`kv_resident_capacity_cells=32768`. Both `/slots` entries retain
+`n_ctx=262144`. Router warmup returned `READY`; live backend solo/concurrent
+early-close recovery also passed. Shared Chat settings hash remained unchanged.
+
+Artifacts in `/data/llm/Strata-tests/multislot-20261005/`:
+
+- `streaming-rollout.{props,slots,warmup,running.after}.json` and rollout log.
+- `streaming-rollout.strata.before`, tracked/runtime config backups, and
+  `streaming-rollout.{before,after}.sha256`.
+- `deploy-streaming.sh`, with automatic rollback on a failed gate, and
+  `rollback-streaming.sh`, which restores both configs and the preceding binary
+  but never overwrites shared Chat settings.
+
+Binary SHA-256 before:
+`ec160772e1f34d0dc5c5730f82287312c1cbb494e5924012857b99dac76143a4`.
+Deployed binary:
+`32e6183c3b1eb6fdc0712edfa0e9e13934e8112d85cb376acf0de3f6f8dc85c8`.
+Deployed tracked/runtime config:
+`e806bfeb934c1fe7350ec305d49af66ed8089bbeb8d5198b032967e236b38166`.
+
+Rollback command:
+
+```
+ssh root@nibbler /data/llm/Strata-tests/multislot-20261005/rollback-streaming.sh
+```
+
+The pre-existing `nibbler.local.keen.land` allowed-host addition is preserved in
+the local/deployed working config, not included in this feature's staged change.
+PR #1 was already merged as the historical full-resident milestone; the streamed
+continuation is published as a follow-up rather than rewriting that merge.

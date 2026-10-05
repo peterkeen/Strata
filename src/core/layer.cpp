@@ -561,7 +561,7 @@ bool kv_share_valid(const QsaShapes& s, int64_t max_cells, int64_t ring_cells,
         owner.kv_int8 ? owner.host.k_q && owner.host.v_q && owner.host.k_scale && owner.host.v_scale :
         owner.host.k_pool && owner.host.v_pool;
     return owner.kv_mode == 1 && p.mode == 1 && ring_cells == 0 && !owner.kv_hybrid &&
-        owner.shared_kv && owner.n_slots == p.slots && host_pools &&
+        owner.shared_kv && owner.n_slots == p.slots && host_pools && owner.page_table &&
         owner.host.logical_pages && owner.host.resident_pages == owner.map.page_table &&
         owner.map.page_table && owner.map.page_table != owner.page_table &&
         owner.host.logical_pages != owner.page_table && owner.host.logical_pages != owner.map.page_table &&

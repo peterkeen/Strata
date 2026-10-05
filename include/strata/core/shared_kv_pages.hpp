@@ -154,6 +154,18 @@ public:
     size_t free_pages() const { return free_.size(); }
     size_t used_pages() const { return capacity() - free_pages(); }
 
+    // Predict available capacity after releasing seq, without changing ownership
+    // or free-list order. Shared IDs stay live; only last references add capacity.
+    // Like mapping(), an invalid sequence throws std::out_of_range.
+    size_t free_pages_after_release(size_t seq) const {
+        check_sequence(seq);
+        size_t available = free_.size();
+        for (int32_t page : mappings_[seq]) {
+            if (refcounts_[static_cast<size_t>(page)] == 1) ++available;
+        }
+        return available;
+    }
+
 private:
     void check_sequence(size_t seq) const {
         if (seq >= mappings_.size()) {

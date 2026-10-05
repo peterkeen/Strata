@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <climits>
+#include <cstring>
 
 namespace strata::kernels {
 namespace {
@@ -205,7 +206,7 @@ __global__ void copy_kernel(KvStreamMap m, Runs r) {
 // stale and must never be used as a writer residency map. Legacy/global-table aliasing skips this kernel.
 __global__ void materialize_kernel(KvStreamMap m, KvHostPools host, int32_t* view, const int32_t* ids,
                                    const int32_t* steps, int n_q, int cap, int page_size) {
-    for (int q = blockIdx.x; q < n_q; q += gridDim.x) {
+    for (long long q = blockIdx.x; q < n_q; q += gridDim.x) {
         const int requested = steps[(long long) q * kStepCount + kStepWidth];
         const int width = requested < 0 ? 0 : (requested > cap ? cap : requested);
         for (long long i = threadIdx.x; i < width; i += blockDim.x) {
@@ -391,7 +392,9 @@ KvStreamCounters kv_stream_counters(const KvStreamMap& m) {
     int32_t c[kKvCtlInts] = {};
     KvStreamCounters r;
     if (m.ctl == nullptr || cudaMemcpy(c, m.ctl, sizeof(c), cudaMemcpyDeviceToHost) != cudaSuccess) return r;
-    const unsigned long long* u = reinterpret_cast<const unsigned long long*>(c + 4);
+    // A host int32_t array need not be u64-aligned; do not type-pun its counter storage.
+    uint64_t u[3];
+    std::memcpy(u, c + 4, sizeof(u));
     r.misses = u[0];
     r.lookups = u[1];
     r.calls = u[2];
