@@ -343,4 +343,8 @@ It restores only `incremental-baseline.strata` and
 shared settings, router and TTS untouched. Copies and script syntax were checked;
 rollback was not executed after the successful rollout.
 
-All required gates are complete. The continuation heartbeat can be removed.
+All required gates are complete. Continuation heartbeat `d12a6ef6` was removed.
+Implementation commit: `3d825e9`. Published for review in
+[PR #4](https://github.com/peterkeen/Strata/pull/4); deployment does not imply the
+PR has been merged. The user's local host-allowlist config change is not part
+of the commit.
