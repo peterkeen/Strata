@@ -228,8 +228,8 @@ struct QsaState {
     int64_t n_pages = 0;
     int64_t max_cells = 0;
     strata::kernels::QsaShapes kv_shapes{}; ///< allocation geometry, checked when borrowing K/V
-    bool shared_kv = false;             ///< orchestrator also marks the owner; zero must not clear the pool
-    std::vector<int32_t> shared_page_table; ///< host logical -> physical mapping, private to this sequence
+    bool shared_kv = false;             ///< allocation marks borrowers/stream owners; orchestrator marks resident owner
+    std::vector<int32_t> shared_page_table; ///< CPU logical -> backing page (GPU page in mode 0), per sequence
 
     /// KV STREAMING (docs/kv-streaming-design.md, `kv_stream.hpp`). `kv_mode` 0: every page in VRAM, identity
     /// table (n_slots == n_pages, no host copy). 1: streamed - the authoritative K/V in `host`, `n_slots` pages
@@ -238,7 +238,11 @@ struct QsaState {
     int kv_mode = 0;
     int64_t n_slots = 0;
     strata::kernels::KvHostPools host;
+    /// Shared streaming: host.logical_pages is private logical -> backing, page_table is private logical ->
+    /// GPU slot, and map.page_table + CLOCK arrays are global backing -> GPU residency. All bindings are fixed
+    /// at allocation, before capture. Legacy streaming/rings keep both host translation pointers null.
     strata::kernels::KvStreamMap map;
+    void* kv_host_arena = nullptr;  ///< raw pinned allocation handle, owner ONLY; session_release does not free it
     int64_t idx_pooled_rows = 0;     ///< rows of `idx_pooled` (a ring, which has no indexer, keeps 2)
 
     float* idx_tail = nullptr;       ///< (idx_block - 1, idx_dim): the raw tail of the block being filled
@@ -274,9 +278,11 @@ struct QsaState {
 /// Plan v0.3 P7: the RoPE cos/sin table (max_cells x n_rot/2 x 2 floats, 64 MiB at 262K) is identical in every
 /// QSA layer. `with_rope = false` sizes a state that borrows it; `share_rope` points `st` at another state's table
 /// instead of building a copy (the session builds it once, in the first QSA layer).
-/// `share_kv` borrows fully resident K/V AND RoPE, irrespective of `with_rope`/`share_rope`. Geometry must
-/// match and max_cells must fit the owner. No streamed/ring borrowing; invalid requests return 0 in both
-/// bytes/init. The owner must outlive the borrower. Borrowed sizes are the exact arena bytes init consumes.
+/// `share_kv` borrows K/V AND RoPE, irrespective of `with_rope`/`share_rope`. Geometry must match and
+/// max_cells must fit the owner. Mode 1 borrowing additionally requires an explicitly unified-stream owner
+/// and identical mode/resident capacity; legacy streamed and ring storage cannot be borrowed. Invalid
+/// requests return 0 in bytes/init. Owner lifetime is external. Borrowed and unified-stream owner sizes are
+/// the exact arena bytes init consumes; default non-unified sizing retains its legacy padding.
 uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope = true, int64_t ring_cells = 0,
                          const QsaState* share_kv = nullptr);
 /// KV streaming: keep `cells` cells of each QSA layer in VRAM and the rest in pinned host memory (0: all in VRAM,
@@ -285,6 +291,11 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 /// resident state).
 void qsa_set_kv_resident(int64_t cells);
 int64_t qsa_kv_resident();
+/// Opt-in shared streaming allocation for MAIN (ring_cells == 0) mode-1 owners. Set before sizing/init;
+/// default false preserves legacy allocation. Each layer owns one authoritative pinned pool and one global
+/// GPU CLOCK cache, while every sequence carves private backing/read tables. Does not affect MTP rings.
+void qsa_set_kv_unified(bool enabled);
+bool qsa_kv_unified();
 /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
 /// in whole blocks) must fit at once, with room to spare.
 int64_t qsa_kv_resident_min();

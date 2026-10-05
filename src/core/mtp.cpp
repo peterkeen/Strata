@@ -218,9 +218,11 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     // KV streaming: the drafter only reads its last `window` cells, so with streaming on its K/V is a ring of the
     // window (plus the cells a round writes ahead of its queries) over a host copy, refilled on a resume. The host copy
     // is pinned after the expert arena has pinned what it could: if it does not fit, the K/V stays whole in VRAM.
-    int64_t ring = (window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : 0;
+    // Full-context dense attention has no residency resolver: its private K/V must be fully resident,
+    // even when the main session streams. Preserve the requested window; allocation may fail on VRAM cost.
+    int64_t ring = mtp_kv_ring_cells(window, max_cells, max_t);
     // K8V4 never applies to the drafter: its own attention paths (below, and verify.cpp) handle whole formats
-    // only, whatever ring shape it takes (0, a window, or the -1 fully-resident fallback).
+    // only, whether a bounded window or an explicitly fully-resident state (-1).
     const bool kv_hybrid_was = qsa_kv_hybrid();
     const bool kv_int8_was = qsa_kv_int8();
     qsa_set_kv_hybrid(false);
@@ -240,6 +242,12 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     }
     qsa_set_kv_int8(kv_int8_was);
     qsa_set_kv_hybrid(kv_hybrid_was);
+    // Dense draft attention never resolves shared logical/backing residency. Private ring host payloads are valid.
+    if (st_.shared_kv || (st_.kv_mode != 0 && st_.kv_mode != 2) ||
+        st_.host.logical_pages || st_.host.resident_pages) {
+        err = "mtp: draft K/V must be private (mode 0 or 2), without shared residency mappings";
+        return false;
+    }
     qsa_state_zero(st_, g, nullptr);
     cudaDeviceSynchronize();
     vram_ += sb;

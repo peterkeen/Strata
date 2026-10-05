@@ -74,10 +74,20 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
     const int64_t q_lo = layer_lo / I, q_hi = layer_hi / I;
     const int64_t q_n = std::max<int64_t>(q_hi - q_lo, g.n_qsa_layers() > 0 ? 1 : 0);
     const int64_t gdn_n = std::max<int64_t>((layer_hi - layer_lo) - std::max<int64_t>(q_hi - q_lo, 0), 0);
-    if (share_kv != nullptr) {
-        const uint64_t q_bytes = g.n_qsa_layers() > 0 ? borrowed_qsa_bytes(g, max_cells, q_lo, q_n, *share_kv) : 0;
-        if (g.n_qsa_layers() > 0 && q_bytes == 0) return 0;
-        // Mirror init's 256-byte take() boundaries exactly; do not charge for any owner K/V or RoPE.
+    if (share_kv != nullptr || qsa_kv_unified()) {
+        uint64_t q_bytes = 0;
+        if (g.n_qsa_layers() > 0) {
+            if (share_kv != nullptr) q_bytes = borrowed_qsa_bytes(g, max_cells, q_lo, q_n, *share_kv);
+            else {
+                const uint64_t first = qsa_state_bytes(g, max_cells, true);
+                const uint64_t rest = qsa_state_bytes(g, max_cells, false);
+                if (first == 0 || rest == 0) return 0;
+                q_bytes = first + (uint64_t) (q_n - 1) * rest;
+            }
+            if (q_bytes == 0) return 0;
+        }
+        // Mirror init's 256-byte take() boundaries exactly for borrowing or opt-in unified allocation.
+        // A unified-stream owner pays for its pools/global map once; a borrower pays only for private state.
         const uint64_t parts[] = {
             gdn_buffers_bytes(g), (uint64_t) gdn_n * gdn_state_floats(g) * 4,
             q_bytes, qsa_buffers_bytes(g, max_cells), moe_buffers_bytes(g, k),
@@ -102,8 +112,9 @@ uint64_t session_bytes(const ModelGeometry& g, int64_t max_cells, int64_t k, int
 
 uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void* base, SessionState& s,
                       int64_t layer_lo, int64_t layer_hi, const SessionState* share_kv) {
-    if (share_kv != nullptr && (share_kv == &s ||
-        session_bytes(g, max_cells, k, layer_lo, layer_hi, share_kv) == 0)) return 0;
+    if (share_kv == &s) return 0;
+    if ((share_kv != nullptr || qsa_kv_unified()) &&
+        session_bytes(g, max_cells, k, layer_lo, layer_hi, share_kv) == 0) return 0;
     if (layer_hi < 0 || layer_hi > g.n_layers) layer_hi = g.n_layers;
     if (layer_lo < 0) layer_lo = 0;
     uint8_t* p = (uint8_t*) base;

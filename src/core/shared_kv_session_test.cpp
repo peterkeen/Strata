@@ -2,6 +2,7 @@
 // engine's session/layer and CUDA kernel targets; no model weights are required.
 // Uses real device allocation/transfers (not host link wrapping). Returns 77 when
 // no CUDA device is available. CMake wiring belongs to the primary integration.
+#include "strata/core/mtp.hpp"
 #include "strata/core/shared_kv_runtime.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -95,18 +96,21 @@ struct DeviceSession {
             auto& q = state.qsa_states[state.qsa_ord0 + j];
             if (q.host_step) cudaFreeHost(q.host_step);
             if (q.host_pos) cudaFreeHost(q.host_pos);
+            // Raw pinned payload handle exists only on owners; mapped device addresses may differ.
+            if (q.kv_host_arena) cudaFreeHost(q.kv_host_arena);
         }
         delete[] state.qsa_states;
         if (arena) cudaFree(arena);
     }
-    void init(const ModelGeometry& g, const SessionState* owner = nullptr) {
-        bytes = session_bytes(g, kCells, 10, kLayerLo, kLayerHi, owner);
+    void init(const ModelGeometry& g, const SessionState* owner = nullptr, int64_t cells = kCells,
+              int64_t lo = kLayerLo, int64_t hi = kLayerHi) {
+        bytes = session_bytes(g, cells, 10, lo, hi, owner);
         require(bytes != 0, "nonzero session size");
         checked(cudaMalloc(&arena, size_t(bytes) + kGuard), "allocate session arena");
         fill({arena, size_t(bytes) + kGuard}, 0xa5);
-        used = session_init(g, kCells, 10, arena, state, kLayerLo, kLayerHi, owner);
+        used = session_init(g, cells, 10, arena, state, lo, hi, owner);
         require(used != 0 && used <= bytes, "session init fits sized arena");
-        if (owner) require(used == bytes, "borrowed session sizing exactly equals init consumption");
+        if (owner || qsa_kv_unified()) require(used == bytes, "borrowed/unified session sizing exactly equals init consumption");
         guard();
     }
     void guard() {
@@ -119,6 +123,7 @@ struct DeviceSession {
 };
 
 void configure(int format) {
+    qsa_set_kv_unified(false);
     qsa_set_kv_resident(0);
     qsa_set_kv_int8(format == 1);
     qsa_set_kv_int8_rotate(format == 1);
@@ -348,6 +353,391 @@ void format_case(int format) {
     owner.guard();
     std::printf("PASS borrowed session format %d: sizing, aliases, private state, shared zero, COW/recycling, release\n", format);
 }
+// Streaming fixtures keep the real 20,480-cell resident floor, but narrow model
+// widths so the FP16 authoritative pinned pool is only 16 MiB per QSA layer.
+constexpr int64_t kStreamCells = 32768;
+ModelGeometry stream_geometry() {
+    ModelGeometry g;
+    g.n_layers = 16; g.n_embd = 256; g.n_head = 4; g.n_head_kv = 1; g.head_dim = 128;
+    g.idx_q_heads = 1; g.idx_key_dim = 64; g.hc_lr = 32;
+    g.ssm_state_size = 16; g.ssm_k_heads = 2; g.ssm_v_heads = 2;
+    g.ssm_conv_channels = 96; g.ssm_value_dim = 32; g.n_ff = 256;
+    return g;
+}
+struct DeviceQsa {
+    QsaState state;
+    void* arena = nullptr;
+    uint64_t bytes = 0, used = 0;
+    DeviceQsa() = default;
+    DeviceQsa(const DeviceQsa&) = delete;
+    DeviceQsa& operator=(const DeviceQsa&) = delete;
+    ~DeviceQsa() {
+        if (state.owns_rope) strata::kernels::rope_table_release(state.cos_tab);
+        if (state.host_step) cudaFreeHost(state.host_step);
+        if (state.host_pos) cudaFreeHost(state.host_pos);
+        if (state.kv_host_arena) cudaFreeHost(state.kv_host_arena); // owner only, exactly once
+        if (arena) cudaFree(arena);
+    }
+    void init(const ModelGeometry& g, int64_t cells, int64_t ring, const QsaState* rope,
+              const QsaState* owner = nullptr) {
+        bytes = qsa_state_bytes(g, cells, rope == nullptr, ring, owner);
+        require(bytes != 0, "nonzero streamed/private QSA size");
+        checked(cudaMalloc(&arena, size_t(bytes) + kGuard), "allocate streamed/private QSA arena");
+        fill({arena, size_t(bytes) + kGuard}, 0xa5);
+        used = qsa_state_init(g, cells, arena, state, rope, ring, owner);
+        require(used != 0 && used <= bytes, "streamed/private QSA fits sized arena");
+        if (owner || (state.kv_mode == 1 && state.shared_kv))
+            require(used == bytes, "streamed owner/borrowed QSA has exact aligned sizing");
+        uniform({static_cast<uint8_t*>(arena) + bytes, kGuard}, 0xa5, "streamed/private QSA end guard");
+    }
+};
+std::vector<Span> host_pools(const QsaState& q, const ModelGeometry& g) {
+    QsaState host = q;
+    host.k_pool = q.host.k_pool; host.v_pool = q.host.v_pool;
+    host.k_q = q.host.k_q; host.v_q = q.host.v_q;
+    host.k_scale = q.host.k_scale; host.v_scale = q.host.v_scale;
+    host.k_q4 = q.host.k_q4; host.v_q4 = q.host.v_q4;
+    return pools(host, g);
+}
+std::vector<Span> clock_spans(const QsaState& q) {
+    const size_t slots = size_t(q.map.n_slots) * sizeof(int32_t);
+    return {{q.map.page_table, size_t(q.map.n_blocks) * sizeof(int32_t)},
+        {q.map.slot_block, slots}, {q.map.slot_stamp, slots}, {q.map.slot_ref, slots},
+        {q.map.miss_block, slots}, {q.map.miss_slot, slots},
+        {q.map.ctl, size_t(strata::kernels::kKvCtlInts) * sizeof(int32_t)}};
+}
+void write_int(const int32_t* table, size_t at, int32_t value) {
+    checked(cudaMemcpy(const_cast<int32_t*>(table) + at, &value, sizeof(value), cudaMemcpyHostToDevice),
+            "write allocation-time mapping binding");
+}
+void ints(const int32_t* table, const std::vector<int32_t>& expected, const char* label) {
+    std::vector<int32_t> actual(expected.size());
+    checked(cudaMemcpy(actual.data(), table, actual.size() * sizeof(int32_t), cudaMemcpyDeviceToHost),
+            "read allocation-time mapping binding");
+    require(actual == expected, label);
+}
+void stream_bindings(const QsaState& q) {
+    require(q.kv_mode == 1 && q.shared_kv && q.host.present(), "allocation immediately marks unified-stream state");
+    require(q.page_table && q.host.logical_pages && q.map.page_table &&
+            q.page_table != q.host.logical_pages && q.page_table != q.map.page_table &&
+            q.host.logical_pages != q.map.page_table, "read, backing and global residency tables are distinct");
+    require(q.host.resident_pages == q.map.page_table && q.host.n_logical_pages == q.n_pages &&
+            q.host.n_backing_pages == q.map.n_blocks && q.host.n_resident_slots == q.n_slots,
+            "fixed writer bindings and capacities established before capture");
+    const std::vector<int32_t> empty(size_t(q.n_pages), -1);
+    ints(q.page_table, empty, "private GPU read view initially unmapped");
+    ints(q.host.logical_pages, empty, "private backing view initially unmapped");
+    require(q.shared_page_table == empty, "CPU mirror initially unmapped backing IDs");
+}
+void stream_rejections(const ModelGeometry& g, const QsaState& owner) {
+    auto reject = [&](const QsaState& bad, const char* label) {
+        QsaState destination;
+        require(qsa_state_bytes(g, kStreamCells, true, 0, &bad) == 0, label);
+        require(qsa_state_init(g, kStreamCells, nullptr, destination, nullptr, 0, &bad) == 0 &&
+                !destination.host_step && !destination.kv_host_arena, "invalid stream borrow rejected before allocation");
+    };
+    { auto bad = owner; bad.shared_kv = false; reject(bad, "unmarked streamed owner rejected"); }
+    { auto bad = owner; bad.page_table = nullptr; reject(bad, "missing private GPU read view rejected"); }
+    { auto bad = owner; bad.host.v_pool = nullptr; bad.host.v_q = nullptr; bad.host.v_q4 = nullptr;
+      reject(bad, "incomplete authoritative host payload rejected"); }
+    { auto bad = owner; bad.host.logical_pages = nullptr; reject(bad, "legacy/identity streamed owner rejected"); }
+    { auto bad = owner; bad.host.resident_pages = nullptr; reject(bad, "missing global writer binding rejected"); }
+    { auto bad = owner; bad.map.page_table = bad.page_table; reject(bad, "aliased global/read table rejected"); }
+    { auto bad = owner; bad.host.n_backing_pages = 0; reject(bad, "missing backing capacity rejected"); }
+    { auto bad = owner; bad.host.n_resident_slots = 0; reject(bad, "missing resident capacity rejected"); }
+    { auto bad = owner; bad.map.slot_ref = nullptr; reject(bad, "incomplete global CLOCK map rejected"); }
+    { auto bad = owner; bad.kv_hybrid = true; reject(bad, "hybrid streaming borrower rejected"); }
+    qsa_set_kv_resident(qsa_kv_resident_min() + 4);
+    reject(owner, "different resident slot capacity rejected");
+    qsa_set_kv_resident(0);
+    reject(owner, "different requested residency mode rejected");
+    qsa_set_kv_resident(1);
+    require(qsa_state_bytes(g, kStreamCells, true, 16, &owner) == 0, "streaming borrowing never applies to MTP ring");
+}
+void mtp_ring_boundaries() {
+    static_assert(mtp_kv_ring_cells(32768, 65536, 4) == 32848, "MTP ring helper is constexpr");
+    struct Case { int64_t window, max_cells; int max_t; int64_t expected; };
+    // Literal expectations test the production helper, not a copied ternary.
+    constexpr Case cases[] = {
+        {-1, 65536, 4, -1},
+        {0, 65536, 1, -1},
+        {0, 65536, 8, -1},
+        {65536, 65536, 1, -1},
+        {65536, 65536, 8, -1},
+        {65537, 65536, 4, -1},
+        {32768, 32768, 4, -1}, // default window equals context
+        {32768, 16384, 4, -1}, // default window exceeds context
+        {32768, 65536, 1, 32836}, // default window remains bounded
+        {32768, 65536, 4, 32848},
+        {32768, 65536, 8, 32864},
+        {1, 65536, 1, 69},
+        {65535, 65536, 8, 65631}, // retain write-ahead padding; do not clamp to context
+    };
+    for (const auto& c : cases)
+        require(mtp_kv_ring_cells(c.window, c.max_cells, c.max_t) == c.expected,
+                "production MTP ring helper preserves full-context/bounded-window boundaries and max_t padding");
+}
+void private_mtp(const ModelGeometry& g, const QsaState& rope) {
+    for (bool ring : {false, true}) {
+        qsa_set_kv_resident(ring ? 1 : 0);
+        const int64_t cells = ring ? kStreamCells : kCells;
+        qsa_set_kv_unified(false);
+        DeviceQsa legacy; legacy.init(g, cells, 16, &rope);
+        qsa_set_kv_unified(true);
+        DeviceQsa opted; opted.init(g, cells, 16, &rope);
+        require(legacy.bytes == opted.bytes && legacy.used == opted.used,
+                "unified opt-in does not change private MTP sizing/init");
+        require(read({legacy.arena, size_t(legacy.bytes)}) == read({opted.arena, size_t(opted.bytes)}),
+                "private MTP arena byte-identical before zero with opt-in off/on");
+        for (auto* q : {&legacy.state, &opted.state}) {
+            require(!q->shared_kv && q->shared_page_table.empty() && !q->host.logical_pages &&
+                    !q->host.resident_pages, "private MTP retains null legacy writer bindings");
+            require(q->kv_mode == (ring ? 2 : 0) && q->map.page_table == q->page_table,
+                    "private MTP retains identity/ring allocation and legacy map alias");
+            std::vector<int32_t> expected(size_t(q->n_pages));
+            for (int64_t i = 0; i < q->n_pages; ++i) expected[size_t(i)] = int32_t(ring ? i % q->n_slots : i);
+            ints(q->page_table, expected, "private MTP table retains identity or modulo ring");
+            require(q->cos_tab == rope.cos_tab && !q->owns_rope, "private MTP still borrows main RoPE only");
+            require(!ring || (q->kv_host_arena && q->kv_host_arena != rope.kv_host_arena),
+                    "private MTP owns independent authoritative pinned storage");
+            qsa_state_zero(*q, g, nullptr);
+        }
+        sync();
+        require(read({legacy.arena, size_t(legacy.bytes)}) == read({opted.arena, size_t(opted.bytes)}),
+                "private MTP arena byte-identical after zero with opt-in off/on");
+    }
+    qsa_set_kv_resident(1);
+}
+void full_context_mtp(const ModelGeometry& g, const QsaState& main) {
+    require(main.kv_mode == 1 && main.shared_kv && qsa_kv_unified() && qsa_kv_resident() > 0,
+            "full-context MTP fixture retains unified-stream main allocation settings");
+    const auto pinned = qsa_kv_host_bytes();
+    const auto main_view = read({main.page_table, size_t(main.n_pages) * sizeof(int32_t)});
+    const auto backing = read({const_cast<int32_t*>(main.host.logical_pages), size_t(main.n_pages) * sizeof(int32_t)});
+    const auto mirror = main.shared_page_table;
+    std::vector<std::vector<uint8_t>> clock;
+    for (auto p : clock_spans(main)) clock.push_back(read(p));
+    QsaState main_copy = main; // Read-only pointer view; QsaState itself does not free payloads.
+    const auto main_planes = pools(main_copy, g);
+    std::vector<std::vector<uint8_t>> active;
+    for (auto p : main_planes) active.push_back(read(page(p, 2))); // seeded backing 17 remains active in slot 2
+
+    // MtpDrafter::load uses -1 for window 0 or >= max_cells. Unlike ring 0,
+    // -1 must force private mode 0 without disabling the main stream settings.
+    DeviceQsa draft; draft.init(g, kStreamCells, -1, &main);
+    auto& q = draft.state;
+    require(q.kv_mode == 0 && !q.shared_kv && q.shared_page_table.empty(), "full-context MTP is private resident, not an unpublished streamed owner");
+    require(q.n_slots == q.n_pages && q.max_cells == kStreamCells, "full-context MTP retains full requested physical capacity");
+    require(q.kv_int8 == main.kv_int8 && q.kv_q4 == main.kv_q4 && !q.kv_hybrid,
+            "full-context MTP preserves the configured whole K/V format");
+    require(!q.host.present() && !q.kv_host_arena && !q.host.logical_pages && !q.host.resident_pages &&
+            !q.map.slot_block && !q.map.ctl, "full-context MTP needs no pinned backing or CLOCK/resolver state");
+    require(q.page_table != main.page_table && q.page_table != main.map.page_table && q.map.page_table == q.page_table,
+            "full-context MTP reader table is private identity storage");
+    require(q.cos_tab == main.cos_tab && q.sin_tab == main.sin_tab && !q.owns_rope,
+            "full-context MTP borrows only main RoPE");
+    require(q.idx_tail != main.idx_tail && q.idx_dead != main.idx_dead && q.idx_pooled != main.idx_pooled,
+            "full-context MTP indexer allocation is private");
+    const auto planes = pools(q, g);
+    for (size_t i = 0; i < planes.size(); ++i) {
+        require(planes[i].ptr != main_planes[i].ptr, "full-context MTP payload plane does not alias main GPU slots");
+        fill({planes[i].ptr, planes[i].bytes * size_t(q.n_slots)}, 0x7d);
+    }
+    const auto shape = strata::kernels::qsa_real_shapes();
+    fill({q.idx_tail, size_t((shape.idx_block - 1) * g.idx_key_dim) * sizeof(float)}, 0x7d);
+    fill({q.idx_dead, size_t(g.idx_key_dim) * sizeof(float)}, 0x7d);
+    fill({q.idx_pooled, size_t(q.idx_pooled_rows * g.idx_key_dim) * sizeof(float)}, 0x7d);
+    std::vector<int32_t> identity(size_t(q.n_pages));
+    for (int64_t i = 0; i < q.n_pages; ++i) identity[size_t(i)] = int32_t(i);
+    ints(q.page_table, identity, "full-context MTP starts with identity addressing");
+    qsa_state_zero(q, g, nullptr); sync();
+    for (auto p : planes) uniform({p.ptr, p.bytes * size_t(q.n_slots)}, 0, "full-context MTP zero clears its private physical K/V and scales");
+    uniform({q.idx_tail, size_t((shape.idx_block - 1) * g.idx_key_dim) * sizeof(float)}, 0, "full-context MTP zero clears private tail");
+    uniform({q.idx_dead, size_t(g.idx_key_dim) * sizeof(float)}, 0, "full-context MTP zero clears private spare key");
+    uniform({q.idx_pooled, size_t(q.idx_pooled_rows * g.idx_key_dim) * sizeof(float)}, 0, "full-context MTP zero clears private pooled indexer");
+    ints(q.page_table, identity, "full-context MTP zero preserves identity addressing");
+    uniform({static_cast<uint8_t*>(draft.arena) + draft.bytes, kGuard}, 0xa5, "full-context MTP zero preserves arena end guard");
+    const auto spans = clock_spans(main);
+    for (size_t i = 0; i < spans.size(); ++i) require(read(spans[i]) == clock[i], "full-context MTP zero preserves main global CLOCK/cache mapping");
+    for (size_t i = 0; i < main_planes.size(); ++i) require(read(page(main_planes[i], 2)) == active[i], "full-context MTP zero preserves main active GPU payload");
+    require(read({main.page_table, size_t(main.n_pages) * 4}) == main_view && main.shared_page_table == mirror &&
+            read({const_cast<int32_t*>(main.host.logical_pages), size_t(main.n_pages) * 4}) == backing,
+            "full-context MTP allocation/zero leaves main reader/backing views untouched");
+    require(qsa_kv_host_bytes() == pinned && qsa_kv_unified() && qsa_kv_resident() > 0,
+            "full-context MTP neither pins a stream pool nor disables main streaming globally");
+}
+struct DeviceSelection {
+    int32_t* step = nullptr;
+    DeviceSelection() {
+        checked(cudaMalloc(reinterpret_cast<void**>(&step), 32), "allocate resolve selection");
+        fill({step, 32}, 0);
+        write_int(step, strata::kernels::kStepNKv, 1);
+        write_int(step, strata::kernels::kStepWidth, 1);
+        write_int(step + strata::kernels::kStepCount, 0, 0);
+    }
+    ~DeviceSelection() { if (step) cudaFree(step); }
+};
+void resolve_stream(SessionState& owner, SessionState& borrower, const ModelGeometry& g) {
+    DeviceSelection selection;
+    const int32_t* ids = selection.step + strata::kernels::kStepCount;
+    for (int64_t j = 0; j < owner.qsa_alloc; ++j) {
+        auto& o = owner.qsa_states[owner.qsa_ord0 + j];
+        auto& b = borrower.qsa_states[borrower.qsa_ord0 + j];
+        // Reader tables can be stale; the global backing cache, never another
+        // sequence's view, decides residency. Hit 17, then miss 19 at logical 0.
+        b.shared_page_table[0] = 17; write_int(b.host.logical_pages, 0, 17);
+        qsa_kv_resolve(b, g, ids, selection.step, 1, 1, nullptr); sync();
+        auto view = std::vector<int32_t>(size_t(b.n_pages), -1); view[0] = 2;
+        ints(b.page_table, view, "resolve materializes private view from shared backing cache hit");
+        b.shared_page_table[0] = 19; write_int(b.host.logical_pages, 0, 19);
+        qsa_kv_resolve(b, g, ids, selection.step, 1, 1, nullptr); sync();
+        std::vector<int32_t> global(size_t(o.map.n_blocks));
+        checked(cudaMemcpy(global.data(), o.map.page_table, global.size() * 4, cudaMemcpyDeviceToHost), "read resolved global cache");
+        require(global[17] == 2 && global[19] >= 0 && global[19] < o.n_slots && global[19] != 2,
+                "resolve of borrower miss preserves other sequence's active cache page");
+        view[0] = global[19]; ints(b.page_table, view, "resolve publishes borrower backing ID as GPU slot");
+        std::vector<int32_t> controls(strata::kernels::kKvCtlInts);
+        checked(cudaMemcpy(controls.data(), o.map.ctl, controls.size() * 4, cudaMemcpyDeviceToHost), "read resolve status");
+        require(controls[3] == 0, "mapped resolve succeeds without overflow");
+        for (auto p : pools(o, g)) {
+            uniform(page(p, 2), 0x6b, "resolve never overwrites other sequence's active GPU payload");
+            uniform(page(p, global[19]), 0x5d, "resolve copies correct authoritative backing page to GPU");
+        }
+        std::vector<std::vector<uint8_t>> before;
+        for (auto p : clock_spans(o)) before.push_back(read(p));
+        qsa_state_zero(b, g, nullptr); sync();
+        const auto spans = clock_spans(o);
+        for (size_t i = 0; i < spans.size(); ++i) require(read(spans[i]) == before[i], "zero preserves populated resolve CLOCK state");
+        ints(b.page_table, view, "zero preserves resolved borrower GPU read view");
+        ints(b.host.logical_pages, b.shared_page_table, "zero preserves resolved borrower backing mapping");
+    }
+}
+void streaming_case(int format) {
+    const auto g = stream_geometry();
+    configure(format); qsa_set_kv_resident(1); qsa_set_kv_unified(true);
+    const uint64_t pinned_before = qsa_kv_host_bytes();
+    DeviceSession owner; owner.init(g, nullptr, kStreamCells);
+    const auto& primary = owner.state.qsa_states[owner.state.qsa_primary()];
+    require(primary.n_slots == qsa_kv_resident_min() / 4 && primary.n_pages == kStreamCells / 4,
+            "shared-stream has one bounded GPU cache and full backing capacity");
+    auto shape = strata::kernels::qsa_real_shapes();
+    shape.n_head_kv = g.n_head_kv; shape.head_dim = g.head_dim;
+    const uint64_t pin_per_layer = uint64_t(primary.n_pages) * strata::kernels::kv_block_bytes(shape, qsa_kv_format(primary)) + 4 * 256;
+    require(qsa_kv_host_bytes() - pinned_before == uint64_t(owner.state.qsa_alloc) * pin_per_layer,
+            "authoritative pinned payload charged once per owner layer");
+    std::vector<std::vector<std::vector<uint8_t>>> clock;
+    for (int64_t j = 0; j < owner.state.qsa_alloc; ++j) {
+        auto& q = owner.state.qsa_states[owner.state.qsa_ord0 + j];
+        stream_bindings(q);
+        require(q.kv_host_arena, "owner retains raw pinned allocation handle for external cleanup");
+        ints(q.map.page_table, std::vector<int32_t>(size_t(q.map.n_blocks), -1), "owner resets global residency once");
+        ints(q.map.slot_block, std::vector<int32_t>(size_t(q.n_slots), -1), "owner resets CLOCK slot ownership once");
+        ints(q.map.ctl, std::vector<int32_t>(strata::kernels::kKvCtlInts, 0), "owner resets CLOCK controls once");
+        q.shared_page_table[0] = 17;
+        write_int(q.host.logical_pages, 0, 17); write_int(q.page_table, 0, 2);
+        write_int(q.map.page_table, 17, 2); write_int(q.map.slot_block, 2, 17);
+        write_int(q.map.slot_stamp, 2, 5); write_int(q.map.slot_ref, 2, 1);
+        write_int(q.map.ctl, 0, 5); write_int(q.map.ctl, 1, 3);
+        fill({q.map.miss_block, size_t(q.n_slots) * 4}, 0x53);
+        fill({q.map.miss_slot, size_t(q.n_slots) * 4}, 0x53);
+        for (auto p : pools(q, g)) fill({p.ptr, p.bytes * size_t(q.n_slots)}, 0x6b);
+        for (auto p : host_pools(q, g)) fill({p.ptr, p.bytes * size_t(q.map.n_blocks)}, 0x5d);
+        clock.emplace_back();
+        for (auto p : clock_spans(q)) clock.back().push_back(read(p));
+    }
+    const uint64_t pinned_owner = qsa_kv_host_bytes();
+    {
+        // Borrowing depends on the owner's explicit allocation, not today's opt-in flag.
+        qsa_set_kv_unified(false);
+        DeviceSession borrower; borrower.init(g, &owner.state, kStreamCells);
+        qsa_set_kv_unified(true);
+        require(qsa_kv_host_bytes() == pinned_owner, "borrower pins no duplicate authoritative host pool");
+        require(borrower.bytes < owner.bytes, "borrower omits GPU payload/global map/RoPE storage");
+        for (int64_t j = 0; j < owner.state.qsa_alloc; ++j) {
+            const auto& o = owner.state.qsa_states[owner.state.qsa_ord0 + j];
+            auto& b = borrower.state.qsa_states[borrower.state.qsa_ord0 + j];
+            stream_bindings(b);
+            require(!b.kv_host_arena && !b.owns_rope && b.cos_tab == o.cos_tab && b.sin_tab == o.sin_tab,
+                    "borrower owns no payload handle or RoPE registration");
+            require(b.page_table != o.page_table && b.host.logical_pages != o.host.logical_pages,
+                    "each sequence has private read/backing device tables");
+            require(b.map.page_table == o.map.page_table && b.map.slot_block == o.map.slot_block &&
+                    b.map.slot_stamp == o.map.slot_stamp && b.map.slot_ref == o.map.slot_ref &&
+                    b.map.miss_block == o.map.miss_block && b.map.miss_slot == o.map.miss_slot && b.map.ctl == o.map.ctl,
+                    "borrower aliases entire global CLOCK cache");
+            require(b.kv_int8 == o.kv_int8 && b.kv_q4 == o.kv_q4 && b.kv_rot == o.kv_rot && b.n_slots == o.n_slots,
+                    "streaming borrower inherits format and resident capacity");
+            const auto gpu_o = pools(owner.state.qsa_states[owner.state.qsa_ord0 + j], g), gpu_b = pools(b, g);
+            const auto host_o = host_pools(o, g), host_b = host_pools(b, g);
+            for (size_t i = 0; i < gpu_o.size(); ++i) {
+                require(gpu_o[i].ptr == gpu_b[i].ptr && host_o[i].ptr == host_b[i].ptr, "all GPU/host payload planes alias owner");
+                require(!borrower.contains(gpu_b[i].ptr, gpu_b[i].bytes), "borrower arena contains no GPU payload");
+            }
+            require(borrower.contains(b.page_table, size_t(b.n_pages) * 4) &&
+                    borrower.contains(b.host.logical_pages, size_t(b.n_pages) * 4), "both private tables carved from borrower arena");
+            b.shared_page_table[0] = 19; write_int(b.host.logical_pages, 0, 19);
+        }
+        dirty_private(owner.state, g, 0x37);
+        reset_private(borrower.state, g);
+        for (auto p : private_spans(owner.state, g)) uniform(p, 0x37, "stream borrower zero preserves owner private state");
+        reset_private(owner.state, g);
+        for (int64_t j = 0; j < owner.state.qsa_alloc; ++j) {
+            auto& o = owner.state.qsa_states[owner.state.qsa_ord0 + j];
+            const auto& b = borrower.state.qsa_states[borrower.state.qsa_ord0 + j];
+            auto read_view = std::vector<int32_t>(size_t(o.n_pages), -1); read_view[0] = 2;
+            ints(o.page_table, read_view, "shared zero preserves owner's cached read view");
+            ints(o.host.logical_pages, o.shared_page_table, "shared zero preserves owner's backing ownership");
+            ints(b.page_table, std::vector<int32_t>(size_t(b.n_pages), -1), "shared zero preserves borrower read view");
+            ints(b.host.logical_pages, b.shared_page_table, "shared zero preserves borrower backing ownership");
+            const auto spans = clock_spans(o);
+            for (size_t i = 0; i < spans.size(); ++i) require(read(spans[i]) == clock[size_t(j)][i],
+                    "borrow init and shared zero never reset global residency/CLOCK");
+            for (auto p : pools(o, g)) uniform({p.ptr, p.bytes * size_t(o.n_slots)}, 0x6b, "shared zero preserves other sequence GPU cache payload");
+            for (auto p : host_pools(o, g)) uniform({p.ptr, p.bytes * size_t(o.map.n_blocks)}, 0x5d, "shared zero preserves authoritative pinned payload");
+        }
+        stream_rejections(g, primary);
+        resolve_stream(owner.state, borrower.state, g);
+        borrower.guard(); owner.guard();
+        session_release(borrower.state);
+        require(strata::kernels::rope_table_for(strata::kernels::rope_scaling()).cos == primary.cos_tab,
+                "stream borrower release never unregisters owner RoPE");
+    }
+    // Exercise non-16-byte region sizes and a shorter logical borrower while
+    // retaining the owner's full backing capacity and identical resident cache.
+    {
+        auto odd = g; odd.n_head = 3; odd.idx_key_dim = 65;
+        DeviceQsa exact; exact.init(odd, kStreamCells - 1, 0, &primary);
+        const auto before = qsa_kv_host_bytes();
+        DeviceQsa shorter; shorter.init(odd, qsa_kv_resident_min() + 1, 0, nullptr, &exact.state);
+        require(shorter.state.host.n_logical_pages < shorter.state.host.n_backing_pages &&
+                shorter.state.map.page_table == exact.state.map.page_table, "shorter logical borrower keeps global backing capacity");
+        require(qsa_kv_host_bytes() == before, "odd-sized borrower still pins no payload copy");
+    }
+    // A non-unified mode-1 owner must remain unborrowable even with opt-in on.
+    qsa_set_kv_unified(false);
+    {
+        DeviceQsa legacy; legacy.init(g, kStreamCells, 0, &primary);
+        require(!legacy.state.shared_kv && !legacy.state.host.logical_pages && !legacy.state.host.resident_pages &&
+                legacy.state.map.page_table == legacy.state.page_table, "legacy stream layout unchanged");
+        qsa_set_kv_unified(true);
+        require(qsa_state_bytes(g, kStreamCells, false, 0, &legacy.state) == 0, "legacy streamed storage cannot be borrowed");
+    }
+    private_mtp(g, primary);
+    full_context_mtp(g, primary);
+    owner.guard();
+    std::printf("PASS shared streaming format %d: exact sizing, private bindings, one pinned/global cache, safe zero, private MTP\n", format);
+}
+void hybrid_stream_rejected() {
+    configure(3); qsa_set_kv_resident(1); qsa_set_kv_unified(true);
+    const auto g = stream_geometry(); const auto before = qsa_kv_host_bytes();
+    QsaState q; SessionState s;
+    require(qsa_state_bytes(g, kStreamCells) == 0 && qsa_state_init(g, kStreamCells, nullptr, q) == 0,
+            "unified K8V4 streaming remains unsupported");
+    require(session_bytes(g, kStreamCells, 10, kLayerLo, kLayerHi) == 0 &&
+            session_init(g, kStreamCells, 10, nullptr, s, kLayerLo, kLayerHi) == 0 && !s.qsa_states,
+            "unsupported unified stream session rejected before carving");
+    require(qsa_kv_host_bytes() == before && !q.kv_host_arena, "hybrid rejection does not pin payload memory");
+}
 } // namespace
 
 int main() {
@@ -363,7 +753,10 @@ int main() {
     setenv("STRATA_ROPE_TABLE", "1", 1);
 #endif
     try {
+        mtp_ring_boundaries();
         for (int format = 0; format < 4; ++format) format_case(format);
+        for (int format = 0; format < 3; ++format) streaming_case(format);
+        hybrid_stream_rejected();
         configure(0);
         std::printf("shared_kv_session_test: %zu checks passed\n", checks);
         return 0;

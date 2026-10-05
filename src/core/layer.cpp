@@ -513,6 +513,7 @@ struct Cursor {    uint8_t* p;    uint64_t used = 0;    template <typename T>   
 namespace {
 // KV streaming (docs/kv-streaming-design.md): 0 keeps every cell in VRAM.
 int64_t g_kv_resident = 0;
+bool g_kv_unified = false;
 uint64_t g_kv_host_bytes = 0;
 
 /// How one state holds its K/V: `mode` as in QsaState::kv_mode, `slots` VRAM pages of `pages` logical ones.
@@ -550,9 +551,24 @@ bool kv_share_valid(const QsaShapes& s, int64_t max_cells, int64_t ring_cells,
         owner.kv_q4 ? owner.k_q4 && owner.v_q4 :
         owner.kv_int8 ? owner.k_q && owner.v_q && owner.k_scale && owner.v_scale :
         owner.k_pool && owner.v_pool;
-    return geometry && pools && owner.cos_tab && owner.sin_tab && max_cells > 0 &&
-        max_cells <= owner.max_cells && owner.n_slots >= p.pages &&
-        owner.kv_mode == 0 && p.mode == 0 && ring_cells <= 0 && !owner.host.present();
+    if (!geometry || !pools || !owner.cos_tab || !owner.sin_tab || max_cells <= 0 ||
+        max_cells > owner.max_cells || ring_cells > 0) return false;
+    if (owner.kv_mode == 0)
+        return p.mode == 0 && owner.n_slots >= p.pages && !owner.host.present();
+    // Merely marking legacy streamed storage shared is not enough: it must have the allocation-time
+    // split between backing ownership, global residency, and sequence-local GPU reader addressing.
+    const bool host_pools = owner.kv_q4 ? owner.host.k_q4 && owner.host.v_q4 :
+        owner.kv_int8 ? owner.host.k_q && owner.host.v_q && owner.host.k_scale && owner.host.v_scale :
+        owner.host.k_pool && owner.host.v_pool;
+    return owner.kv_mode == 1 && p.mode == 1 && ring_cells == 0 && !owner.kv_hybrid &&
+        owner.shared_kv && owner.n_slots == p.slots && host_pools && owner.page_table &&
+        owner.host.logical_pages && owner.host.resident_pages == owner.map.page_table &&
+        owner.map.page_table && owner.map.page_table != owner.page_table &&
+        owner.host.logical_pages != owner.page_table && owner.host.logical_pages != owner.map.page_table &&
+        owner.host.n_logical_pages == owner.n_pages && owner.host.n_backing_pages == owner.map.n_blocks &&
+        owner.map.n_blocks >= p.pages && owner.map.n_slots == p.slots &&
+        owner.host.n_resident_slots == p.slots && owner.map.slot_block && owner.map.slot_stamp &&
+        owner.map.slot_ref && owner.map.miss_block && owner.map.miss_slot && owner.map.ctl;
 }
 
 // Exact private carve for a borrowed state; physical pools and RoPE contribute no arena bytes.
@@ -562,8 +578,23 @@ uint64_t kv_shared_state_bytes(const QsaShapes& s, const KvPlan& p) {
         (uint64_t) s.idx_dim * 4, (uint64_t) p.pooled_rows * s.idx_dim * 4, 4,
         strata::kernels::qsa_step_bytes(), 4, (uint64_t) s.n_head * 4,
     };
-    uint64_t n = 0;
+    uint64_t n = p.mode == 1 ? align_up16((uint64_t) p.pages * 4) : 0; // private backing table
     for (uint64_t v : parts) n += align_up16(v);
+    return n;
+}
+
+uint64_t kv_unified_owner_bytes(const QsaShapes& s, int64_t max_cells, const KvPlan& p, bool with_rope) {
+    // Match each Cursor::take boundary, rather than relying on legacy over-allocation padding.
+    const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;
+    uint64_t n = kv_shared_state_bytes(s, p);
+    if (g_kv_q4) n += 2 * align_up16(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim));
+    else if (g_kv_int8) {
+        n += 2 * align_up16(rows * s.head_dim);
+        n += 2 * align_up16(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2);
+    } else n += 2 * align_up16(rows * s.head_dim * 2);
+    n += align_up16((uint64_t) p.pages * 4); // global backing -> GPU table
+    n += 5 * align_up16((uint64_t) p.slots * 4) + align_up16(strata::kernels::kKvCtlInts * 4);
+    if (with_rope) n += 2 * align_up16((uint64_t) max_cells * (s.n_rot / 2) * 4);
     return n;
 }
 
@@ -581,6 +612,8 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
 
 void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0; }
 int64_t qsa_kv_resident() { return g_kv_resident; }
+void qsa_set_kv_unified(bool enabled) { g_kv_unified = enabled; }
+bool qsa_kv_unified() { return g_kv_unified; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
@@ -590,6 +623,8 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
     if (share_kv != nullptr)
         return kv_share_valid(s, max_cells, ring_cells, p, *share_kv) ? kv_shared_state_bytes(s, p) : 0;
+    if (g_kv_unified && ring_cells == 0 && p.mode == 1)
+        return g_kv_hybrid ? 0 : kv_unified_owner_bytes(s, max_cells, p, with_rope);
     uint64_t n = 0;
     n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
                        g_kv_int8 || g_kv_hybrid) + 4 * 16;   // K/V pools (the VRAM slots)
@@ -614,10 +649,13 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         share_rope = share_kv;   // even the session's first layer borrows the owner's table
         p.slots = share_kv->n_slots;
     }
+    const bool shared_stream = p.mode == 1 && ring_cells == 0 && (share_kv != nullptr || g_kv_unified);
+    if (shared_stream && share_kv == nullptr && g_kv_hybrid) return 0;
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
     st.kv_shapes = s;
-    st.shared_kv = share_kv != nullptr;
+    st.shared_kv = share_kv != nullptr || shared_stream;
+    st.kv_host_arena = nullptr;
     st.kv_int8 = g_kv_int8 && !g_kv_q4;
     st.kv_q4 = g_kv_q4;
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
@@ -668,11 +706,23 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.page_table = c.take<int32_t>((uint64_t) pages);
     st.n_pages = pages;
     st.max_cells = max_cells;
+    st.host = strata::kernels::KvHostPools{};
     st.map = strata::kernels::KvStreamMap{};
     st.map.page_table = st.page_table;
     st.map.n_blocks = pages;
     st.map.n_slots = p.slots;
-    if (p.mode == 1) {
+    if (shared_stream) {
+        if (share_kv != nullptr) {
+            st.host = share_kv->host; // payloads/global residency alias, logical binding replaced below
+            st.map = share_kv->map;
+        } else st.map.page_table = c.take<int32_t>((uint64_t) pages);
+        st.host.logical_pages = c.take<int32_t>((uint64_t) pages);
+        st.host.resident_pages = st.map.page_table;
+        st.host.n_logical_pages = pages;
+        st.host.n_backing_pages = st.map.n_blocks;
+        st.host.n_resident_slots = p.slots;
+    }
+    if (p.mode == 1 && share_kv == nullptr) {
         st.map.slot_block = c.take<int32_t>((uint64_t) p.slots);
         st.map.slot_stamp = c.take<int32_t>((uint64_t) p.slots);
         st.map.slot_ref = c.take<int32_t>((uint64_t) p.slots);
@@ -704,9 +754,9 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         return 0;   // the caller sees a zero byte count; a half-built state is worse than none
     }
     st.host_step[strata::kernels::kStepCount] = 0;
-    // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout
-    st.host = strata::kernels::KvHostPools{};
-    if (p.mode != 0) {
+    // KV streaming: one authoritative backing pool per layer. A unified borrower already aliases it;
+    // only the owner pins/charges payload storage. Do not overwrite allocation-time translation bindings.
+    if (p.mode != 0 && share_kv == nullptr) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;
@@ -720,6 +770,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                                  (double) g_kv_host_bytes / 1073741824.0);
             return 0;
         }
+        st.kv_host_arena = h; // raw host handle, never copied to a borrower or freed by session_release
         g_kv_host_bytes += bytes;
         Cursor hc{d};
         if (st.kv_q4) {
@@ -751,9 +802,14 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     }
     // the page table starts as the IDENTITY, which is the simplest legal mapping and what a caller that does
     // not page at all wants; a streamed state starts with nothing resident, a ring at `block % n_slots`.
-    if (share_kv != nullptr) {
+    if (st.shared_kv) {
         st.shared_page_table.assign((size_t) pages, -1);
         cudaMemcpy(st.page_table, st.shared_page_table.data(), (size_t) pages * 4, cudaMemcpyHostToDevice);
+        if (shared_stream) {
+            cudaMemcpy(const_cast<int32_t*>(st.host.logical_pages), st.shared_page_table.data(),
+                       (size_t) pages * 4, cudaMemcpyHostToDevice);
+            if (share_kv == nullptr) strata::kernels::kv_stream_reset(st.map, nullptr); // once, owner only
+        }
     } else if (p.mode == 0) {
         std::vector<int32_t> tab((size_t) pages);
         for (int64_t i = 0; i < pages; ++i) tab[(size_t) i] = (int32_t) i;

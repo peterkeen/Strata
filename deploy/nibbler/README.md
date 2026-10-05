@@ -1,12 +1,19 @@
 # Nibbler branch deployment
 
-Local branch: `nibbler/prefill-and-conversation-cache`, based on upstream main
-`99f3dbd0b21d1401b3769e0c0d963913607f380b`. No GitHub fork/push required.
+Branch: `feature/multi-slot-unified-kv`, incorporating the original
+`nibbler/prefill-and-conversation-cache` deployment and upstream batch serving.
+The full-resident milestone was merged in fork PR #1; the streamed continuation
+is tracked separately. Detailed evidence: [unified KV work log](../../docs/MULTI_SLOT_UNIFIED_KV.md).
 
 This hardware-specific config retains the installed IQ3_S model, sharp tokenizer,
 262144 context, INT8 KV with 32768 resident cells, MTP and GPU vision. It enables:
 
 - Native fused prompt experts: `STRATA_PF_FUSED=1`.
+- Two serving slots (`parallel: 2`) with `--kv-unified`: one aggregate 262144-cell
+  host backing pool and one 32768-cell GPU cache per attention layer. The logical
+  limit remains 262144 per request; it is not divided between slots.
+- A 2048 MiB VRAM reserve for private state, prefill and lazy graph headroom.
+  The old 700 MiB reserve failed a three-slot graph-instantiation probe.
 - A 4096 MiB host conversation cache, at most four parked entries, and a 4096 MiB
   physical RAM floor. The budget is not four guaranteed full-context slots.
 
@@ -69,7 +76,16 @@ intentionally; the external launcher expects this branch's deployment files.
 
 ## Rollback
 
-Pre-change binary, config and launcher were saved in
+For this shared-streaming rollout, restore the immediately preceding binary and
+both tracked/runtime configs from `/data/llm/Strata-tests/multislot-20261005/`.
+The launcher refreshes the tracked config on each start: restoring only the
+runtime JSON is insufficient. Keep `config.shared-settings.json` unchanged.
+Unload/reload only `qwen3.8-flash-next-iq3_s` through the running
+`llama-swap.service`; do not start the inactive standalone `strata.service`.
+Exact rollout hashes and restore commands are recorded in the unified KV work
+log after deployment.
+
+For the older fused-prefill rollout, pre-change binary, config and launcher were saved in
 `/data/llm/Strata-tests/implementation-20261003/`:
 `strata.before`, `production-config.before.json`, `launcher.before`.
 
@@ -83,5 +99,7 @@ Pre-change binary, config and launcher were saved in
 
 Validation evidence and limitations are recorded in `validation.md` when deployment
 is completed. Performance/quality probes are local smoke gates, not proof that every
-model workload has unchanged quality. No true parallel serving or shared KV pool is
-introduced by this branch.
+model workload has unchanged quality. Shared streaming removes replicated main
+attention KV, not private recurrent/indexer/PLE state or captured graphs. Parallel
+windows retain upstream's restrictions on MTP drafts and penalties; promotion to
+solo can use stale MTP proposal history, which target verification checks.

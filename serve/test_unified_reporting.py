@@ -12,19 +12,19 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, StrataEngine, serve
+from serve.server import ByteTokenizer, MockEngine, Service, StrataEngine, serve
 from serve.test_parallel import FAKE_BATCH
 
 
 class UnifiedReporting(unittest.TestCase):
-    def start(self, requested=0, fit=None, info=None):
+    def start(self, requested=0, fit=None, info=None, max_context=4096):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
         # Extra startup INFO lines exercise the real parser, not just a hand-populated engine.info.
         metadata = "INFO " + " ".join(f"{k}={v}" for k, v in (info or {}).items())
         script.write_text(FAKE_BATCH.replace('print("READY 4096 stop", flush=True)',
-                                            f'print({metadata!r}, flush=True)\nprint("READY 4096 stop", flush=True)'),
+                                            f'print({metadata!r}, flush=True)\nprint("READY {max_context} stop", flush=True)'),
                           encoding="utf-8")
         args = ["--batch", str(requested)] if requested else []
         if fit is not None:
@@ -70,8 +70,19 @@ class UnifiedReporting(unittest.TestCase):
             self.svc.status.update(busy=False)
         self.assert_slots([False])   # queued requests alone are not processing
         props = self.get("/props")
-        self.assertNotIn("kv_unified", props)
-        self.assertNotIn("kv_capacity_cells", props)
+        for key in ("kv_unified", "kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells"):
+            self.assertNotIn(key, props)
+
+    def test_fake_engine_without_info_has_no_capacity_metadata(self):
+        self.start()
+        fake = MockEngine(ByteTokenizer(), "ok", max_context=262144)
+        with mock.patch.object(self.svc, "engine", fake):
+            props = self.get("/props")
+            self.assertEqual(props["total_slots"], 1)
+            self.assertEqual(props["default_generation_settings"]["n_ctx"], 262144)
+            self.assertEqual(self.get("/slots"), [{"id": 0, "n_ctx": 262144, "is_processing": False}])
+            for key in ("kv_unified", "kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells"):
+                self.assertNotIn(key, props)
 
     def test_supported_multi_slots_and_per_slot_activity(self):
         self.start(requested=8, fit=3)
@@ -118,18 +129,54 @@ class UnifiedReporting(unittest.TestCase):
         self.assertEqual(self.engine.info["kv_unified"], 1)
         self.assertEqual(self.engine.info["kv_capacity_cells"], 4096)
 
+    def test_unified_streaming_keeps_logical_backing_and_gpu_capacity_distinct(self):
+        info = {"kv_unified": 1, "kv_capacity_cells": 262144, "kv_resident": 32768,
+                "kv_resident_capacity_cells": 32768}
+        self.start(requested=4, fit=2, info=info, max_context=262144)
+        self.assert_slots([False, False])
+        props = self.get("/props")
+        self.assertIs(props["kv_unified"], True)
+        for key, value in info.items():
+            self.assertEqual(self.engine.info[key], value)
+            self.assertEqual(props[key], value)
+        self.assertEqual(props["default_generation_settings"]["n_ctx"], 262144)
+        self.assertEqual([slot["n_ctx"] for slot in self.get("/slots")], [262144, 262144])
+
+    def test_unified_fully_resident_reports_actual_rounded_capacity(self):
+        self.start(requested=2, max_context=4097,
+                   info={"kv_unified": 1, "kv_capacity_cells": 4100, "kv_resident": 0,
+                         "kv_resident_capacity_cells": 4100})
+        self.assert_slots([False, False])
+        props = self.get("/props")
+        self.assertEqual(props["default_generation_settings"]["n_ctx"], 4097)
+        self.assertEqual(props["kv_capacity_cells"], 4100)
+        self.assertEqual(props["kv_resident"], 0)
+        self.assertEqual(props["kv_resident_capacity_cells"], 4100)
+
     def test_non_unified_metadata_is_not_treated_as_shared(self):
-        self.start(requested=2, info={"kv_unified": 0, "kv_capacity_cells": 4096})
+        self.start(requested=2, max_context=262144,
+                   info={"kv_unified": 0, "kv_capacity_cells": 0, "kv_resident": 32768})
         self.assert_slots([False, False])
         props = self.get("/props")
         self.assertIs(props["kv_unified"], False)
-        self.assertEqual(props["kv_capacity_cells"], 4096)
+        self.assertEqual(props["kv_capacity_cells"], 0)
+        self.assertEqual(props["kv_resident"], 32768)
+        self.assertNotIn("kv_resident_capacity_cells", props)  # don't guess it from residency or slots
+
+    def test_legacy_fully_resident_zero_is_exposed_without_other_metadata(self):
+        self.start(info={"kv_resident": 0})
+        self.assert_slots([False])
+        props = self.get("/props")
+        self.assertEqual(props["kv_resident"], 0)
+        for key in ("kv_unified", "kv_capacity_cells", "kv_resident_capacity_cells"):
+            self.assertNotIn(key, props)
 
     def test_unified_without_capacity_does_not_guess_physical_budget(self):
         self.start(requested=2, info={"kv_unified": 1})
         props = self.get("/props")
         self.assertIs(props["kv_unified"], True)
-        self.assertNotIn("kv_capacity_cells", props)
+        for key in ("kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells"):
+            self.assertNotIn(key, props)
 
     def test_batch_capable_engine_actually_running_solo_and_cancelled(self):
         self.start(requested=3)
