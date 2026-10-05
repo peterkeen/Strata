@@ -1,6 +1,12 @@
 # Unified KV implementation work log
 
-Branch: `feature/multi-slot-unified-kv`, targeting `peterkeen/strata`.
+Historical branch: `feature/multi-slot-unified-kv`, targeting `peterkeen/strata`.
+
+The later [incremental allocation continuation](INCREMENTAL_UNIFIED_KV.md)
+replaces this milestone's full-output reservation policy with known-prompt plus
+rolling headroom, exact writer preflight and internal pressure/replay. Omitted
+output limits no longer require nearly a whole-pool admission reservation.
+Earlier measurements and rollout artifacts below remain historical evidence.
 
 The deployed nibbler branch predates upstream batch serving. Fork main at
 `6f32ec0` already implements independent active slots, multiplexed output,
@@ -150,10 +156,12 @@ and does not guarantee four full-length parked histories.
 The default MTP window retains its private ring. A full-context MTP window
 (`0`, or at least the context) instead allocates private **fully resident**
 draft KV, with an explicit allocation error if it cannot fit. It never becomes
-an unmanaged shared-stream owner. Slot promotion still has upstream's stale
-MTP-proposal history: target verification preserves returned-token semantics,
-but draft acceptance/performance need not equal a clean solo conversation.
-Shared transfers discard retained canonical-buffer provenance.
+an unmanaged shared-stream owner. At this streamed milestone, slot promotion
+retained upstream's stale MTP-proposal history, checked by target verification.
+The incremental continuation instead explicitly suppresses MTP/suffix proposals
+after target-only transfers until a full residual replay rebuilds coherent draft
+history, without removing the private ring. Shared transfers discard retained
+canonical-buffer provenance.
 
 Current nibbler evidence, alongside the original milestone artifacts:
 

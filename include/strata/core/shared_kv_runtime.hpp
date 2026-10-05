@@ -3,6 +3,7 @@
 
 #include "strata/core/session.hpp"
 #include "strata/core/shared_kv_pages.hpp"
+#include "strata/core/shared_kv_reservation.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -76,9 +77,21 @@ public:
         const size_t old_size = pages_.mapping(seq).size();
         std::vector<SharedKvPages::Copy> copies;
         std::vector<int32_t> fresh;
-        if (streamed_) fresh.reserve(page_count(end)); // allocate before ownership mutation
+        if (streamed_) {
+            // Bound invalidations by the write's possible COW pages plus growth,
+            // not the entire history on every incremental decode token. Allocate
+            // before ownership mutation; pushes below must not throw afterward.
+            const size_t first = size_t(begin / kernels::qsa_real_shapes().page_size);
+            const size_t last = page_count(end);
+            const size_t cow = std::min(old_size, last) > first ? std::min(old_size, last) - first : 0;
+            const size_t growth = last > old_size ? last - old_size : 0;
+            fresh.reserve(cow + growth);
+        }
         if (!pages_.ensure(seq, size_t(begin / kernels::qsa_real_shapes().page_size), page_count(end), copies, error))
             return false;
+        // An already private/mapped write needs no fence or publication. Every
+        // ownership-changing call below must complete publication before reuse.
+        if (copies.empty() && pages_.mapping(seq).size() == old_size) return true;
         // Ownership preflight is atomic on shortage. After it succeeds, CUDA
         // failures are fatal: callers must never execute another uncertain graph.
         if (!sync(error)) return false;
@@ -96,11 +109,25 @@ public:
         return publish(seq, error);
     }
 
+    SharedKvReserveResult try_ensure(size_t seq, int64_t begin, int64_t end, std::string& error) {
+        try {
+            if (ensure(seq, begin, end, error)) return SharedKvReserveResult::ready;
+            return error == "SharedKvPages insufficient physical pages" ? SharedKvReserveResult::shortage
+                                                                        : SharedKvReserveResult::fatal;
+        } catch (const std::bad_alloc&) {
+            error = "unified KV: host reservation allocation failed";
+        } catch (const std::length_error&) {
+            error = "unified KV: host reservation allocation exceeds container limits";
+        }
+        return SharedKvReserveResult::fatal;
+    }
+
     bool truncate(size_t seq, int64_t cells, std::string& error) {
         if (cells < 0 || seq >= sessions_.size() || cells > sessions_[seq]->max_cells) {
             error = "unified KV: invalid truncate extent";
             return false;
         }
+        if (page_count(cells) >= pages_.mapping(seq).size()) { error.clear(); return true; }
         std::vector<int32_t> freed;
         if (!sync(error) || !pages_.truncate(seq, page_count(cells), error, streamed_ ? &freed : nullptr)) return false;
         return invalidate(freed, error) && publish(seq, error);
@@ -116,7 +143,7 @@ public:
         return invalidate(freed, error) && publish(to, error);
     }
 
-    // Transfer the COMPLETE reservation, including unwritten output capacity.
+    // Transfer the COMPLETE reservation, including modest unwritten headroom.
     bool move(size_t from, size_t to, std::string& error) {
         if (from >= sessions_.size() || to >= sessions_.size()) {
             error = "unified KV: invalid move sequence";
@@ -132,6 +159,7 @@ public:
 
     bool release(size_t seq, std::string& error) {
         if (seq >= sessions_.size()) { error = "unified KV: invalid release sequence"; return false; }
+        if (pages_.mapping(seq).empty()) { error.clear(); return true; }
         std::vector<int32_t> freed;
         if (!sync(error)) return false;
         pages_.release(seq, streamed_ ? &freed : nullptr);

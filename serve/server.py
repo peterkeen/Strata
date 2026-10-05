@@ -513,6 +513,8 @@ class StrataEngine:
         self.wait_lens: list[list[int]] = []            # ... [prompt length, output cap, paused owner] for safe preemption
         self.ctl_epoch = 0                              # how often the control lines were taken
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
+        self.pressure_waits: dict[int, dict] = {}        # released requests queued for internal continuation
+        self._kv_progress_epoch = 0                     # native token/terminal progress, not admission retries
         self.ctl = threading.Lock()                     # one admission or solo request on the control lines at a time
         self.wlock = threading.Lock()                   # stdin writes from several request threads
         self.pump = threading.Thread(target=self._pump, daemon=True)
@@ -522,6 +524,11 @@ class StrataEngine:
         proc, lines = self.proc, self.lines             # this process's: a restart replaces both (#344)
         slot_q = self.slot_q
         for line in proc.stdout:
+            if self.proc is proc and (line.startswith(("T ", "BT ")) or
+                                      (line.startswith("BDONE ") and line.split()[3:4] != ["pressure"])):
+                with self.slot_cv:
+                    self._kv_progress_epoch += 1
+                    self.slot_cv.notify_all()
             if line.startswith(("BT ", "BDONE ")) and slot_q:   # --batch: a batch slot's own lines
                 try:
                     slot_q[int(line.split()[1])].put(line)
@@ -797,39 +804,124 @@ class StrataEngine:
         emits BDONE without a decode window. `stream`: the prompt and every token of it so far - with the tokens still
         to come before BDONE, all but the last are what the slot holds then (the next turn of its conversation)."""
         slot_q, proc = self.slot_q[slot], self.proc
+        tail = list(stream or [])
+        def consume(line):
+            nonlocal tail
+            if line is None:
+                tail = []
+                return True
+            if line.startswith("BT "):
+                try:
+                    tail.append(int(line.split()[2]))
+                except (IndexError, ValueError):
+                    tail = []
+            if line.startswith("BDONE "):
+                if line.split()[3:4] == ["pressure"]:
+                    tail = []                         # released backing is not a passive slot cache
+                return True
+            return False
+
+        def release():
+            if self.proc is not proc:
+                return                                # an old process's ack must not free its successor's slot
+            self.slot_held[slot] = tail[:-1] if stream and tail else []
+            with self.slot_cv:
+                self.slot_busy[slot] = False
+                self.slot_cv.notify_all()
+
+        # A client can close at the last token while the release ack is already queued. Consume it before
+        # issuing BSTOP, which would otherwise address a slot the native engine no longer owns.
+        while True:
+            try:
+                line = slot_q.get_nowait()
+            except queue.Empty:
+                break
+            if consume(line):
+                release()
+                return
         try:
             self._send(f"BSTOP {slot}")
         except EngineDied:
             pass
         def wait():
             end = time.monotonic() + 600.0
-            tail = list(stream or [])
             while time.monotonic() < end:
                 try:
                     line = slot_q.get(timeout=5.0)
                 except queue.Empty:
                     continue
-                if line is None:
-                    tail = []
-                    break
-                if line.startswith("BT "):
-                    try:
-                        tail.append(int(line.split()[2]))
-                    except (IndexError, ValueError):
-                        tail = []
-                if line.startswith("BDONE "):
+                if consume(line):
                     break
             else:
                 return                                  # no ack: keep it unavailable, never reuse protected KV
-            if self.proc is not proc:
-                return                                  # an old process's ack must not free its successor's slot
-            self.slot_held[slot] = tail[:-1] if stream and tail else []
-            with self.slot_cv:
-                self.slot_busy[slot] = False
-                self.slot_cv.notify_all()
+            release()
         threading.Thread(target=wait, daemon=True).start()
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
+
+    def _kv_reservation(self, plen: int, max_new: int) -> int:
+        """Page-rounded known prompt plus output reservation; rolling engines advertise bounded headroom.
+        This is admission/preemption accounting, never a change to the request's logical output budget."""
+        info = self.info or {}
+        ahead = int(info.get("kv_reserve_ahead") or 0)
+        if info.get("kv_incremental") and ahead > 0:
+            output = min(max_new, ahead) if max_new > 0 else ahead
+        else:
+            if max_new <= 0:
+                return int(info.get("kv_capacity_cells") or 0)
+            output = max_new
+        return (plen + output + 3) // 4 * 4
+
+    def _continuation_sampling(self, sampling: dict | None) -> dict:
+        """Keep one seed across rolling commands. Native Philox uses absolute input position, NOT a mutable
+        draw count: replaying all returned tokens already selects the next draw. Never add rng_offset."""
+        sampling = dict(sampling or {})
+        temperature, seed = sampling.get("temperature"), sampling.get("seed")
+        if ((getattr(self, "info", {}) or {}).get("kv_incremental") and isinstance(temperature, (int, float)) and
+                temperature > 0 and not (isinstance(seed, int) and seed > 0)):
+            sampling["seed"] = int.from_bytes(os.urandom(8), "little") or 1
+        return sampling
+
+    def _pressure_wait(self, key: int, plen: int, generated: int, left: int, pauses: int):
+        with self.slot_cv:
+            self.pressure_waits[key] = {"state": "pressure_waiting", "prompt_tokens": plen,
+                                        "generated": generated, "remaining": left, "pressure_pauses": pauses}
+            self.slot_cv.notify_all()
+
+    def _wait_pressure_progress(self, cancel, epoch: int | None):
+        """A zero-token pressure reply is not permission to spin. Retry only after another native token or
+        terminal acknowledgement advances the epoch recorded before admission; keep ctl and slots free."""
+        beat = time.monotonic()
+        while epoch is not None:
+            if cancel.is_set():
+                return False
+            if not self.alive():
+                raise EngineDied("the engine ended while waiting for shared KV pressure to clear")
+            with self.slot_cv:
+                if self._kv_progress_epoch != epoch:
+                    break
+                self.slot_cv.wait(timeout=0.1)
+            if time.monotonic() - beat >= 10.0:
+                beat = time.monotonic()
+                yield None
+        return not cancel.is_set()
+
+    def _summarize_pressure(self, plen: int, generated: int, segments: list[dict]):
+        """One logical request, not the last replay segment. Replay reuse includes output tokens, so only
+        the first segment's original-prompt reuse is a client cache hit. Other native counters are work totals."""
+        terminal = dict(self.last or {})
+        stats = segments + ([terminal] if terminal.get("finish") is not None else [])
+        finish = terminal.get("finish")
+        summary = {**terminal, "generated": generated, "prompt_tokens": plen,
+                   "pressure_pauses": len(segments), "finish": finish if finish not in (None, "pressure") else "cancel"}
+        for key in ("prompt_ms", "decode_ms", "drafts_accepted", "drafts_offered", "hits", "lookups",
+                    "ram_blobs", "file_blobs", "file_mb", "offloaded"):
+            if any(key in s for s in stats):
+                summary[key] = sum(s.get(key) or 0 for s in stats)
+        if "reused" in segments[0]:
+            summary["reused"] = min(plen, segments[0]["reused"])
+        summary.pop("prompt_read", None)               # replay work is not original-prompt progress
+        self.last = summary
 
     def _admission_room(self, plen: int, max_new: int, after_epoch: int | None) -> bool:
         """Caller holds slot_cv. Paused owners resume in place; new admissions need a free slot and backing room.
@@ -841,12 +933,12 @@ class StrataEngine:
             return False
         if not (self.info or {}).get("kv_unified"):
             return True
-        protected = sum((r["prompt_tokens"] + r["max_new"] + 3) // 4 * 4
+        protected = sum(self._kv_reservation(r["prompt_tokens"], r["max_new"])
                         for r in self.slot_live if r and r.get("paused"))
         if not protected:
             return True
         capacity = int((self.info or {}).get("kv_capacity_cells") or 0)
-        needed = (plen + max_new + 3) // 4 * 4 if max_new > 0 else capacity
+        needed = self._kv_reservation(plen, max_new)
         return protected + needed <= capacity
 
     def _take_control(self, cancel, plen: int, after_epoch: int | None = None, max_new: int = 0):
@@ -866,7 +958,14 @@ class StrataEngine:
                     full = all(self.slot_busy)
                     can_go_first = any(e is not entry and not (len(e) > 2 and e[2]) and
                                        self._admission_room(e[0], e[1], None) for e in self.wait_lens)
-                    turn = self._admission_room(plen, max_new, after_epoch) and (
+                    # Rolling pressure continuations no longer own a slot. FIFO among fitting new admissions
+                    # prevents an endless stream of third requests from locking those owners out. Paused owners
+                    # still bypass this queue because only they can release their protected backing with ctl.
+                    earlier = self.wait_lens[:next(i for i, e in enumerate(self.wait_lens) if e is entry)]
+                    fair = not ((self.info or {}).get("kv_incremental") and after_epoch is None and
+                                any(not (len(e) > 2 and e[2]) and self._admission_room(e[0], e[1], None)
+                                    for e in earlier))
+                    turn = fair and self._admission_room(plen, max_new, after_epoch) and (
                         after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1 or full or
                         not can_go_first)
                 if turn and self.ctl.acquire(timeout=0.5):
@@ -885,7 +984,7 @@ class StrataEngine:
         finally:
             with self.slot_cv:
                 self.waiting -= 1
-                self.wait_lens.remove(entry)
+                self.wait_lens.pop(next(i for i, e in enumerate(self.wait_lens) if e is entry))
         with self.slot_cv:
             self.ctl_epoch += 1
             self.slot_cv.notify_all()
@@ -906,8 +1005,8 @@ class StrataEngine:
 
     def _shorter_waiting(self, plen: int, max_new: int = 0, slot: int | None = None) -> bool:
         """Give way to a much shorter prompt only if its admission can progress.
-        Shared KV retains the paused owner's entire reservation. Conservatively yield only with no other occupied
-        slot and enough backing for both requests; an unlimited waiter must not strand the owner of its capacity.
+        Shared KV retains a paused owner's known prompt and advertised output headroom (legacy: full cap).
+        Conservatively yield only with no other occupied slot and enough backing for both reservations.
         Independent-slot engines keep their original preemption behavior."""
         with self.slot_cv:
             candidates = [e for e in self.wait_lens if e[0] * 2 <= plen]
@@ -916,8 +1015,8 @@ class StrataEngine:
             if any(busy for b, busy in enumerate(self.slot_busy) if b != slot):
                 return False
             capacity = int((self.info or {}).get("kv_capacity_cells") or 0)
-            needed = (plen + max_new + 3) // 4 * 4
-            return any(e[1] > 0 and needed + (e[0] + e[1] + 3) // 4 * 4 <= capacity for e in candidates)
+            needed = self._kv_reservation(plen, max_new)
+            return any(e[1] > 0 and needed + self._kv_reservation(e[0], e[1]) <= capacity for e in candidates)
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
@@ -929,8 +1028,11 @@ class StrataEngine:
         A consumer that stops early leaves the engine in step: the solo request is STOPped and read to its DONE, an
         admission to its BADM, a slot is BSTOPped and freed at its BDONE."""
         self.progress = None
-        keys = self.sampling_keys(sampling or {})
+        keys = self.sampling_keys(self._continuation_sampling(sampling))
+        incremental = bool((self.info or {}).get("kv_incremental"))
         out: list[int] = []
+        pressure_key, pressure_pauses = id(out), 0
+        segments = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
         ok = yield from self._take_control(cancel, len(prompt), max_new=left)
@@ -951,8 +1053,10 @@ class StrataEngine:
                         return
                     holding = True
                 with self.slot_cv:
+                    self.pressure_waits.pop(pressure_key, None)
                     alone = not any(self.slot_busy) and self.waiting == 0
                 if alone and left > 1:
+                    command_out, command_epoch = len(out), self._kv_progress_epoch
                     head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     phase = "solo"
@@ -994,8 +1098,23 @@ class StrataEngine:
                         finish = (self.last or {}).get("finish") if isinstance(self.last, dict) else None
                         left = int(max_new) - len(out)
                         if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
+                            if incremental and finish == "pressure":
+                                self.last = {**self.last, "finish": "cancel" if cancel.is_set() else
+                                             "stop" if out and out[-1] in EOS_IDS else "length"}
                             return
                         prompt = list(ids) + out            # promoted: it continues in a batch slot from here
+                        if incremental and finish == "pressure":
+                            segments.append(dict(self.last))
+                            pressure_pauses += 1
+                            self.last = {**self.last, "finish": None, "pressure_pauses": pressure_pauses}
+                            self.ctl.release()
+                            holding = False
+                            self._pressure_wait(pressure_key, len(ids), len(out), left, pressure_pauses)
+                            yield None                     # disconnected clients can cancel without phantom BSTOP
+                            if not (yield from self._wait_pressure_progress(
+                                    cancel, command_epoch if len(out) == command_out else None)):
+                                return
+                            continue
                 while True:
                     if slot is None:
                         # a free slot (they free themselves at BDONE, which needs no control lines): the one that holds
@@ -1028,9 +1147,11 @@ class StrataEngine:
                         holding = True
                     while not self.slot_q[slot].empty():
                         self.slot_q[slot].get_nowait()
+                    command_out, command_epoch = len(out), self._kv_progress_epoch
                     head = f"BGENI {slot} {left}{keys} {embeddings}" if embeddings else f"BGEN {slot} {left}{keys}"
-                    live = {"slot": slot, "state": "reading", "prompt_tokens": len(prompt), "generated": 0,
-                            "started": time.time(), "first_token": None}
+                    live = {"slot": slot, "state": "reading", "prompt_tokens": len(prompt), "generated": len(out),
+                            "started": time.time(), "first_token": None, "pressure_pauses": pressure_pauses,
+                            "generated_start": len(out)}
                     self.slot_live[slot] = live
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     paused = None                          # sent the resume: ctl now owns admission cleanup
@@ -1063,6 +1184,28 @@ class StrataEngine:
                 self.ctl.release()
                 holding = False
                 if not cont:
+                    if incremental and (self.last or {}).get("finish") == "pressure" and paused is None:
+                        # Main-path pressure has DONE/BADM but no live decode slot or future stop acknowledgement.
+                        self.slot_live[slot] = None
+                        self.slot_held[slot] = []
+                        with self.slot_cv:
+                            self.slot_busy[slot] = False
+                            self.slot_cv.notify_all()
+                        slot, gen0 = None, None
+                        left, prompt = int(max_new) - len(out), list(ids) + out
+                        if cancel.is_set() or left <= 0 or (out and out[-1] in EOS_IDS):
+                            self.last = {**self.last, "finish": "cancel" if cancel.is_set() else
+                                         "stop" if out and out[-1] in EOS_IDS else "length"}
+                            return
+                        segments.append(dict(self.last))
+                        pressure_pauses += 1
+                        self.last = {**self.last, "finish": None, "pressure_pauses": pressure_pauses}
+                        self._pressure_wait(pressure_key, len(ids), len(out), left, pressure_pauses)
+                        yield None
+                        if not (yield from self._wait_pressure_progress(
+                                cancel, command_epoch if len(out) == command_out else None)):
+                            return
+                        continue
                     return
                 live.update(state="decoding", first_token=time.time(), generated=len(out))
                 gen0 = len(out) - 1                         # the admission's own token: the slot feeds it first
@@ -1099,6 +1242,31 @@ class StrataEngine:
                         if len(f) >= 5 and isinstance(self.last, dict):
                             self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
                                          "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                        if incremental and f[3:4] == ["pressure"]:
+                            # Native has RELEASED backing before this ack. All returned tokens, including the
+                            # last unfed one, belong in replay; none belong in slot_held after release.
+                            self.slot_live[slot] = None
+                            self.slot_held[slot] = []
+                            self.slot_used[slot] = time.time()
+                            with self.slot_cv:
+                                self.slot_busy[slot] = False
+                                self.slot_cv.notify_all()
+                            slot, gen0, paused = None, None, None
+                            stop_sent = False
+                            prompt, left = list(ids) + out, int(max_new) - len(out)
+                            if cancel.is_set() or left <= 0 or (out and out[-1] in EOS_IDS):
+                                self.last = {**self.last, "finish": "cancel" if cancel.is_set() else
+                                             "stop" if out and out[-1] in EOS_IDS else "length"}
+                                return
+                            segments.append(dict(self.last))
+                            pressure_pauses += 1
+                            self.last = {**self.last, "finish": None, "pressure_pauses": pressure_pauses}
+                            self._pressure_wait(pressure_key, len(ids), len(out), left, pressure_pauses)
+                            yield None
+                            if not (yield from self._wait_pressure_progress(
+                                    cancel, command_epoch if len(out) == command_out else None)):
+                                return
+                            break
                         # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
                         self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
                         if (going_solo and f[3:4] == ["cancel"] and not cancel.is_set() and len(out) < int(max_new)
@@ -1119,6 +1287,8 @@ class StrataEngine:
         finally:
             # a consumer that left early (or an error): keep the engine and this server in step
             btrace("finally phase", phase, "slot", slot, "holding", holding)
+            with self.slot_cv:
+                self.pressure_waits.pop(pressure_key, None)
             try:
                 if phase == "solo":
                     try:
@@ -1161,6 +1331,8 @@ class StrataEngine:
                     with self.slot_cv:
                         self.slot_busy[slot] = False
                         self.slot_cv.notify_all()
+            if incremental and pressure_pauses:
+                self._summarize_pressure(len(ids), len(out), segments)
 
     def pick_slot(self, prompt: list[int]) -> int | None:
         """A free slot for `prompt` (the caller holds slot_cv): the one whose held tokens are the longest start of the
@@ -1188,16 +1360,57 @@ class StrataEngine:
             ft = r.get("first_token")
             view.append({"slot": b, "state": r["state"], "prompt_tokens": r["prompt_tokens"],
                          "generated": r["generated"], "elapsed_s": round(now - r["started"], 1),
-                         "tok_s": round(r["generated"] / max(1e-6, now - ft), 1) if ft else None})
+                         "tok_s": round((r["generated"] - r.get("generated_start", 0)) /
+                                        max(1e-6, now - ft), 1) if ft else None,
+                         **({"pressure_pauses": r["pressure_pauses"]} if "pressure_pauses" in r else {})})
         return view
 
     def generate(self, ids, max_new, sampling, cancel, embeddings=None):
-        """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
-        the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
-        has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         if getattr(self, "batch", 0):
             yield from self.generate_batched(ids, max_new, sampling, cancel, embeddings)
             return
+        if not (getattr(self, "info", {}) or {}).get("kv_incremental"):
+            yield from self._generate_solo(ids, max_new, sampling, cancel, embeddings)
+            return
+        sampling = self._continuation_sampling(sampling)
+        out, segments = [], []
+        pressure_key = id(out)
+        try:
+            while not cancel.is_set():
+                with self.slot_cv:
+                    self.pressure_waits.pop(pressure_key, None)
+                command_out, command_epoch = len(out), self._kv_progress_epoch
+                gen = self._generate_solo(list(ids) + out, int(max_new) - len(out), sampling, cancel, embeddings)
+                try:
+                    for t in gen:
+                        if t is not None:
+                            out.append(t)
+                        yield t
+                finally:
+                    gen.close()
+                if not ((self.info or {}).get("kv_incremental") and self.last.get("finish") == "pressure"):
+                    return
+                if cancel.is_set() or len(out) >= int(max_new) or (out and out[-1] in EOS_IDS):
+                    self.last = {**self.last, "finish": "cancel" if cancel.is_set() else
+                                 "stop" if out and out[-1] in EOS_IDS else "length"}
+                    return
+                segments.append(dict(self.last))
+                self.last = {**self.last, "finish": None, "pressure_pauses": len(segments)}
+                self._pressure_wait(pressure_key, len(ids), len(out), int(max_new) - len(out), len(segments))
+                yield None                             # pressure released the main path too; no STOP is owed
+                if not (yield from self._wait_pressure_progress(
+                        cancel, command_epoch if len(out) == command_out else None)):
+                    return
+        finally:
+            with self.slot_cv:
+                self.pressure_waits.pop(pressure_key, None)
+            if segments:
+                self._summarize_pressure(len(ids), len(out), segments)
+
+    def _generate_solo(self, ids, max_new, sampling, cancel, embeddings=None):
+        """Yields token ids, and None as a heartbeat every 10 s while the engine is quiet (reading a long prompt):
+        the HTTP layer turns it into an SSE comment, which keeps clients' watchdogs calm and notices a client that
+        has gone.  A consumer that stops early (or `cancel`) makes the engine STOP, so it does not run to max_new."""
         self.progress = None
         self.prefill_tok_s_mean = None
         # an image request takes the same sampling keys as text (#75: it used to decode greedily whatever was asked)
@@ -2175,6 +2388,13 @@ class Service:
                         waiting=int(getattr(self.engine, "waiting", 0) or 0))
             if running and state == "idle":
                 live["state"] = "generating"
+        pressure = dict(getattr(self.engine, "pressure_waits", {}) or {})
+        if pressure or (getattr(self.engine, "info", {}) or {}).get("kv_incremental"):
+            live["pressure_waiting"] = [dict(r) for r in pressure.values()]
+        if pressure and not any(r for r in getattr(self.engine, "slot_live", []) or []) and not getattr(
+                self.engine, "solo_active", False):
+            live["state"] = "queued"
+            live["tok_s"] = live["tok_s_mean"] = None
         engine = {"model": self.model, "max_context": self.engine.max_context, "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
@@ -2360,6 +2580,11 @@ class Service:
         if defaults:                   # the request's own fields win (explicit 0 stays greedy)
             req_values = {k: v for k, v in (sampling or {}).items() if v is not None}
             sampling = {**defaults, **req_values}
+        # Keep the same sampled seed even if reasoning-budget wrapping creates another Engine.generate pass.
+        # Each pass then retains these keys through all of its pressure replays and solo/slot promotions.
+        if (getattr(self.engine, "info", {}) or {}).get("kv_incremental") and hasattr(
+                self.engine, "_continuation_sampling"):
+            sampling = self.engine._continuation_sampling(sampling)
         parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True)
         detok, n, finish = Detokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
@@ -2519,6 +2744,7 @@ class Service:
                                 # the request's whole prompt, and the tokens read of it (None: an older engine)
                                 "prompt_total": len(ids), "prompt_read": last.get("prompt_read"),
                                 "engine_generated": last.get("generated"),
+                                **({"pressure_pauses": last["pressure_pauses"]} if "pressure_pauses" in last else {}),
                                 "prompt_ms": last.get("prompt_ms"), "decode_ms": last.get("decode_ms"),
                                 "decode_tok_s": round(last["generated"] / (last["decode_ms"] / 1000), 1)
                                 if n and last.get("generated") and last.get("decode_ms") else None,
@@ -3331,7 +3557,9 @@ def make_handler(svc: Service):
             # when reported, is actual allocated GPU capacity. Neither changes the logical n_ctx.
             if "kv_unified" in info:
                 props["kv_unified"] = bool(int(info["kv_unified"]))
-            for key in ("kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells"):
+            if "kv_incremental" in info:
+                props["kv_incremental"] = bool(int(info["kv_incremental"]))
+            for key in ("kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells", "kv_reserve_ahead"):
                 if key in info:
                     props[key] = int(info[key])
             self._json(200, props)
