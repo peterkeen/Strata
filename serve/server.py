@@ -510,7 +510,7 @@ class StrataEngine:
         self.slot_live: list[dict | None] = [None] * self.batch   # /metrics: the request in each slot
         self.slot_cv = threading.Condition()
         self.waiting = 0                                # requests waiting for the control lines (ctl)
-        self.wait_lens: list[list[int]] = []            # ... their prompt lengths (a long read gives way to short ones)
+        self.wait_lens: list[list[int]] = []            # ... [prompt length, output cap, paused owner] for safe preemption
         self.ctl_epoch = 0                              # how often the control lines were taken
         self._yielded = None                            # (slot, tokens read): the last request on them gave way
         self.ctl = threading.Lock()                     # one admission or solo request on the control lines at a time
@@ -831,25 +831,54 @@ class StrataEngine:
 
     YIELDS_MAX = 2   # #656: how often one request's prompt read gives way to a shorter waiting one
 
-    def _take_control(self, cancel, plen: int, after_epoch: int | None = None):
-        """Waits for the control lines (one prompt read at a time), yielding None heartbeats; False when cancelled.
-        `after_epoch`: a request whose read gave way lets the requests waiting then go first."""
-        entry = [plen]
+    def _admission_room(self, plen: int, max_new: int, after_epoch: int | None) -> bool:
+        """Caller holds slot_cv. Paused owners resume in place; new admissions need a free slot and backing room.
+        Active decoders can release their reservations without ctl, but paused prefills cannot. A newly arriving
+        unlimited request must not jump ahead of a fitting waiter and strand an already-paused owner."""
+        if after_epoch is not None:
+            return True
+        if all(self.slot_busy):
+            return False
+        if not (self.info or {}).get("kv_unified"):
+            return True
+        protected = sum((r["prompt_tokens"] + r["max_new"] + 3) // 4 * 4
+                        for r in self.slot_live if r and r.get("paused"))
+        if not protected:
+            return True
+        capacity = int((self.info or {}).get("kv_capacity_cells") or 0)
+        needed = (plen + max_new + 3) // 4 * 4 if max_new > 0 else capacity
+        return protected + needed <= capacity
+
+    def _take_control(self, cancel, plen: int, after_epoch: int | None = None, max_new: int = 0):
+        """Waits for both admission room and the control lines; False when cancelled.
+        A new request must not hold ctl waiting for a slot: paused owners need ctl to resume and free those slots.
+        `after_epoch`: a paused owner lets waiting admissions go first, unless all slots are already occupied."""
+        entry = [plen, max_new, after_epoch is not None]
         with self.slot_cv:
             self.waiting += 1
             self.wait_lens.append(entry)
         beat = time.monotonic()
         try:
             while True:
+                if cancel.is_set():
+                    return False
                 with self.slot_cv:
-                    turn = after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1
+                    full = all(self.slot_busy)
+                    can_go_first = any(e is not entry and not (len(e) > 2 and e[2]) and
+                                       self._admission_room(e[0], e[1], None) for e in self.wait_lens)
+                    turn = self._admission_room(plen, max_new, after_epoch) and (
+                        after_epoch is None or self.ctl_epoch > after_epoch or self.waiting <= 1 or full or
+                        not can_go_first)
                 if turn and self.ctl.acquire(timeout=0.5):
-                    break
+                    # The current ctl holder may have reserved the last free slot while we waited for its lock.
+                    with self.slot_cv:
+                        room = self._admission_room(plen, max_new, after_epoch)
+                    if room and not cancel.is_set():
+                        break
+                    self.ctl.release()
                 if not turn:
                     with self.slot_cv:
                         self.slot_cv.wait(timeout=0.5)
-                if cancel.is_set():
-                    return False
                 if time.monotonic() - beat >= 10.0:     # a heartbeat every 10 s, as the engine's own wait
                     beat = time.monotonic()
                     yield None
@@ -875,10 +904,20 @@ class StrataEngine:
         with self.slot_cv:
             return sum(1 for b in self.slot_busy if b) == 1 and self.waiting == 0
 
-    def _shorter_waiting(self, plen: int) -> bool:
-        """#656: someone waits for the control lines with a prompt under half this one's: worth giving way to."""
+    def _shorter_waiting(self, plen: int, max_new: int = 0, slot: int | None = None) -> bool:
+        """Give way to a much shorter prompt only if its admission can progress.
+        Shared KV retains the paused owner's entire reservation. Conservatively yield only with no other occupied
+        slot and enough backing for both requests; an unlimited waiter must not strand the owner of its capacity.
+        Independent-slot engines keep their original preemption behavior."""
         with self.slot_cv:
-            return any(e[0] * 2 <= plen for e in self.wait_lens)
+            candidates = [e for e in self.wait_lens if e[0] * 2 <= plen]
+            if not (self.info or {}).get("kv_unified"):
+                return bool(candidates)
+            if any(busy for b, busy in enumerate(self.slot_busy) if b != slot):
+                return False
+            capacity = int((self.info or {}).get("kv_capacity_cells") or 0)
+            needed = (plen + max_new + 3) // 4 * 4
+            return any(e[1] > 0 and needed + (e[0] + e[1] + 3) // 4 * 4 <= capacity for e in candidates)
 
     def generate_batched(self, ids, max_new, sampling, cancel, embeddings=None):
         """--batch.  Alone (no slot busy, nobody waiting): the solo path (GEN, with drafts: the fastest stream)
@@ -894,7 +933,7 @@ class StrataEngine:
         out: list[int] = []
         pending: list[int] = []
         prompt, left = list(ids), int(max_new)
-        ok = yield from self._take_control(cancel, len(prompt))
+        ok = yield from self._take_control(cancel, len(prompt), max_new=left)
         if not ok:
             return
         holding = True
@@ -907,7 +946,7 @@ class StrataEngine:
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
                 if not holding:
-                    ok = yield from self._take_control(cancel, len(prompt))
+                    ok = yield from self._take_control(cancel, len(prompt), max_new=left)
                     if not ok:
                         return
                     holding = True
@@ -929,7 +968,7 @@ class StrataEngine:
                             yield t
                         if x is None:                       # a heartbeat (False: a token, flushed above)
                             if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
-                                    self._shorter_waiting(len(prompt))):
+                                    self._shorter_waiting(len(prompt), left)):
                                 with self.slot_cv:          # the slot the part read will wait in
                                     reserved = self.pick_slot(prompt)
                                     if reserved is not None:
@@ -970,16 +1009,20 @@ class StrataEngine:
                                 self.slot_cv.wait(timeout=10.0)
                                 if cancel.is_set():
                                     return
-                    if self._yielded is not None:           # it gave way: the others waiting then go first
+                    if self._yielded is not None and self._yielded[0] == slot:  # only this request's paused read
                         paused = slot                       # retain ownership across a cancelled resume wait
                         self.slot_held[slot] = list(prompt[:self._yielded[1]])
+                        # Publish the retained reservation before handing ctl to any new admission.
+                        self.slot_live[slot] = {"slot": slot, "state": "reading", "paused": True,
+                                                "prompt_tokens": len(prompt), "max_new": left,
+                                                "generated": len(out), "started": time.time(), "first_token": None}
                         self._yielded = None
                         yields += 1
                         self.ctl.release()
                         holding = False
                         with self.slot_cv:
                             epoch = self.ctl_epoch
-                        ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch)
+                        ok = yield from self._take_control(cancel, len(prompt), after_epoch=epoch, max_new=left)
                         if not ok:
                             return
                         holding = True
@@ -1002,7 +1045,7 @@ class StrataEngine:
                             yield t
                         if x is None:
                             if (not asked and not embeddings and yields < self.YIELDS_MAX and
-                                    self._shorter_waiting(len(prompt))):
+                                    self._shorter_waiting(len(prompt), left, slot=slot)):
                                 self._send(f"BYIELD {slot}")
                                 asked = True
                             yield None
@@ -1098,6 +1141,8 @@ class StrataEngine:
                         slot, reserved = reserved, None
                     if yielded_slot == slot:
                         paused = slot
+                # Ownership has moved to request-local `paused`. Never let the next ctl holder inherit YIELDED.
+                self._yielded = None
                 self.ctl.release()
             if reserved is not None:
                 with self.slot_cv:

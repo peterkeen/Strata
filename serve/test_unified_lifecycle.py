@@ -163,14 +163,14 @@ class UnifiedLifecycle(unittest.TestCase):
         gen = engine.generate([1, 2, 3, 4], cap, {}, cancel)
         take_control = engine._take_control
 
-        def blocked_resume(cancel, plen, after_epoch=None):
+        def blocked_resume(cancel, plen, after_epoch=None, max_new=0):
             if after_epoch is None:
-                return (yield from take_control(cancel, plen))
+                return (yield from take_control(cancel, plen, max_new=max_new))
             # Another admission owns ctl while the yielded request waits to resume. Use the real wait/cancel path.
             engine.ctl.acquire()
             waiting.set()
             try:
-                return (yield from take_control(cancel, plen, after_epoch=after_epoch))
+                return (yield from take_control(cancel, plen, after_epoch=after_epoch, max_new=max_new))
             finally:
                 engine.ctl.release()
 
@@ -196,6 +196,7 @@ class UnifiedLifecycle(unittest.TestCase):
                 self.assertEqual(errors, [])
         self.wait_for(lambda: (self.root / "bstop").exists() and (self.root / "bstop").read_text() == "0",
                       "paused reservation never received BSTOP")
+        self.assertIsNone(engine._yielded, "cancelled request left stale yield ownership for the next ctl holder")
         self.assertTrue(engine.slot_busy[0], "server freed a paused slot before BDONE")
         self.assertIsNone(engine.pick_slot([8, 9]), "paused slot became reusable before BDONE")
         (self.root / "release_ack").touch()
@@ -251,6 +252,139 @@ class UnifiedLifecycle(unittest.TestCase):
             engine._release_slot_when_done(0)
         send.assert_called_once_with("BSTOP 0")
         self.assertTrue(engine.slot_busy[0], "a timeout is not a BDONE acknowledgement")
+
+    def scheduler(self):
+        engine = StrataEngine.__new__(StrataEngine)
+        engine.slot_cv = threading.Condition()
+        engine.slot_busy = [True, True]  # protected paused prefills have no decoder to free them
+        engine.slot_live = [None, None]
+        engine.ctl = threading.Lock()
+        engine.ctl_epoch = 0
+        engine.waiting = 0
+        engine.wait_lens = []
+        engine.info = {"kv_unified": 1, "kv_capacity_cells": 4096}
+        return engine
+
+    def full_slots_waiter(self, racing=False, protected_capacity=False):
+        engine = self.scheduler()
+        cancel, acquired = threading.Event(), threading.Event()
+        errors = []
+        if protected_capacity:
+            engine.slot_busy[1] = False
+            engine.slot_live[0] = {"prompt_tokens": 1000, "max_new": 64, "paused": True}
+        if racing:
+            engine.slot_busy[1] = False
+            engine.ctl.acquire()
+
+        def run():
+            def take():
+                ok = yield from engine._take_control(cancel, 2, max_new=4000)
+                if ok:
+                    acquired.set()
+                    engine.ctl.release()
+            try:
+                list(take())
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        try:
+            self.wait_for(lambda: engine.waiting == 1 or acquired.is_set(), "third request never entered admission")
+            if racing:
+                with engine.slot_cv:
+                    engine.slot_busy[1] = True
+                engine.ctl.release()
+            self.assertFalse(acquired.wait(0.15), "third request took ctl while both paused slots were occupied")
+            self.assertTrue(engine.ctl.acquire(blocking=False), "queued request prevented a paused owner from resuming")
+            engine.ctl.release()
+        finally:
+            with engine.slot_cv:
+                engine.slot_busy[1] = False
+                if protected_capacity:
+                    engine.slot_busy[0] = False
+                    engine.slot_live[0] = None
+                engine.slot_cv.notify_all()
+            worker.join(2)
+        self.assertFalse(worker.is_alive(), "third request did not resume after a slot became available")
+        self.assertEqual(errors, [])
+        self.assertTrue(acquired.is_set())
+        self.assertEqual(engine.waiting, 0)
+        self.assertEqual(engine.wait_lens, [])
+
+    def test_third_request_does_not_lock_out_two_paused_owners(self):
+        self.full_slots_waiter()
+
+    def test_slot_availability_is_rechecked_after_taking_ctl(self):
+        self.full_slots_waiter(racing=True)
+
+    def test_paused_owner_can_resume_when_a_third_waiter_cannot_fit_a_slot(self):
+        engine = self.scheduler()
+        engine.waiting = 1
+        engine.wait_lens = [[2, 64]]
+        control = engine._take_control(threading.Event(), 1000, after_epoch=0, max_new=64)
+        try:
+            with self.assertRaises(StopIteration) as done:
+                next(control)
+            self.assertTrue(done.exception.value)
+            self.assertTrue(engine.ctl.locked())
+        finally:
+            if engine.ctl.locked():
+                engine.ctl.release()
+        self.assertEqual(engine.waiting, 1)
+        self.assertEqual(engine.wait_lens, [[2, 64]])
+
+    def test_late_unlimited_waiter_cannot_strand_a_paused_reservation(self):
+        self.full_slots_waiter(protected_capacity=True)
+
+    def test_paused_owner_does_not_defer_to_a_capacity_blocked_waiter(self):
+        engine = self.scheduler()
+        engine.slot_busy[1] = False
+        engine.slot_live[0] = {"prompt_tokens": 1000, "max_new": 64, "paused": True}
+        engine.waiting = 1
+        engine.wait_lens = [[2, 4000]]
+        try:
+            with self.assertRaises(StopIteration) as done:
+                next(engine._take_control(threading.Event(), 1000, after_epoch=0, max_new=64))
+            self.assertTrue(done.exception.value)
+            self.assertTrue(engine.ctl.locked())
+        finally:
+            if engine.ctl.locked():
+                engine.ctl.release()
+        self.assertEqual(engine.waiting, 1)
+        self.assertEqual(engine.wait_lens, [[2, 4000]])
+
+    def test_cancelled_full_slot_waiter_does_not_take_control(self):
+        engine = self.scheduler()
+        cancel = threading.Event()
+        cancel.set()
+        with self.assertRaises(StopIteration) as done:
+            next(engine._take_control(cancel, 2, max_new=64))
+        self.assertFalse(done.exception.value)
+        self.assertFalse(engine.ctl.locked())
+        self.assertEqual(engine.waiting, 0)
+        self.assertEqual(engine.wait_lens, [])
+
+    def test_unlimited_waiter_does_not_pause_the_owner_of_shared_capacity(self):
+        engine = self.scheduler()
+        engine.slot_busy = [False, False]
+        engine.wait_lens = [[2, 4090]]
+        self.assertFalse(engine._shorter_waiting(2000, 2000))
+        engine.wait_lens = [[2, 64]]
+        self.assertTrue(engine._shorter_waiting(2000, 64))
+
+    def test_shared_yield_does_not_add_a_second_paused_owner(self):
+        engine = self.scheduler()
+        engine.wait_lens = [[2, 64]]
+        self.assertFalse(engine._shorter_waiting(1000, 64, slot=0))
+        engine.slot_busy[1] = False
+        self.assertTrue(engine._shorter_waiting(1000, 64, slot=0))
+
+    def test_legacy_yield_keeps_independent_capacity_behavior(self):
+        engine = self.scheduler()
+        engine.info = {"kv_unified": 0}
+        engine.wait_lens = [[2, 4090]]
+        self.assertTrue(engine._shorter_waiting(2000, 2000))
 
     def test_drain_legacy_err_only_returns_immediately(self):
         engine = StrataEngine("missing", [], lazy=True)
