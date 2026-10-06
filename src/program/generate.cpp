@@ -6917,19 +6917,31 @@ int main(int argc, char** argv) {
                     // back as pressure: the frontend retries only after the busy owner produces
                     // another token (serve/server.py `_wait_pressure_progress`), so this neither spins
                     // nor stalls the active decode, and the retry takes the reclaim path above.
+                    //
+                    // Waiting is only the better trade when the replay avoided is big and the wait is
+                    // shorter than that replay. At the measured ~1820 tok/s prefill and ~40 tok/s
+                    // decode, a busy owner with R tokens of allowance left costs about R/40 s to
+                    // finish against restore_end/1820 s to re-read, so accept a busy claim only when
+                    // R * 45 <= restore_end; an unbounded allowance never qualifies. Trivial restores
+                    // (kRestoreDeferMinTokens) are cheaper to re-read than to wait for at all.
+                    constexpr int64_t kRestoreDeferMinTokens = 8192;   // ~4.5 s to re-read
+                    constexpr int64_t kRestoreDeferDecodeRatio = 45;   // prefill/decode rate ratio
                     size_t busy_pages = 0;
                     for (int b = 0; b < int(bs.size()); ++b) {
                         if (b == slot_source || b == admit_slot) continue;
                         const BSlot& sl = bs[size_t(b)];
                         if (!sl.active && !sl.partial) continue;   // idle claims were handled above
                         if (sl.ids.empty() || sl.img) continue;
+                        if (sl.max_new <= 0 || (sl.max_new - sl.produced) * kRestoreDeferDecodeRatio > restore_end)
+                            continue;                              // its turn can outlast the replay
                         const size_t seq = size_t(b) + 1;
                         if (unified_kv->pages().mapping(seq).empty()) continue;
                         if (int64_t(sl.ids.size()) - conversations.best(sl.ids, {}, sl.cvec).tokens >
                             kIdleReclaimTailTokens) continue;      // its next turn would re-read too much
                         busy_pages += unified_kv->pages().exclusive_pages(seq);
                     }
-                    if (busy_pages != 0 && available_pages + busy_pages >= demand_pages &&
+                    if (restore_end >= kRestoreDeferMinTokens && busy_pages != 0 &&
+                        available_pages + busy_pages >= demand_pages &&
                         conversations.put(std::move(*incoming), 0)) {
                         incoming.reset();
                         if (++restore_deferrals == 1 || restore_deferrals % 64 == 0)
