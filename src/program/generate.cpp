@@ -5969,6 +5969,7 @@ int main(int argc, char** argv) {
         // known prompt (during prefill) or complete imminent verify write.
         int64_t main_required_end = -1;
         size_t parking_held = 0;            // incoming canonical image also counts against the parking budget
+        int64_t restore_deferrals = 0;      // restores handed back to the frontend while another slot was busy
         auto reserve_shared = [&](size_t seq, int64_t begin, int64_t required, int64_t limit,
                                   bool headroom = true) -> KvReserve {
             err.clear();
@@ -6910,6 +6911,34 @@ int main(int argc, char** argv) {
                                  claim.slot, freed, (long long) (claim.held - claim.covered));
                 }
                 if (demand_pages > available_pages) {
+                    // Nothing idle was reclaimable. The gap may be held by another slot that is only
+                    // busy: its turn will end, and its claim is already parked, so this request can
+                    // come back and copy that image instead of re-reading its whole history. Hand it
+                    // back as pressure: the frontend retries only after the busy owner produces
+                    // another token (serve/server.py `_wait_pressure_progress`), so this neither spins
+                    // nor stalls the active decode, and the retry takes the reclaim path above.
+                    size_t busy_pages = 0;
+                    for (int b = 0; b < int(bs.size()); ++b) {
+                        if (b == slot_source || b == admit_slot) continue;
+                        const BSlot& sl = bs[size_t(b)];
+                        if (!sl.active && !sl.partial) continue;   // idle claims were handled above
+                        if (sl.ids.empty() || sl.img) continue;
+                        const size_t seq = size_t(b) + 1;
+                        if (unified_kv->pages().mapping(seq).empty()) continue;
+                        if (int64_t(sl.ids.size()) - conversations.best(sl.ids, {}, sl.cvec).tokens >
+                            kIdleReclaimTailTokens) continue;      // its next turn would re-read too much
+                        busy_pages += unified_kv->pages().exclusive_pages(seq);
+                    }
+                    if (busy_pages != 0 && available_pages + busy_pages >= demand_pages &&
+                        conversations.put(std::move(*incoming), 0)) {
+                        incoming.reset();
+                        if (++restore_deferrals == 1 || restore_deferrals % 64 == 0)
+                            std::fprintf(stderr, "strata serve: conversation cache: deferring a %lld-token restore "
+                                                 "(another slot holds %zu pages while its turn finishes; %lld so far)\n",
+                                         (long long) restore_end, busy_pages, (long long) restore_deferrals);
+                        if (!reject_unified()) return 1;
+                        continue;
+                    }
                     // Report the whole arithmetic: a skip that could have been a copy is worth
                     // diagnosing from the log alone. `excl` is what releasing that slot's claim
                     // would return, and `parked` is how much of its conversation an image covers.
