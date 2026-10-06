@@ -648,7 +648,8 @@ twice the previous 4096 MiB one.
 Inference, labelled as such: with both images parked (5.47 GB of an 8 GiB budget), an
 idle-slot-reclaiming restore would turn an ~82 s replay into a ~1 s copy plus the
 suppressed-MTP cost, so the replay here is a policy cost rather than a physical limit.
-That trade has not been implemented or measured.
+That trade is implemented and measured in *Reclaiming a busy or idle claim instead of
+replaying*, below.
 
 ### Side observations
 
@@ -671,3 +672,87 @@ That trade has not been implemented or measured.
 - KV-growing pressure is visible as a lower streaming hit rate: 85.8-86.7% of block
   reads hit VRAM during phase 2 against 97.9-98.0% in light traffic, with 326-648 MiB
   read from RAM over the window. VRAM free stayed at 1,674 MiB throughout.
+
+## Reclaiming a claim instead of replaying (2026-10-06)
+
+The probe above showed the cost, and this change removes most of it. Three parts:
+
+1. `SharedKvPages::exclusive_pages(seq)` (`include/strata/core/shared_kv_pages.hpp`) reports
+   the pages one sequence holds alone; `free_pages_after_release` now composes it, so a
+   reclaim candidate's capacity is explicit. CPU-covered in `shared_kv_pages_test`
+   (135,708 checks, was 135,660).
+2. The canonical-restore preflight (`src/program/generate.cpp`, before the skip line) now
+   reclaims idle slot claims whose parked image covers all but at most 4,096 tokens
+   (~2.2 s of re-read at the measured 1.82k tok/s prefill), cheapest uncovered tail first.
+   The victim's image stays in the parking cache, so its next turn restores a copy rather
+   than re-reading its history. A picture slot, a partly-read prompt, the slot this request
+   continues in, and any claim sharing pages with another live owner are never taken. Whole
+   coverage is not required and never holds in practice: images are parked at segment
+   boundaries, so a slot always holds a few tokens more than its image did
+   (`parked 150001` against `held 150002`).
+3. When the gap is held by a slot that is still *decoding*, its claim cannot be taken. The
+   request is now handed back as an incremental pressure continuation with its image
+   re-parked, and the retry takes the reclaim path. `serve/server.py`'s
+   `_wait_pressure_progress` already retries a zero-token pressure reply only after the busy
+   owner produces another token, so this neither spins nor stalls the active decode.
+   Deferring is gated on the economics, because `coherence-v2` caught the unguarded version
+   deferring a 1,015-token restore in its small-backing FIFO stage ("another slot holds 104
+   pages") and returning a zero-token pressure continuation where the harness expects the
+   engine to proceed: accept a busy claim only when the avoided replay is at least 8,192
+   tokens and the busy owner's remaining output allowance R satisfies `R * 45 <=
+   restore_end` (the measured ~1.82k tok/s prefill against ~40 tok/s decode), and never when
+   that allowance is unbounded. Under that rule the small-pool stage keeps its old behaviour
+   (0 deferrals, 0 reclaims in its log) and the 150k case still defers.
+4. The skip line now carries its arithmetic, so a skip that could have been a copy is
+   diagnosable from the log alone: `need N pages, have M; main K pages exclusive; slot b
+   <state> held X mapped Y excl Z parked C [slot_source] [admit_slot]`.
+
+### Measured (private endpoint, production-equivalent settings, 8192 MiB parking)
+
+Three phases, candidate `1d71f758…`: two 125k conversations, then both grown to 150k
+(300,004 cells), then both to 170k (340,003 cells).
+
+| Phase | Allocation | Outcome |
+| --- | --- | --- |
+| 1 | 2 x 125,002 | prefills still serialize (73.7 s and 139.2 s wall), 250k cells co-resident |
+| 2 | 2 x 150,002 | `deferring a 150002-token restore (another slot holds 37501 pages while its turn finishes; 1 so far)`, then `reclaimed idle slot 1 (37504 pages)`, then `prompt 150002 tokens = 125003 reused + 24999 read in 16137 ms` |
+| 3 | 2 x 170,001 | two reclaims (`slot 0` 37504 pages, `slot 1` 42504 pages), no deferral; both streams warm (27.6 s and 14.1 s wall) |
+
+Counts over the run: 0 `skip restore`, 1 deferral, 3 reclaims, 0 `ERR`, 0 cancellations.
+The phase-2 stream that replayed 150,000 tokens in 82,527 ms before this change restored
+instead: 16,137 ms of read, 34.4 s wall against the recorded 100.5 s.
+
+### Measured (live production, nibbler, deployed binary)
+
+Same three phases against the live stack (llama-swap 8088, frontend 5801): 0 `skip
+restore`, 1 deferral, 1 reclaim, 1 `restored … (live)`, 0 `ERR`. The phase-2 loser went from
+the recorded 100.5 s wall / 82.5 s read to 34.1 s wall / 16.1 s read, and the phase-3
+winner stayed warm (14.4 s).
+
+The phase-3 partner, however, replayed 169,998 tokens in 93.9 s with no skip, deferral or
+reclaim line at all: its parked image had been evicted (the window's evictions reached 3
+before its turn) and its idle slot claim had already been released by the other stream's
+pressure path, so there was nothing to restore from. That is the limitation below, not a
+fault in the reclaim path: the same turn would have replayed before this change too.
+
+### Limitation and next step
+
+The reclaim depends on the victim's image still being in the parking cache. In an
+uncontended cache it is (the private run reclaimed the same two conversations three times),
+but with a third entry present the 8,192 MiB budget's LRU can evict exactly the image the
+other conversation needs next. Candidate mitigations, none measured yet: pin the image of a
+conversation whose slot claim was released, refuse to release a claim whose image is at eviction
+risk, prefer dropping the same conversation's superseded copy over another conversation's only
+copy, or raise the parking budget. Also unmeasured: the MTP-suppression cost of a restored
+turn (restored turns log `drafts accepted 0 of 0`), and how long a deferred request waits
+when the busy owner's turn is long (the gate admits a wait only when that turn's remaining
+allowance is small relative to the replay).
+
+### Verification
+
+`shared_kv_pages_test` 135,708 checks (was 135,660), `shared_kv_reservation_test` 73,
+`conversation_cache_test` 4,191. Exclusive-GPU gates on the frozen candidate:
+`ctest` 81/81, `warm-small-v2`, `warm-streamed-v2`, `cancellation-pressure-v2`,
+`coherence-v2`, `private-http`, `private-vision`, `private-http-warm` all passed, with
+production restored hash-identical after each window. `coherence-v2` is the gate that
+caught the unguarded deferral.

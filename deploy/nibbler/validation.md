@@ -239,3 +239,58 @@ idle-claim restore limitation behind that replay; see
 `docs/INCREMENTAL_UNIFIED_KV.md`,"Two-stream aggregate-capacity probe (2026-10-06)".
 Evidence: `/data/llm/Strata-tests/overcap-20261006/` and
 `/data/llm/Strata-tests/overcap-clean-20261006/`.
+### Reclaim-restore rollout — 2026-10-06
+
+`feature/kv-warm-handoff` at `6cad2c7` (epic `str-kp7`: reclaim a recoverable claim instead
+of replaying; see `docs/INCREMENTAL_UNIFIED_KV.md`, "Reclaiming a claim instead of
+replaying"). The host checkout moved to that commit on branch `nibbler-deployed`;
+`serve/server.py` is untouched by these commits, so the frontend stayed byte-identical.
+
+Exclusive-GPU gates on the frozen candidate, production unloaded for the window, artifacts
+in `/data/llm/Strata-tests/kvrestore3-20261006/`: `ctest-final-exclusive.log` **81/81
+passed** (101 s), plus `warm-small-v2`, `warm-streamed-v2`, `cancellation-pressure-v2`,
+`coherence-v2`, `private-http`, `private-vision` and `private-http-warm`, all
+`passed: true`; production restored hash-identical after every window.
+
+`coherence-v2` failed an earlier revision of this change and is worth keeping in the gate
+set for it: the first deferral rule pushed a 1,015-token restore back in the small-backing
+FIFO stage (`another slot holds 104 pages`) and answered a zero-token main-path pressure
+continuation where the harness expects the engine to proceed ("pressure must be a nonempty,
+nonfinal batch attempt"). The rule now requires the avoided replay to be at least 8,192
+tokens and the busy owner's remaining allowance to satisfy `R * 45 <= restore_end`; that
+stage now logs zero deferrals and zero reclaims.
+
+Capacity probe (three phases: 2x125k, then 2x150k, then 2x170k), candidate on a private
+endpoint with production-equivalent settings, then again against the live stack:
+
+- private: 0 `skip restore`, 1 deferral, 3 reclaims, 0 `ERR`; the 300,004-cell phase's
+  second stream restored (`prompt 150002 tokens = 125003 reused + 24999 read in 16137 ms`)
+  where the pre-fix binary replayed 150,000 tokens in 82,527 ms, and the 340,003-cell phase
+  kept both streams warm (27.6 s / 14.1 s wall).
+- live (`rollout.sha256` binary, 8088 -> 5801): 0 `skip restore`, 1 deferral, 1 reclaim,
+  1 restore, 0 `ERR`; the same phase went from 100.5 s wall / 82.5 s read to **34.1 s wall /
+  16.1 s read**, and the other stream stayed warm at 17.4 s.
+- live limitation, recorded not hidden: in the 340,003-cell phase the partner stream
+  replayed 169,998 tokens in 93.9 s because its parked image had been evicted (the window's
+  evictions reached 3 before its turn) and its slot claim had already been released by the
+  other stream's pressure path. The pre-fix binary would have replayed that turn too; the
+  mitigations (pin the image, refuse the release, prefer superseded drops, or raise the
+  budget) are unmeasured. Live probe evidence: `live-probe/` in the gate directory.
+
+Deployed hashes (`rollout.sha256`):
+
+- `engine/strata-nibbler`: `1d71f758c08ca8992f80a3ca7ff4b245db4398d8d003f26ddb47ec27dddcf7de` (was `be37cae8…`)
+- `serve/server.py`: `262f00a67b7056b3e2d7f2e0192dd4f923f865ea55f64cf9aa84a0fff0e8bb26` (unchanged)
+- `deploy/nibbler/config.json` and `/data/llm/Strata-run/nibbler/config.json`: `8178be74bc7b08ec609d754291dc576c322b333cbd169f65bf02d6e08f33fa27` (unchanged)
+- Shared Chat settings: `b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a` (unchanged, verified before and after)
+
+Live after the rollout: `engine/strata-nibbler` running with
+`--conversation-cache-mib 8192 --batch 2`, `kv_capacity_cells=262144`,
+`conversation_cache_mib=8192`, `kv_handoff=1 kv_incremental=1 kv_reserve_ahead=256`,
+`/health` 200, `Host: nibbler.local.keen.land` 200 with an unknown host 403, and the host's
+own frontend suites pass (`frontend-tests.log`: 12 handoff, 18 incremental-KV, 26 unified
+lifecycle, 13 unified reporting, 11 parallel, 8 lifecycle, 10 monitor).
+
+Rollback: `bash /data/llm/Strata-tests/kvrestore3-20261006/rollback-kvrestore.sh` restores
+`baseline.strata` (`be37cae8…`) and `baseline.server.py` after hash checks, reloads only
+Qwen, and leaves configs, shared settings, router and TTS untouched. Not executed.
