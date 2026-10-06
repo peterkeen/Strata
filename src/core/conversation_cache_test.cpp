@@ -229,6 +229,15 @@ int main() {
         check(cache.best(third_next, {}, true).tokens > 0, "the unrelated copy survived eviction too");
         const std::vector<int32_t> mine_next = {1, 2, 3, 4, 10, 11, 12, 910, 911, 912, 913};
         check(cache.best(mine_next, {}, true).tokens >= 10, "the newest copy of this conversation is kept");
+        // park_current reserves room before it captures, so that reservation has to use the same
+        // preference: an oldest-first choice there evicts the foreign copy before put() ever sees
+        // the incoming chain (the live 2026-10-06 probe lost its image exactly that way).
+        const std::vector<ConversationImageKey> no_images;
+        const std::vector<int32_t> reserve_for = {1, 2, 3, 4, 10, 11, 12, 910, 911, 912};
+        check(cache.make_room(64, 0, &reserve_for, &no_images), "reserve room for the next turn before capture");
+        check(cache.evictions() == 2, "the reservation evicted a copy");
+        const std::vector<int32_t> foreign_again = {1, 2, 3, 4, 50, 51, 52};
+        check(cache.best(foreign_again, {}, true).tokens > 0, "the reservation did not take the foreign copy");
     }
     {
         // A covered copy whose own tail is long is left to the oldest-first order: giving it up would

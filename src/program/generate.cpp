@@ -5295,7 +5295,7 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
-            if (!conversations.make_room(estimate, held)) {
+            if (!conversations.make_room(estimate, held, &live, &live_imgs)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
@@ -6021,7 +6021,10 @@ int main(int argc, char** argv) {
                     return true;           // invalid optional capture metadata: replay, not a failed request
                 }
                 const uint64_t floor = uint64_t(o.conversation_cache_min_free_mib) * 1024 * 1024;
-                if (!conversations.make_room(estimate, parking_held) ||
+                // Same chain-aware eviction as put: this reservation runs before the capture, so an
+                // oldest-first choice here would take a conversation a newer copy of this one covers.
+                const std::vector<ImgKey> no_images;
+                if (!conversations.make_room(estimate, parking_held, &sl.ids, &no_images) ||
                     !strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), estimate, floor)) {
                     std::fprintf(stderr, "strata serve: pressure cache budget/RAM miss; replay %zu tokens\n", sl.ids.size());
                     return true;
