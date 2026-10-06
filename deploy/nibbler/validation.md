@@ -295,28 +295,37 @@ Rollback: `bash /data/llm/Strata-tests/kvrestore3-20261006/rollback-kvrestore.sh
 `baseline.strata` (`be37cae8…`) and `baseline.server.py` after hash checks, reloads only
 Qwen, and leaves configs, shared settings, router and TTS untouched. Not executed.
 
-#### Eviction-order follow-up (not rolled out)
+#### Eviction-order follow-up — rolled out in two steps
 
 `fa7b977` makes `make_room` give up a copy the incoming chain covers before the oldest-first
-order. `drop_superseded`'s exact test missed every park in both probe runs (the client
-re-renders its last reply), so the live 340,003-cell phase evicted a conversation's only
-150k image and its partner replayed 169,998 tokens in 93.9 s.
+order. `drop_superseded`'s exact test missed every park in both probe runs (the client re-renders
+its last reply), so the live 340,003-cell phase evicted a conversation's only 150k image and its
+partner replayed 169,998 tokens in 93.9 s.
 
-Validation on the frozen candidate `f5f8b42a…` (source `fa7b977`), artifacts in
-`/data/llm/Strata-tests/evict-20261006/`: `ctest-final-exclusive.log` **81/81 passed**,
-`warm-small-v2`, `warm-streamed-v2`, `cancellation-pressure-v2`, `coherence-v2`,
-`private-http`, `private-vision` and `private-http-warm` all `passed: true`, production
-restored hash-identical after each window; CPU tests `conversation_cache_test` 4,205 (was
-4,191), `shared_kv_pages_test` 135,708, `shared_kv_reservation_test` 73. The three-phase
-probe on a private endpoint with production-equivalent settings logged 0 `skip restore`,
-1 deferral, 3 reclaims, 3 restores, 0 `ERR`, with phase 3 warm on both streams (14.2 s and
-27.2 s wall against the 93.9 s replay).
+Step 1, `f5f8b42a` (source `fa7b977`): `ctest` 81/81 and all seven gates passed on the frozen
+candidate (artifacts in `/data/llm/Strata-tests/evict-20261006/`; CPU `conversation_cache_test`
+4,205), the private probe was clean, and it was deployed — but the live probe **reproduced the
+replay** (108.5 s wall, `no image for a 169999-token prompt (parked=2 bytes=6250821344
+evictions=3; slot -1 holds 0)`). `park_current` and `park_slot_target` reserve room with
+`make_room(estimate, held)` before they capture, and those calls had no incoming chain, so they
+evicted oldest-first and `put`'s chain-aware choice never ran.
 
-Not deployed: `engine/strata-nibbler` is still `1d71f758…` (the reclaim-restore fix). The
-live-contention case this change targets - a third small parked entry tipping the LRU - has
-not been re-run since the fix, so the live probe would have to follow a rollout.
+Step 2, `40e8305c…` (source `f7fe1cd`): both reservation sites now pass the chain they are about
+to park. `ctest` 81/81 and all seven gates passed again (artifacts in
+`/data/llm/Strata-tests/evict2-20261006/`; `conversation_cache_test` 4,208), the candidate was
+deployed, and the live three-phase probe now logs 0 `skip restore`, 1 deferral, 2 reclaims,
+2 restores, 0 `ERR`: `reclaimed idle slot 0 (42503 pages) for a canonical restore` →
+`restored 149999 tokens (live) in 123.8 ms` → `prompt 169999 tokens = 149999 reused + 20000 read
+in 12979 ms`, 27.7 s wall against the 108.5 s replay, with the other stream warm at 14.2 s and
+both slots ending idle at ~170k tokens.
 
-Gate note for future windows: the model unload acknowledges before the engine's VRAM
-returns, and `prefill_fused_iq_test` then fails with `cudaMalloc: out of memory` while
-nothing else is running. `native-gates.sh` now waits for under 2 GiB GPU memory used before
-`ctest`.
+Deployed hashes (`rollout.sha256` in the step-2 directory): `engine/strata-nibbler`
+`40e8305c8e09e657e22f520255185bee29faaa10b988b5b0b09500d98529d191`; `serve/server.py`
+`262f00a6…`; tracked and runtime config `8178be74…`; shared Chat settings `b61e757d…` (all
+unchanged). Rollback for either step restores the preceding binary after hash checks
+(`rollback-evict.sh` → `1d71f758…`, `rollback-evict2.sh` → `f5f8b42a…`), reloading only Qwen and
+leaving configs, shared settings, router and TTS untouched. Neither was executed.
+
+Gate note for future windows: the model unload acknowledges before the engine's VRAM returns, and
+`prefill_fused_iq_test` then fails with `cudaMalloc: out of memory` while nothing else is running.
+`native-gates.sh` now waits for under 2 GiB GPU memory used before `ctest`.

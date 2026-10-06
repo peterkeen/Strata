@@ -786,6 +786,26 @@ Gate note: exclusive-GPU gates must wait for the GPU to be *actually* free after
 (the unload acknowledges before the engine's VRAM returns). Without that wait
 `prefill_fused_iq_test` fails with `cudaMalloc: out of memory` while nothing else is running;
 `native-gates.sh` waits for under 2 GiB used before `ctest`.
+
+#### The reservation, not just the insertion (same day)
+
+The first rollout of the eviction preference (`f5f8b42a`) did **not** fix the live case: the
+re-run reproduced the replay exactly (108.5 s wall, `no image for a 169999-token prompt
+(parked=2 bytes=6250821344 evictions=3; slot -1 holds 0)`). The log explains it. `park_current`
+and `park_slot_target` reserve room with `make_room(estimate, held)` **before** they capture,
+and those calls had no incoming chain, so they still evicted oldest-first - the older copy of the
+*other* conversation - and `put`'s chain-aware choice never ran because the room was already
+made. Both reservation sites now pass the chain they are about to park (main's `live`/`live_imgs`,
+the slot's `ids` with no images), so the choice is consistent from the reservation through the
+capture. `conversation_cache_test` is 4,208 checks; its case pins the reservation path
+directly.
+
+With `40e8305c…` deployed, the same live three-phase probe logs 0 `skip restore`, 1 deferral,
+**2 reclaims, 2 restores**, 0 `ERR`, and the phase that replayed in both earlier live runs is
+now: `reclaimed idle slot 0 (42503 pages) for a canonical restore` → `restored 149999 tokens
+(live) in 123.8 ms` → `prompt 169999 tokens = 149999 reused + 20000 read in 12979 ms` (27.7 s
+wall against 108.5 s, with the other stream warm at 14.2 s). Both slots end idle at ~170k tokens
+with 2 parked entries.
 ### Verification
 
 `shared_kv_pages_test` 135,708 checks (was 135,660), `shared_kv_reservation_test` 73,
