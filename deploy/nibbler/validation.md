@@ -164,3 +164,22 @@ requests; prompt reuse 180,131 of 181,577, 182,654 of 185,136 and 186,211 of
 186,819 tokens; 169 `TARGET_ONLY slot clone` and 293 `TARGET_ONLY decode`; drafts
 ran on 2,260 of 2,777 requests at 67.7% acceptance (1,382,206 of 2,041,742
 offered); 22 pressure events, all parked, no budget/RAM-floor/allocation miss.
+
+Applied on 2026-10-06: the host checkout moved to this commit as branch
+`nibbler-deployed` (the worktree it replaced is saved under
+`/data/llm/Strata-tests/audit-20261006/`: `worktree.before.patch`,
+`untracked.before.tar`, `config.tracked.before`, `config.runtime.pre-8192`),
+`strata.service` and `strata.service.d/` were removed, and llama-swap was
+restarted at 07:27 EDT - `/health` 200 after 30 s. The runtime config copy is now
+`8178be74…` and the engine runs `--conversation-cache-mib 8192
+--conversation-cache-slots 4 --conversation-cache-min-free-mib 4096`, which
+`/metrics` reports as `conversation_cache_mib=8192`. After the reload: the host's
+own frontend tests pass (11 handoff, 18 incremental KV, 26 unified lifecycle, 13
+unified reporting, 11 parallel, 8 lifecycle, 10 monitor); `Host:
+nibbler.local.keen.land` answers 200 while an unknown host gets 403; a two-turn
+chat answered correctly with the second turn reusing 183 of 207 prompt tokens;
+pocket-tts came back.
+
+The binary is still `d318cd7b…`, built from the three-hunk variant of
+`generate.cpp`. Rebuilding from this tree is now optional: the source is
+reproducible and the delta is only those readability edits.
