@@ -6807,6 +6807,13 @@ int main(int argc, char** argv) {
                         }
                 }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            // A large prompt with no parked match is the replay this cache exists to avoid, so say so:
+            // the entry count, bytes and evictions tell an evicted image from an unmatched one.
+            if (conversations.enabled() && parked.tokens == 0 && conversations.size() > 0 && ids.size() >= 32768)
+                std::fprintf(stderr, "strata serve: conversation cache: no image for a %zu-token prompt "
+                                     "(parked=%zu bytes=%zu evictions=%zu; slot %d holds %zu)\n",
+                             ids.size(), conversations.size(), conversations.bytes(), conversations.evictions(),
+                             slot_source, slot_source >= 0 ? bs[size_t(slot_source)].ids.size() : 0);
             std::optional<strata::core::SavedConversation> incoming;
             if (parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
             const int64_t wanted = std::min<int64_t>(admit_slot >= 0 ? admit_max_new : max_new, o.max_context - n);

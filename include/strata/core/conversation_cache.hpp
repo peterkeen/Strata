@@ -219,12 +219,25 @@ public:
 
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
-    bool make_room(size_t incoming, size_t held = 0) {
+    // `prefer_covered_ids`/`_imgs` are the incoming chain (see put): when an entry must go, a copy
+    // that chain covers goes before the oldest-first order, because a client re-renders a reply and
+    // so the superseded copy of the same conversation rarely matches drop_superseded's exact rule -
+    // and taking the oldest entry instead evicts another conversation's only copy. Without the
+    // chain this is the plain LRU it always was.
+    bool make_room(size_t incoming, size_t held = 0,
+                   const std::vector<int32_t>* prefer_covered_ids = nullptr,
+                   const std::vector<ConversationImageKey>* prefer_covered_imgs = nullptr) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            bytes_ -= entries_.front().bytes();
-            entries_.pop_front();
+            size_t victim = 0;
+            if (prefer_covered_ids != nullptr && prefer_covered_imgs != nullptr) {
+                for (size_t i = 0; i < entries_.size(); ++i) {
+                    if (covered_by(entries_[i], *prefer_covered_ids, *prefer_covered_imgs)) { victim = i; break; }
+                }
+            }
+            bytes_ -= entries_[victim].bytes();
+            entries_.erase(entries_.begin() + (std::ptrdiff_t) victim);
             ++evictions_;
         }
         return true;
@@ -268,13 +281,35 @@ public:
         const size_t n = image.bytes();
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
-        if (!make_room(n, held)) return false;
+        if (!make_room(n, held, &image.live.ids, &image.live.imgs)) return false;
         entries_.push_back(std::move(image));
         bytes_ += n;
         return true;
     }
 
 private:
+    // A parked copy whose own tail beyond its deepest resume point is longer than this is left to
+    // the oldest-first order: giving it up would make its conversation re-read that whole tail on
+    // the next turn, which can cost more than the eviction it avoids. A client re-renders the last
+    // reply, so a superseded copy's own tail is typically one turn's reply.
+    static constexpr size_t kSupersededTailTokens = 4096;
+
+    // The incoming chain covers everything this entry holds up to the entry's deepest resume point,
+    // even though this chain's own resume points sit a few tokens past it (the client re-rendered
+    // the reply). Such an entry is the superseded copy of this conversation, and it is the one to
+    // give up before another conversation's only copy. Entries without checkpoints are never
+    // covered, and a copy with a long tail of its own is left to the LRU order.
+    bool covered_by(const SavedConversation& e, const std::vector<int32_t>& ids,
+                    const std::vector<ConversationImageKey>& images) const {
+        const ConversationCheckpoint* deepest = nullptr;
+        for (const auto& c : e.checkpoints)
+            if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+        if (deepest == nullptr || deepest->ids.empty()) return false;
+        if (deepest->imgs != images || deepest->ids.size() >= ids.size()) return false;
+        if (e.live.ids.size() < deepest->ids.size() ||
+            e.live.ids.size() - deepest->ids.size() > kSupersededTailTokens) return false;
+        return std::equal(deepest->ids.begin(), deepest->ids.end(), ids.begin());
+    }
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0;
     std::deque<SavedConversation> entries_; // least recently active first
     ConversationKvReuse reuse_;

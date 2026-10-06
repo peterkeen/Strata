@@ -205,6 +205,56 @@ int main() {
               "an oversized put drops nothing");
     }
     {
+        // Under eviction pressure the copy the incoming chain covers goes first. A client re-renders the
+        // last reply, so the exact drop does not fire for it, and the oldest-first order would take another
+        // conversation's only copy instead - which is what the live 2026-10-06 probe lost.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache cache(1 << 20, 3);                     // three entries, so the fourth evicts one
+        SavedConversation foreign = image({1, 2, 3, 4, 50, 51});
+        foreign.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 50})};
+        check(cache.put(std::move(foreign)), "park the other conversation's only copy first");
+        SavedConversation mine = image({1, 2, 3, 4, 10, 11, 12, 900, 901});
+        mine.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11, 12})};
+        check(cache.put(std::move(mine)), "park the copy whose reply the client will re-render");
+        SavedConversation third = image({1, 2, 3, 4, 70, 71});
+        third.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 70})};
+        check(cache.put(std::move(third)), "park an unrelated conversation");
+        SavedConversation next = image({1, 2, 3, 4, 10, 11, 12, 910, 911, 912});
+        next.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11, 12, 910})};
+        check(cache.put(std::move(next)), "park the next turn of the re-rendered conversation");
+        check(cache.superseded() == 0 && cache.evictions() == 1, "the exact drop does not fire, one entry goes");
+        const std::vector<int32_t> foreign_next = {1, 2, 3, 4, 50, 51, 52};
+        check(cache.best(foreign_next, {}, true).tokens > 0, "the other conversation's copy survived eviction");
+        const std::vector<int32_t> third_next = {1, 2, 3, 4, 70, 71, 72};
+        check(cache.best(third_next, {}, true).tokens > 0, "the unrelated copy survived eviction too");
+        const std::vector<int32_t> mine_next = {1, 2, 3, 4, 10, 11, 12, 910, 911, 912, 913};
+        check(cache.best(mine_next, {}, true).tokens >= 10, "the newest copy of this conversation is kept");
+    }
+    {
+        // A covered copy whose own tail is long is left to the oldest-first order: giving it up would
+        // make that conversation re-read the whole tail, which can cost more than this eviction.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache keep(1 << 20, 3);
+        SavedConversation gone = image({1, 2, 3, 4, 60, 61});
+        gone.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60})};
+        check(keep.put(std::move(gone)), "park the copy that will age out");
+        SavedConversation long_tail = image({1, 2, 3, 4, 20});
+        for (int i = 0; i < 5000; ++i) long_tail.live.ids.push_back(1000 + i);
+        long_tail.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 20})};
+        check(keep.put(std::move(long_tail)), "park a covered copy with a long unique tail");
+        SavedConversation filler = image({1, 2, 3, 4, 80, 81});
+        filler.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 80})};
+        check(keep.put(std::move(filler)), "park a third conversation");
+        SavedConversation incoming = image({1, 2, 3, 4, 20, 9999});
+        incoming.checkpoints = {cp({1, 2, 3, 4})};
+        check(keep.put(std::move(incoming)) && keep.superseded() == 0, "park over the long-tailed copy");
+        const std::vector<int32_t> aged_next = {1, 2, 3, 4, 60, 61, 62};
+        // Only the checkpoint every entry shares (the root) remains of the evicted copy.
+        check(keep.best(aged_next, {}, true).tokens == 4, "the oldest copy is evicted, not the long-tailed one");
+        const std::vector<int32_t> tail_probe = {1, 2, 3, 4, 20, 1000};
+        check(keep.best(tail_probe, {}, true).tokens > 0, "the long-tailed copy still restores");
+    }
+    {
         ConversationCache disabled(0,4), no_slots(1024,0);
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");
