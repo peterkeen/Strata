@@ -483,12 +483,47 @@ the live host-allowlist entry had been committed nowhere; the host checkout sat 
 `serve/test_kv_handoff.py`/`serve/test_incremental_kv.py` were absent; and a dead
 `strata.service` still pointed at the pre-unified-KV stack on port 8088.
 
-Still open in the serving path, found by the same audit and not addressed by this
-commit: `finish_shared_slot` acknowledges `handoff` even when `keep` is false and
-it released the backing (`serve/server.py` then advertises a prefix that is gone);
-`BSTOP`/`BHANDOFF` parse their slot with `atoi`, so a malformed field acts on slot
-0 (unlike the validated `BGEN` parse); and a pending `HANDOFF` relabels a
-reservation-shortage stop as a handoff, skipping the pressure parking that a
-`cancel` would have taken. None of the three is reachable through the shipped
-frontend today; the parking cost of the third is unmeasured, since production
-parking never fell back to replay.
+Three serving-path defects from the same audit, fixed here:
+
+- `finish_shared_slot` acknowledged `handoff` even when `keep` was false and it had
+  released the backing. `serve/server.py` reads "handoff" as "this slot still holds its
+  KV" - it writes `slot_held` from it and `pick_slot` steers the next turn's `BGEN` at
+  that slot - so the frontend advertised a prefix that no longer existed. The terminal is
+  now `cancel` whenever the cache cannot be kept (a picture slot, or prompt caching off),
+  with the reason on stderr. `serve/test_kv_handoff.py`'s
+  `test_engine_declining_to_keep_a_handed_off_slot_advertises_no_prefix` pins the
+  frontend half against a scripted engine that declines to keep.
+- `BSTOP`/`BHANDOFF` took their slot from a bare `atoi`, so `BSTOP foo` parsed to 0 and
+  cancelled or handed off somebody else's owner. All three read sites - the main control
+  loop, the admission retry loop, and the chunked prompt read's window boundary - go
+  through `strata::core::shared_kv_slot_arg`: the whole argument field must be a decimal
+  inside `[0, --batch)`. A rejected line is logged and ignored rather than answered with
+  `ERR`, because an unsolicited `ERR` is consumed by whichever request owns the slot
+  queue and ends its turn. `src/core/shared_kv_reservation_test.cpp` covers garbage, a
+  missing field, negatives, out-of-range, trailing junk and `strtol` overflow.
+- A pending internal `HANDOFF` relabelled a reservation-shortage stop as a handoff, so
+  the one condition that needs the pressure disposition skipped it: no RAM snapshot
+  parked, and main's mapping retained while nothing was decoding. The relabel is gated on
+  the stop having come from the handoff, and a stop that releases main because the next
+  window would not fit parks its image first whatever label it carries. Capacity was
+  never stranded either way: `reclaim_shared` frees seq 0 once `main_required_end < 0`,
+  which every request end sets.
+
+`copy_to_slot`/`copy_from_slot` also `return`ed inside their per-stage loop, so a layer
+split would transfer only stage 0's sessions. `--kv-unified` is refused with
+`--layer-split` at startup, so this was latent; both now fail the transfer with an
+explicit error if `stages` is ever non-empty.
+
+Verification: `shared_kv_reservation_test` 73 checks (was 55) over the new slot-argument
+matrix; `serve/test_kv_handoff.py` 12 tests (was 11), including a scripted engine that
+declines to keep a handed-off slot; the frontend suites unchanged at 86 tests (18
+incremental-KV, 26 unified lifecycle, 13 unified reporting, 11 parallel, 8 lifecycle,
+10 monitor); `shared_kv_pages_test` (135,660) and `conversation_cache_test` (4,191) still
+pass. `generate.cpp` cannot be compiled in this VM (no CUDA toolkit), so the engine half
+was compile-checked on the GPU host in a throwaway worktree (`/data/llm/Strata-check`,
+Ninja Release, CUDA 13.3, arch 120, g++-15 - the deployment cache's own settings): the
+changed TU builds clean, with only the two pre-existing `-Wunused` warnings (1023
+`argmax`, 6421 `w`). Not done: linking the full binary, the GPU gates
+(`tools/kv_handoff_smoke.py`, `ctest`'s 81 tests), or any deployment - nibbler still runs
+the audited `9319b4a7…`. The shortage-parking cost of the third fix stays unmeasured;
+production parking has never fallen back to replay.
