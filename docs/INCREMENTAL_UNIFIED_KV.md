@@ -569,3 +569,105 @@ untouched. Not executed.
 The shortage-parking cost of the third fix is still unmeasured: the only parked event
 observed after the reload parked one 227-MiB image with zero evictions, so production
 parking has still never fallen back to replay.
+
+## Two-stream aggregate-capacity probe (2026-10-06)
+
+Purpose: measure what the 262,144-cell aggregate backing actually does when two live
+conversations together exceed it, and where the cost lands. Run against the live
+production stack (llama-swap 8088 - frontend 5801) with bounded 32-token outputs.
+Artifacts: `/data/llm/Strata-tests/overcap-20261006/` (both phases, engine-log byte
+offsets per phase, 5-s `/metrics` timeline) and
+`/data/llm/Strata-tests/overcap-clean-20261006/` (phase 1 after an unload/reload, so the
+pool started with both slots at zero). This is a correctness/shape probe, not a
+throughput benchmark: one seed, greedy, repetitive synthetic padding.
+
+### Phase 1 - two concurrent 125k streams (249,996 cells <= 262,144)
+
+Clean pool (fresh engine, both slots `held_tokens 0`, no parked entries). Both requests
+were admitted, produced their 32 tokens, and no request returned an error. Two things
+did not go as the arithmetic suggests:
+
+- **The prefills never overlapped.** The first stream read 125,001 tokens in 67,510 ms
+  (1,851.6 tok/s); the second waited 137 s and then read 125,001 tokens in 68,728 ms
+  (1,818.8 tok/s). Both runs with an occupied pool behaved the same way, so this is not
+  a pool-occupancy effect. The engine did interleave at coarse granularity instead:
+  `strata batch: the prompt was read in 2 parts, the slots decoding 1075 ms between
+  them`.
+- **Parking ran even though 250k fits.** `conversation cache: parked 125002 tokens in
+  588.3 ms; parked=1 bytes=2737017848 evictions=0`, then
+  `strata batch: slot 0 takes 125002 tokens (copied in 643.7 ms)` and
+  `prompt 125002 tokens = 125001 reused + 1 read in 1 ms (720.9 tok/s)`. So the handoff
+  parks an image (2.74 GB) and the continuation restores the prefix by copying it back.
+  Zero evictions, zero `pressure` lines, zero `ERR` lines.
+
+End state confirms the boundary claim: both slots at `held_tokens 125032` - 250,064
+cells, inside the 262,144-cell pool, with `parked=2 bytes=5474035692 evictions=0
+parks=2`. Two 125k histories are simultaneously resident; the parked image is durability
+for the handoff, not a capacity necessity.
+
+### Phase 2 - both grow to 150,002 tokens (300,004 cells > 262,144)
+
+Both growth turns were submitted together. Two 150k histories cannot co-reside, and the
+engine resolved it without any error, any `pressure` event or any cancellation:
+
+- Winner: `prompt 150002 tokens = 125029 reused + 24973 read in 15968 ms`, then
+  `parked 150003 tokens ... evictions=4`, then `prompt 150003 tokens = 150002 reused +
+  1 read in 1 ms`. Client wall time 17.4 s; frontend usage reports `cached_tokens`
+  150002.
+- Loser: `conversation cache: skip restore (private image exceeds available shared
+  capacity); keep live/slot prefix or prompt replay`, then a full
+  `prompt 150002 tokens = 0 reused + 150002 read in 82527 ms (1817.6 tok/s)`. Client wall
+  time 100.5 s; frontend record `reused=0 prompt_read=150002 prompt_ms=82527.4`.
+
+The whole window has 4 park/evict events, one skip-restore, 0 `pressure`, 0 `cancelled`,
+0 `ERR`. The loser's penalty is a complete re-prefill of its history (~82 s for 150k,
+~68 s for 125k tokens at the measured ~1.82-1.85k tok/s), against ~0.64-0.71 s to copy a
+125k prefix back out of a parked image. The parking budget is what makes the winner's
+image survive at all: `parked=3 bytes=8343518772` and, in phase 1,
+`bytes=8568791496` - 7.77-7.98 GiB, i.e. inside the raised 8192 MiB budget and roughly
+twice the previous 4096 MiB one.
+
+### Mechanism (code, not inference)
+
+- The skip is decided at `src/program/generate.cpp:6866` by
+  `page_count(restore_end) > pages().free_pages_after_release(0)`, where
+  `free_pages_after_release` (`include/strata/core/shared_kv_pages.hpp:160`) counts free
+  pages plus pages **exclusively owned by that one sequence**. The check therefore
+  ignores the other slot's claim, even when that slot is idle and its image is already
+  parked. When it fails, `incoming.reset()` drops the canonical image and the request
+  falls back to "keep live/slot prefix or prompt replay"; in this run the loser's live
+  prefix had already been released to admit the winner, so the fallback was a full
+  replay, and the image that could have served it was discarded.
+- `reclaim_shared` (`src/program/generate.cpp:5982`) *does* release idle slots'
+  mappings (and clears their `cached`/`ids`/`checks`), but it is only reached from the
+  pressure path (`:6223`, `:6455`, `:6479`), never from the restore preflight.
+- The comment at the skip site states the intent: a fresh full restore must not evict a
+  slot source when the live/checkpoint prefix can fit instead. The assumption breaks when
+  the incoming request's own prefix is already gone.
+
+Inference, labelled as such: with both images parked (5.47 GB of an 8 GiB budget), an
+idle-slot-reclaiming restore would turn an ~82 s replay into a ~1 s copy plus the
+suppressed-MTP cost, so the replay here is a policy cost rather than a physical limit.
+That trade has not been implemented or measured.
+
+### Side observations
+
+- **`held_tokens` is a logical claim, not residency.** At the end of phase 2 both slots
+  reported 150,014 (sum 300,028 > `kv_capacity_cells` 262,144), and during the loser's
+  replay the idle slot reported 150,014 throughout. Do not sum these as physical use.
+- **The frontend's `cached_tokens` is not a cost signal after a handoff.** Phase-1 stream
+  a reports `cached_tokens=124998` although its first segment read all 124,998 tokens
+  cold; the number comes from the warm continuation segment.
+- **Handed-off requests under-report in the per-request summary line.** Without
+  competition the same request shape logs the true count (`427 tokens ... 2 generated`,
+  `40003 tokens ... 32 generated, drafts accepted 23 of 23`); the handed-off streams log
+  `... 1 generated, drafts accepted 0 of 0` per segment while the bulk of the decode
+  appears in `strata batch: 30 windows ... 5.9 rows/s` / `31 windows ... 29.3 rows/s`,
+  and the clients received 32 completion tokens each. Use client `usage` or the
+  batch-window lines for token accounting.
+- MTP is suppressed across the handoff (`TARGET_ONLY slot clone` /
+  `TARGET_ONLY decode: T=1`), consistent with the coherence rule, so a restored turn
+  drafts nothing until a full replay rebuilds history.
+- KV-growing pressure is visible as a lower streaming hit rate: 85.8-86.7% of block
+  reads hit VRAM during phase 2 against 97.9-98.0% in light traffic, with 326-648 MiB
+  read from RAM over the window. VRAM free stayed at 1,674 MiB throughout.

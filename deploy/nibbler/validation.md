@@ -227,8 +227,15 @@ Rollback: `bash /data/llm/Strata-tests/servingfix-20261006/rollback-handoff.sh` 
 reloads only Qwen, and leaves configs, shared settings, router and TTS untouched. Not
 executed.
 
-Remaining uncertainty: the shortage-parking cost of the third fix is still unmeasured.
-The only parked event seen after the reload parked one 227-MiB image with zero evictions,
-so production parking has still never fallen back to replay. The 8 GiB parking budget
-remains prospective for the same reason: no pressure event with a second 2.0-2.4 GiB
-image has occurred since the raise.
+Remaining uncertainty: the shortage-parking cost of the third fix is still unmeasured;
+no parked event has yet fallen back to replay. The 8 GiB parking budget, by contrast, was
+exercised on 2026-10-06 by an operator-run two-stream capacity probe against the live
+engine: parking held `parked=3 bytes=8343518772` (7.77 GiB) and, in the first phase,
+`bytes=8568791496` (7.98 GiB) - inside the raised budget and roughly twice the previous
+4096 MiB one, so under the old value one of the two large images would have been evicted
+and its stream forced to replay. The probe also measured the aggregate-capacity wall
+(250k cells co-resident; 300k forcing one stream to re-prefill its history) and the
+idle-claim restore limitation behind that replay; see
+`docs/INCREMENTAL_UNIFIED_KV.md`,"Two-stream aggregate-capacity probe (2026-10-06)".
+Evidence: `/data/llm/Strata-tests/overcap-20261006/` and
+`/data/llm/Strata-tests/overcap-clean-20261006/`.
