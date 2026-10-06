@@ -731,18 +731,37 @@ class StrataEngine:
         if len(f) >= 3 and f[1].lstrip("-").isdigit() and f[2].isdigit():
             self._yielded = (int(f[1]), int(f[2]))
 
+    @staticmethod
+    def _info_true(value) -> bool:
+        return value not in (None, False, 0, "0", "false", "False", "no", "No")
+
+    def _can_handoff(self) -> bool:
+        """The frontend may use HANDOFF/BHANDOFF only with unified engines that advertise the protocol."""
+        info = self.info or {}
+        return self._info_true(info.get("kv_unified")) and self._info_true(info.get("kv_handoff"))
+
+    @staticmethod
+    def _handoff_public_finish(out: list[int], max_new: int, cancel) -> str:
+        if cancel.is_set():
+            return "cancel"
+        if out and out[-1] in EOS_IDS:
+            return "stop"
+        if len(out) >= int(max_new):
+            return "length"
+        return "cancel"
+
     def _control(self, cancel, on_token, stop_when=None):
         """Reads the control lines of the request on them (GEN / BGEN), yielding None heartbeats.  Calls on_token(id)
         for each `T`; returns ("done", None) at DONE, or ("badm", continues) at BADM (after DONE).  `stop_when()`
-        true sends STOP once (the request is then read to its DONE)."""
-        stopped = False
+        true sends HANDOFF on capable unified engines, else STOP. A later real cancel still sends STOP."""
+        stopped = False    # False, "handoff", or "stop"
         while True:
             try:
                 line = self.lines.get(timeout=10.0)
             except queue.Empty:
-                if cancel.is_set() and not stopped:
+                if cancel.is_set() and stopped != "stop":
                     self._send("STOP")
-                    stopped = True
+                    stopped = "stop"
                 yield None
                 continue
             if line is None:
@@ -751,9 +770,17 @@ class StrataEngine:
                 btrace("ctl<", self._ctl_mode, line.strip()[:60])
             if line.startswith("T "):
                 on_token(int(line[2:]))
-                if not stopped and (cancel.is_set() or (stop_when is not None and stop_when())):
+                promote = not stopped and stop_when is not None and stop_when()
+                if cancel.is_set() and stopped != "stop":      # a real client/request cancel releases backing
                     self._send("STOP")
-                    stopped = True
+                    stopped = "stop"
+                elif promote:                                  # internal solo->batch promotion may keep warm KV
+                    if self._can_handoff():
+                        self._send("HANDOFF")
+                        stopped = "handoff"
+                    else:
+                        self._send("STOP")
+                        stopped = "stop"
                 yield False                              # a token is pending (not a heartbeat)
             elif line.startswith("PP "):
                 f = line.split()
@@ -816,7 +843,8 @@ class StrataEngine:
                 except (IndexError, ValueError):
                     tail = []
             if line.startswith("BDONE "):
-                if line.split()[3:4] == ["pressure"]:
+                finish = line.split()[3:4]
+                if finish == ["pressure"] or (finish == ["cancel"] and self._info_true((self.info or {}).get("kv_unified"))):
                     tail = []                         # released backing is not a passive slot cache
                 return True
             return False
@@ -994,9 +1022,9 @@ class StrataEngine:
     SOLO_AGAIN_MIN_LEFT = 32  # ... only with at least this many tokens still allowed (max_tokens)
 
     def _may_go_solo(self, left: int, times: int, embeddings) -> bool:
-        """A request decoding in a slot that is alone now (no other slot busy, nobody waiting) goes back to the solo
-        path with its MTP drafts: the engine continues it from the slot's sessions (its slot cache; INFO
-        slot_cache=1).  STRATA_PARALLEL_SOLO=0 keeps it in the slot."""
+        """A request decoding in a slot that is alone now (no other slot busy, nobody waiting) goes back to the main
+        GEN path. Slot-cache engines can continue from the slot's sessions; unified target-only native engines may
+        keep MTP suppressed until a full replay catches up. STRATA_PARALLEL_SOLO=0 keeps it in the slot."""
         if (embeddings or times >= self.SOLO_AGAIN_MAX or left < self.SOLO_AGAIN_MIN_LEFT or
                 not (self.info or {}).get("slot_cache") or os.environ.get("STRATA_PARALLEL_SOLO") == "0"):
             return False
@@ -1098,6 +1126,8 @@ class StrataEngine:
                         finish = (self.last or {}).get("finish") if isinstance(self.last, dict) else None
                         left = int(max_new) - len(out)
                         if cancel.is_set() or left <= 0 or finish in ("stop", "length") or (out and out[-1] in EOS_IDS):
+                            if finish == "handoff":
+                                self.last = {**self.last, "finish": self._handoff_public_finish(out, max_new, cancel)}
                             if incremental and finish == "pressure":
                                 self.last = {**self.last, "finish": "cancel" if cancel.is_set() else
                                              "stop" if out and out[-1] in EOS_IDS else "length"}
@@ -1232,9 +1262,16 @@ class StrataEngine:
                                 stop_sent = True
                             continue
                         yield t
-                        if not going_solo and not stop_sent and self._may_go_solo(int(max_new) - len(out), solo_again,
-                                                                                  embeddings):
-                            self._send(f"BSTOP {slot}")         # alone now: on with the drafts (below)
+                        if cancel.is_set():              # cancellation can arrive while the token is with the caller
+                            if not stop_sent:
+                                self._send(f"BSTOP {slot}")
+                                stop_sent = True
+                            continue
+                        if (not going_solo and not stop_sent and not (out and out[-1] in EOS_IDS) and
+                                self._may_go_solo(int(max_new) - len(out), solo_again, embeddings)):
+                            # Alone now: resume on the main GEN path. Capable unified engines keep the slot's warm KV;
+                            # legacy engines still use BSTOP and report the internal terminal as cancel.
+                            self._send(f"{'BHANDOFF' if self._can_handoff() else 'BSTOP'} {slot}")
                             going_solo = True
                     elif line.startswith("BDONE "):
                         phase = "none"
@@ -1267,12 +1304,21 @@ class StrataEngine:
                                     cancel, command_epoch if len(out) == command_out else None)):
                                 return
                             break
-                        # what the slot's sessions hold now: the prompt and every token fed (all but the last one)
-                        self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
-                        if (going_solo and f[3:4] == ["cancel"] and not cancel.is_set() and len(out) < int(max_new)
-                                and not (out and out[-1] in EOS_IDS)):
-                            # the solo path continues it: the engine copies the slot's sessions back (all but the
-                            # last token are in them) and decodes with MTP drafts again
+                        # what the slot's sessions hold now: the prompt and every token fed (all but the last one).
+                        # A real unified cancel releases backing, so do not advertise a passive held prefix for it.
+                        if self._info_true((self.info or {}).get("kv_unified")) and f[3:4] == ["cancel"]:
+                            self.slot_held[slot] = []
+                        elif f[3:4] == ["handoff"] and (cancel.is_set() or len(out) >= int(max_new) or
+                                                         (out and out[-1] in EOS_IDS)):
+                            self.slot_held[slot] = [] if cancel.is_set() else \
+                                list(prompt) + out[gen0:-1] if len(out) > gen0 else []
+                            self.last = {**self.last, "finish": self._handoff_public_finish(out, max_new, cancel)}
+                        else:
+                            self.slot_held[slot] = list(prompt) + out[gen0:-1] if len(out) > gen0 else []
+                        if (going_solo and f[3:4] in (["handoff"], ["cancel"]) and not cancel.is_set()
+                                and len(out) < int(max_new) and not (out and out[-1] in EOS_IDS)):
+                            # the main path continues it: legacy slot-cache engines copy the slot's sessions back
+                            # (all but the last token are in them); unified target-only clones may keep drafts off
                             self.slot_live[slot] = None
                             self.slot_used[slot] = time.time()
                             with self.slot_cv:

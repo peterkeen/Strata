@@ -343,4 +343,113 @@ It restores only `incremental-baseline.strata` and
 shared settings, router and TTS untouched. Copies and script syntax were checked;
 rollback was not executed after the successful rollout.
 
-All required gates are complete. The continuation heartbeat can be removed.
+All required gates are complete. Continuation heartbeat `d12a6ef6` was removed.
+Implementation commit: `3d825e9`. Published for review in
+[PR #4](https://github.com/peterkeen/Strata/pull/4); deployment does not imply the
+PR has been merged. The user's local host-allowlist config change is not part
+of the commit.
+
+## Warm-cache handoff follow-up (2026-10-05)
+
+Status: **all gates passed; deployed to nibbler (Qwen only)**.
+
+Live inspection found full rereads of 108434, 106216 and 63513 tokens despite
+successful restores between requests. The frontend used cancellation commands
+for internal solo/batch transitions, while unified cancellation intentionally
+released their backing. The original gates did not exercise repeated warm
+continuations across those transitions.
+
+The candidate advertises `kv_handoff=1`. Capable frontends use `HANDOFF` for
+solo-to-batch and `BHANDOFF <slot>` for batch-to-solo, with an internal `handoff`
+terminal. Valid completed-prefill state becomes a trimmed, reclaimable idle
+cache. Actual `STOP`/`BSTOP` retains release semantics; partial prompt reads
+cannot become transferred live caches. Late slot handoffs owe no duplicate ack.
+Target-only slot clone-back still suppresses private MTP/suffix proposals until
+full residual replay; neither the draft ring nor capacity settings change.
+Legacy engines keep their old commands.
+
+Evidence and rollback copies are under
+`/data/llm/Strata-tests/handoff-20261005/`: `baseline.strata` and
+`baseline.server.py`. CPU reservation/handoff policy: **55 checks passed**;
+harness regression suites: **136 tests passed**; frontend suite: **340 tests,
+seven skipped**, using an isolated `uv` environment with regex/jsonschema/jinja2.
+The initial bare-Python run lacked regex/jsonschema and failed; that environment
+failure is preserved, not counted as validation. The CUDA candidate built with
+the existing unused-code warnings.
+
+- `ctest-final-exclusive.log`: **81/81 passed**, exclusive GPU, 100.62 seconds.
+  Earlier overlapping-production runs hit `cudaMalloc: out of memory` in
+  `prefill_fused_iq_test`; the exclusive reruns resolve that failure. The three
+  asset-dependent tests (`ple_parity`, `expert_parity`, `pool_test`) remain
+  excluded, as in the previous rollout.
+- `warm-small-v2.json`: **passed**, parking disabled, 36 stages. Three repeated
+  handoff cycles, both admission orders, both next turns, partial-page offsets
+  1/2/3, late BHANDOFF no-extra-ack and real STOP/BSTOP recovery passed.
+- `warm-streamed-v2.json`: **passed**, parking disabled, 35000/35004-token
+  histories, 262144 backing and 32768 residency. Every warm pair admission and
+  main/batch continuation reused its entire required consumed prefix. Final
+  next-turn admissions reused **35095 / 35058 cells** exactly. Each run emitted
+  one main handoff and six slot handoffs with exactly matching acknowledgements;
+  all logical continuation outputs matched their frozen solo references.
+  Next-turn reference requests are independent but may reuse checkpoints; they
+  are not claimed to be fresh full-replay oracles. Both native processes quit
+  cleanly.
+- The first `warm-streamed.json` failed: A's finite 64-token allowance completed
+  during B's cold 35K prefill, so it could not prove overlap. The corrected gate
+  prewarms B, keeps logical cache placement stable while reversing admission
+  order, and returns A's resumed main prefix to its idle slot before admitting
+  B. Caps and overlap/reuse assertions are not weakened. Failed evidence remains.
+- Independent review by `1f9b6897-b4af-4054-9615-2f1b67a68cda`: **no correctness
+  blockers**. Explicit integer stop stores/conversion address readability notes;
+  two additional frontend tests cover STOP upgrading a pending HANDOFF and
+  promotion never downgrading real cancellation.
+- `cancellation-pressure-v2.json`: **passed**, actual small-backing pressure,
+  FIFO continuation, parity, cancellation, protected BYIELD release and healthy
+  recovery.
+
+- `coherence-v2.json`: **passed**, target-only MTP coherence including
+  pressure restore to main GEN; `native-v2.exit=0`.
+- `private-http.json`: **passed**, actual frontend integration on an isolated
+  5802 endpoint with the candidate binary and server.
+- `private-vision.json`: **passed**, synthetic solid-red PNG.
+- `private-http-warm.json`: **passed**, parking disabled
+  (`conversation_cache_mib=0`), two ~35K-token histories over three streamed
+  multi-turn rounds. Both streams decoded concurrently every round, with no
+  pressure pauses. Rounds 1-2 reused all but the ~43 re-templated tail tokens
+  of each prior prompt (e.g. 35083/35126, 35551/35594; native logs and history
+  agree). Before this fix such turns reread the whole history.
+- After each gate script, production recovery answered **OK** and production
+  binary/server/config/shared-settings hashes were unchanged.
+
+### Rollout
+
+Controlled rollout: **passed**, `rollout.status=0` (`deploy-handoff.sh`). The
+script re-checked every gate artifact, refused to run with the private
+endpoint up or production busy, verified baseline hashes, froze the tested
+artifacts as `candidate.strata` / `candidate.server.py`, then unloaded only Qwen
+through llama-swap and atomically replaced the server, then the binary. A
+request through **8088** answered **OK**; live 5801 properties confirmed two
+slots, 262144 backing, 32768 residency, 4096-MiB parking, vision and
+`kv_handoff=1 kv_incremental=1 kv_reserve_ahead=256`. pocket-tts stayed ready
+and `llama-swap.service` stayed active.
+
+Production SHA256 (`rollout.sha256`):
+
+- `engine/strata-nibbler`:
+  `d318cd7baf926c2b1a3d3eebfd94a615d5e9fe909fd560dcd556d61174771cac`.
+- `serve/server.py`:
+  `262f00a67b7056b3e2d7f2e0192dd4f923f865ea55f64cf9aa84a0fff0e8bb26`.
+- Tracked and runtime config, **unchanged**:
+  `e806bfeb934c1fe7350ec305d49af66ed8089bbeb8d5198b032967e236b38166`.
+- Shared Chat settings, **unchanged**:
+  `b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a`.
+
+Rollback, if needed: `bash /data/llm/Strata-tests/handoff-20261005/rollback-handoff.sh`
+on nibbler. It restores only `baseline.strata` / `baseline.server.py` (the
+incremental-KV release, hashes checked), reloads only Qwen and leaves configs,
+shared settings, router and TTS untouched. Not executed.
+
+The deployed native binary was built from source that differs from the
+committed `generate.cpp` only in the three review readability edits (explicit
+`store(1)`/`store(0)` and `!= 0`), which are semantically identical. Heartbeat
+`27e8220b` removed after rollout. The user's config edit is not committed.
