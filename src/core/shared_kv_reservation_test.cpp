@@ -102,6 +102,31 @@ int main() {
         for (unsigned flags = 0; flags < 4; ++flags)
             check(shared_kv_handoff_cache(stop, (flags & 1) != 0, (flags & 2) != 0) ==
                       (stop == 2 && flags == 3), "only internal handoff of valid completed prompt keeps cache");
+
+    // A shortage stop is not a handoff: the label decides whether main's mapping is
+    // retained, so the caller must distinguish "the handoff stopped me" from "the next
+    // window would not fit". shared_kv_handoff_cache stays the authority for the former.
+    check(shared_kv_handoff_cache(2, true, true), "a fit-decode that hands off keeps its cache");
+
+    // BSTOP/BHANDOFF address one slot by number. A bare atoi made a malformed line parse
+    // to 0 and cancel or hand off somebody else's owner. The whole argument field must be
+    // a decimal inside [0, n_slots), and a rejected line must not touch the caller's slot.
+    for (const char* bad : {"BSTOP foo", "BSTOP ", "BSTOP", "BSTOP -1", "BSTOP 2", "BSTOP 1x", "BSTOP 1 2",
+                            "BSTOP 99999999999999999999", "BHANDOFF x", "BHANDOFF "}) {
+        int untouched = -7;
+        check(!shared_kv_slot_arg(bad, bad[1] == 'H' ? 9 : 6, 2, untouched) && untouched == -7,
+              "malformed BSTOP/BHANDOFF names no slot and never aliases slot 0");
+    }
+    for (const char* good : {"BSTOP 0", "BSTOP 1", "BSTOP 1 ", "BHANDOFF 0", "BHANDOFF 1"}) {
+        int slot = -7;
+        const size_t arg0 = good[1] == 'H' ? 9 : 6;
+        check(shared_kv_slot_arg(good, arg0, 2, slot) && slot >= 0 && slot < 2, "slot argument inside --batch parses");
+    }
+    {
+        int slot = -7;
+        check(shared_kv_slot_arg("BHANDOFF 1", 9, 2, slot) && slot == 1, "handoff addresses its own slot");
+        check(!shared_kv_slot_arg("BHANDOFF 1", 9, 1, slot) && slot == 1, "slot beyond --batch rejected");
+    }
     std::atomic<int> stop{1};
     int running = 0;
     check(!stop.compare_exchange_strong(running, 2) && stop.load() == 1,

@@ -6053,6 +6053,7 @@ int main(int argc, char** argv) {
             if (std::strcmp(reason, "pressure") == 0 && !park_slot_target(b)) return false;
             const bool handoff = std::strcmp(reason, "handoff") == 0;
             const bool keep = handoff && o.prompt_cache > 0 && !sl.img && !sl.ids.empty();
+            const bool picture = sl.img;
             if (!(keep ? unified_kv->truncate(size_t(b) + 1, int64_t(sl.ids.size()), err)
                        : unified_kv->release(size_t(b) + 1, err))) return false;
             err.clear(); // handled shortage/cache miss must not poison another slot or an interleaved prefill
@@ -6062,7 +6063,13 @@ int main(int argc, char** argv) {
                 sl.active = false; sl.stop = false; sl.partial = false; sl.cached = true;
             } else sl = BSlot{};
             // Publish release or idle-cache disposition BEFORE acknowledgement; no fabricated BT.
-            std::printf("BDONE %d %lld %s %.1f\n", b, (long long) produced, reason, ms);
+            // The frontend's contract is "handoff => the backing is still there": it advertises the
+            // held prefix and steers the next turn at that slot. A BHANDOFF that could not keep its
+            // cache released it, so its terminal is cancel, never handoff.
+            if (handoff && !keep)
+                std::fprintf(stderr, "strata batch: BHANDOFF slot %d keeps nothing (%s); terminal cancel\n",
+                             b, picture ? "a picture slot no token match reclaims" : "prompt cache off");
+            std::printf("BDONE %d %lld %s %.1f\n", b, (long long) produced, handoff && !keep ? "cancel" : reason, ms);
             std::fflush(stdout);
             return true;
         };
@@ -6091,6 +6098,13 @@ int main(int argc, char** argv) {
             // are NOT decode sources and retain their existing cancellation path.
             if (!unified_kv || b < 0 || b >= int(bs.size()) || !bs[size_t(b)].active) return true;
             return finish_shared_slot(b, "handoff");
+        };
+        auto bad_slot_line = [&](const std::string& l) {
+            // Deliberately no ERR: an unsolicited ERR line is read by whichever request owns the
+            // slot queue and ends its turn. A control line naming no slot is a frontend bug; log it.
+            std::fprintf(stderr, "strata batch: %s names no batch slot (--batch %d); ignored\n", l.c_str(),
+                         int(bs.size()));
+            std::fflush(stderr);
         };
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
@@ -6122,6 +6136,10 @@ int main(int argc, char** argv) {
                         }
                     const bool moved = unified_kv->move(0, size_t(b) + 1, e);
                     if (moved) { conversations.limit_reuse(0); main_draft_coherent = false; }
+                    // Only stage 0 exists under --kv-unified: a layer split is refused at startup.
+                    // Say so rather than returning after stage 0 and silently never transferring
+                    // the later stages' sessions if that ever stops being true.
+                    if (!stages.empty()) { e = "unified KV admission: a layer split has no slot transfer"; return false; }
                     return moved;
                 }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
@@ -6168,6 +6186,8 @@ int main(int argc, char** argv) {
                     if (!unified_kv->clone_prefix(size_t(b) + 1, 0, upto, e)) return false;
                     main_draft_coherent = false;
                     std::fprintf(stderr, "strata serve: TARGET_ONLY slot clone: private MTP proposals suppressed until full replay\n");
+                    // As in copy_to_slot: --kv-unified refuses --layer-split, so stage 0 is the only stage.
+                    if (!stages.empty()) { e = "unified KV slot restore: a layer split has no slot transfer"; return false; }
                     return true;
                 }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
@@ -6441,7 +6461,12 @@ int main(int argc, char** argv) {
                     for (auto it = in_lines.begin(); it != in_lines.end();) {
                         if (it->rfind("BSTOP ", 0) == 0 || it->rfind("BHANDOFF ", 0) == 0) {
                             const bool transfer = it->rfind("BHANDOFF ", 0) == 0;
-                            const int b = std::atoi(it->c_str() + (transfer ? 9 : 6));
+                            int b = -1;
+                            if (!strata::core::shared_kv_slot_arg(*it, transfer ? 9 : 6, int(bs.size()), b)) {
+                                bad_slot_line(*it);
+                                it = in_lines.erase(it);
+                                continue;
+                            }
                             if (!(transfer ? handoff_slot(b) : stop_slot(b))) return -1;
                             it = in_lines.erase(it);
                         } else ++it;
@@ -6483,12 +6508,15 @@ int main(int argc, char** argv) {
             // --batch: BSTOP <slot> ends that slot at its next batch window; BGEN <slot> <max_new> ... reads the
             // request's prompt and first token as a GEN 1, then continues it in that slot
             if (line.rfind("BSTOP ", 0) == 0) {
-                const int b = std::atoi(line.c_str() + 6);
+                int b = -1;
+                if (!strata::core::shared_kv_slot_arg(line, 6, int(bs.size()), b)) { bad_slot_line(line); continue; }
                 if (!stop_slot(b)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 continue;
             }
             if (line.rfind("BHANDOFF ", 0) == 0 && unified_kv) {
-                if (!handoff_slot(std::atoi(line.c_str() + 9))) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                int b = -1;
+                if (!strata::core::shared_kv_slot_arg(line, 9, int(bs.size()), b)) { bad_slot_line(line); continue; }
+                if (!handoff_slot(b)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 continue;
             }
             if (line.rfind("BYIELD", 0) == 0) continue;   // for a prompt read that has ended meanwhile
@@ -7291,11 +7319,20 @@ int main(int argc, char** argv) {
                         for (auto it = in_lines.begin(); it != in_lines.end();) {
                             if (it->rfind("BSTOP ", 0) == 0 || it->rfind("BHANDOFF ", 0) == 0) {
                                 const bool transfer = it->rfind("BHANDOFF ", 0) == 0;
-                                const int b = std::atoi(it->c_str() + (transfer ? 9 : 6));
+                                int b = -1;
+                                if (!strata::core::shared_kv_slot_arg(*it, transfer ? 9 : 6, int(bs.size()), b)) {
+                                    bad_slot_line(*it);
+                                    it = in_lines.erase(it);
+                                    continue;
+                                }
                                 if (!(transfer ? handoff_slot(b) : stop_slot(b))) { batch_fatal = true; e = err; return false; }
                                 it = in_lines.erase(it);
                             } else if (it->rfind("BYIELD ", 0) == 0) {
-                                ys = std::atoi(it->c_str() + 7);
+                                // Same parse as BSTOP/BHANDOFF: garbage must not name slot 0.
+                                if (!strata::core::shared_kv_slot_arg(*it, 7, int(bs.size()), ys)) {
+                                    bad_slot_line(*it);
+                                    ys = -1;
+                                }
                                 it = in_lines.erase(it);
                             } else {
                                 ++it;
@@ -7485,6 +7522,7 @@ int main(int argc, char** argv) {
             consumed.reserve((size_t) (n + max_new + S));
             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             const char* finish = "length";
+            bool kv_shortage = false;   // the decode gave up because the next window would not fit
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
             static const bool dec_timing = std::getenv("STRATA_DECODE_TIMING") != nullptr;
@@ -7541,7 +7579,7 @@ int main(int argc, char** argv) {
                     main_required_end = std::max<int64_t>(n, p + T);
                     const int r = reserve_unified(p, p + T, request_limit, true);
                     if (r < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
-                    if (r == 0) { finish = stop_req.load() ? "cancel" : "pressure"; break; }
+                    if (r == 0) { kv_shortage = true; finish = stop_req.load() ? "cancel" : "pressure"; break; }
                 }
                 window[0] = x;
                 for (int i = 1; i < T; ++i) window[(size_t) i] = from_sfx ? sbuf[(size_t) i - 1] : drafts[(size_t) i - 1];
@@ -7793,11 +7831,19 @@ int main(int argc, char** argv) {
             // HANDOFF is sent only after decode output. A partial prompt read
             // is never a valid transferred live source. Keep target/draft
             // provenance unchanged; slot clone-back still suppresses private MTP.
-            if (unified_kv && std::strcmp(finish, "cancel") == 0 &&
+            // A pending internal HANDOFF turns a cancelled main-path decode into a warm
+            // handoff only when the decode stopped BECAUSE of the handoff. When the next
+            // window simply would not fit, the shortage owns the disposition: reporting
+            // "handoff" for that stop hid it from the frontend (warm-looking finish, no RAM
+            // snapshot parked, main's mapping retained while nothing was decoding).
+            const bool shortage_release = kv_shortage && stop_req.load() != 0;
+            if (unified_kv && std::strcmp(finish, "cancel") == 0 && !shortage_release &&
                     strata::core::shared_kv_handoff_cache(stop_req.load(), !cancelled, live_ok))
                 finish = "handoff";
             if (unified_kv && (std::strcmp(finish, "pressure") == 0 || std::strcmp(finish, "cancel") == 0)) {
-                if (std::strcmp(finish, "pressure") == 0 && !park_current(0)) {
+                // Whatever its label, a stop that released main because the KV would not fit
+                // parks its RAM image first: the continuation resumes warm instead of cold.
+                if ((std::strcmp(finish, "pressure") == 0 || shortage_release) && !park_current(0)) {
                     std::printf("ERR pressure parking: %s\n", err.c_str()); return 1;
                 }
                 if (!unified_kv->release(0, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }

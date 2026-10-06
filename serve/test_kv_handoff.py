@@ -24,6 +24,7 @@ eos_bt = '--eos-bt' in args
 handoff_terminal = '--handoff-terminal' in args
 delay_handoff_ack = '--delay-handoff-ack' in args
 handoff_after_cap = '--handoff-after-cap' in args
+handoff_release = '--handoff-release' in args
 commands = queue.Queue()
 def reader():
     for line in sys.stdin:
@@ -54,7 +55,10 @@ def warm_for(ids):
         return True
     return any(cache == ids for cache in slot_cache.values())
 def finish_state(slot, state, reason):
-    if reason == 'cancel':
+    # A BHANDOFF the engine cannot honour (prompt cache off, or a picture slot) releases the
+    # slot and owes the cancel terminal, not the handoff one.
+    terminal = 'cancel' if reason == 'handoff_release' else reason
+    if terminal == 'cancel':
         slot_cache.pop(slot, None)
     else:
         slot_cache[slot] = list(state['session'])
@@ -72,8 +76,8 @@ def finish_state(slot, state, reason):
                 held.append(cmd)
         for h in held:
             commands.put(h)
-    log({'cmd': 'BDONE', 'slot': slot, 'finish': reason, 'session': list(slot_cache.get(slot, []))})
-    emit(f"BDONE {slot} {state['produced']} {reason} 1")
+    log({'cmd': 'BDONE', 'slot': slot, 'finish': terminal, 'session': list(slot_cache.get(slot, []))})
+    emit(f"BDONE {slot} {state['produced']} {terminal} 1")
 def finish(slot, reason):
     global active
     finish_state(slot, active.pop(slot), reason)
@@ -181,7 +185,7 @@ while True:
         log({'cmd': 'BHANDOFF', 'slot': slot, 'owned': slot in active})
         if slot in active:
             active[slot]['paused'] = False
-            finish(slot, 'handoff')
+            finish(slot, 'handoff_release' if handoff_release else 'handoff')
         continue
     if line.startswith('BSTOP '):
         slot = int(line.split()[1])
@@ -205,7 +209,7 @@ while True:
 
 class HandoffFrontend(unittest.TestCase):
     def start(self, *, handoff=True, handoff_zero=False, gate_first_gen=False, pause_active=False, eos_bt=False,
-              handoff_terminal=False, delay_handoff_ack=False, handoff_after_cap=False):
+              handoff_terminal=False, delay_handoff_ack=False, handoff_after_cap=False, handoff_release=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -220,6 +224,7 @@ class HandoffFrontend(unittest.TestCase):
         args += ['--handoff-terminal'] if handoff_terminal else []
         args += ['--delay-handoff-ack'] if delay_handoff_ack else []
         args += ['--handoff-after-cap'] if handoff_after_cap else []
+        args += ['--handoff-release'] if handoff_release else []
         popen = server.subprocess.Popen
         with mock.patch.object(server.subprocess, 'Popen',
                                lambda cmd, **kw: popen([sys.executable, str(script), *cmd[1:]], **kw)):
@@ -259,6 +264,32 @@ class HandoffFrontend(unittest.TestCase):
         self.assertNotIn('BSTOP', [r['cmd'] for r in rows], rows)
         solo_replays = [r for r in rows if r['cmd'] == 'GEN']
         self.assertTrue(any(r['warm'] for r in solo_replays), rows)
+
+    def test_engine_declining_to_keep_a_handed_off_slot_advertises_no_prefix(self):
+        # The protocol hole: "handoff" promises the backing is still there, so the frontend
+        # advertises the slot's held prefix and steers the next turn at it. An engine that
+        # released the slot instead ends it with BDONE cancel; nothing may be advertised and
+        # the continuation must not be believed warm.
+        self.start(handoff=True, pause_active=True, handoff_release=True)
+        self.engine.slot_busy[1] = True
+        gen = self.engine.generate([10, 20], 40, {}, threading.Event())
+        try:
+            self.assertIsInstance(next(gen), int)   # BGEN admission token
+            self.engine.slot_busy[1] = False
+            self.assertIsInstance(next(gen), int)   # first BT; the next resume sends BHANDOFF
+            rest = [t for t in gen if t is not None]
+            self.assertTrue(rest)
+        finally:
+            gen.close()
+            self.engine.slot_busy[1] = False
+        rows = self.log()
+        self.assertIn('BHANDOFF', [r['cmd'] for r in rows], rows)
+        self.assertNotIn('BSTOP', [r['cmd'] for r in rows], rows)
+        self.assertTrue(any(r['cmd'] == 'BDONE' and r['finish'] == 'cancel' for r in rows), rows)
+        self.assertEqual(self.engine.slot_held[0], [])
+        solo_replays = [r for r in rows if r['cmd'] == 'GEN']
+        self.assertTrue(solo_replays, rows)
+        self.assertFalse(any(r['warm'] for r in solo_replays), rows)
 
     def test_missing_capability_falls_back_to_legacy_bstop_cancel(self):
         self.start(handoff=False, pause_active=True)
