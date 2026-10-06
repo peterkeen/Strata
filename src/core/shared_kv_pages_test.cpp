@@ -390,10 +390,12 @@ void check_release_forecasts(const SharedKvPages& pool, size_t sequences) {
         // A valid const query must not allocate either.
         allocation_fault::after = 0;
         const size_t forecast = pool.free_pages_after_release(seq);
+        const size_t exclusive = pool.exclusive_pages(seq);
         const bool did_not_allocate = allocation_fault::after == 0;
         allocation_fault::after = -1;
         check(did_not_allocate, "release forecast does not allocate");
         check(forecast == actual.free_pages(), "forecast equals release on independent allocator copy");
+        check(forecast == pool.free_pages() + exclusive, "release forecast is free plus exclusive pages");
         check(forecast >= pool.free_pages() && forecast <= pool.capacity(), "release forecast within capacity");
     }
     unchanged(pool, before);
@@ -450,6 +452,37 @@ void free_after_release() {
     pool.release(2);
     check(view.free_pages_after_release(3) == 20, "fully recovered pool forecast");
     check_release_forecasts(view, 4);
+
+    // exclusive_pages(): the capacity a single sequence's release returns, and the
+    // term free_pages_after_release composes. Reclaimed idle claims are costed
+    // with it, so it must never count a page another live owner still references.
+    {
+        SharedKvPages p(20, 4);
+        const SharedKvPages& v = p;
+        std::vector<SharedKvPages::Copy> cs;
+        std::string e;
+        check(v.exclusive_pages(0) == 0 && v.exclusive_pages(3) == 0, "empty sequences own no exclusive pages");
+        check(p.ensure(0, 0, 6, cs, e), "exclusive accessor unique mapping setup");
+        check(v.exclusive_pages(0) == 6 && v.free_pages_after_release(0) == 20,
+              "unique mapping is entirely exclusive");
+        check(p.clone_prefix(0, 1, 4, e), "exclusive accessor shared prefix setup");
+        check(v.exclusive_pages(0) == 2 && v.exclusive_pages(1) == 0,
+              "shared pages are exclusive to neither owner");
+        check(v.free_pages_after_release(0) == 16 && v.free_pages_after_release(1) == 14,
+              "forecast composes free and exclusive pages");
+        allocation_fault::after = 0;
+        const size_t query = v.exclusive_pages(0);
+        allocation_fault::after = -1;
+        check(query == 2, "exclusive accessor does not allocate");
+        check_throws<std::out_of_range>([&] { (void)v.exclusive_pages(4); }, "exclusive accessor invalid sequence throws");
+        p.release(0);
+        check(v.exclusive_pages(0) == 0 && v.free_pages_after_release(0) == v.free_pages(),
+              "released sequence owns no exclusive pages");
+        check(v.exclusive_pages(1) == 4, "releasing the sharing owner leaves the survivor exclusive");
+        check(v.free_pages_after_release(1) == v.free_pages() + 4, "survivor release returns its four tail pages");
+        p.release(1);
+        check(v.exclusive_pages(1) == 0 && v.free_pages() == v.capacity(), "fully recovered pool has no exclusive pages");
+    }
 }
 
 void protected_prefix_restore_capacity() {
