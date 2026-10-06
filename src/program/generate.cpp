@@ -6910,15 +6910,28 @@ int main(int argc, char** argv) {
                                  claim.slot, freed, (long long) (claim.held - claim.covered));
                 }
                 if (demand_pages > available_pages) {
-                    for (const IdleClaim& claim : idle_claims) {
-                        if (claim.held - claim.covered <= kIdleReclaimTailTokens) continue;
-                        std::fprintf(stderr, "strata serve: conversation cache: idle slot %d kept (its image "
-                                             "covers %lld of %lld tokens, so reclaiming it would re-read %lld)\n",
-                                     claim.slot, (long long) claim.covered, (long long) claim.held,
-                                     (long long) (claim.held - claim.covered));
+                    // Report the whole arithmetic: a skip that could have been a copy is worth
+                    // diagnosing from the log alone. `excl` is what releasing that slot's claim
+                    // would return, and `parked` is how much of its conversation an image covers.
+                    std::string why;
+                    char part[160];
+                    std::snprintf(part, sizeof(part), "main %zu pages exclusive", unified_kv->pages().exclusive_pages(0));
+                    why += part;
+                    for (int b = 0; b < int(bs.size()); ++b) {
+                        const BSlot& sl = bs[size_t(b)];
+                        const size_t seq = size_t(b) + 1;
+                        const int64_t parked = sl.ids.empty() ? 0 : conversations.best(sl.ids, {}, sl.cvec).tokens;
+                        std::snprintf(part, sizeof(part), "; slot %d %s held %zu mapped %zu excl %zu parked %lld%s%s",
+                                      b, sl.active ? "active" : (sl.partial ? "partial" : (sl.cached ? "cached" : "idle")),
+                                      sl.ids.size(), unified_kv->pages().mapping(seq).size(),
+                                      unified_kv->pages().exclusive_pages(seq), (long long) parked,
+                                      b == slot_source ? " [slot_source]" : "",
+                                      b == admit_slot ? " [admit_slot]" : "");
+                        why += part;
                     }
-                    std::fprintf(stderr, "strata serve: conversation cache: skip restore (private image exceeds "
-                                         "available shared capacity); keep live/slot prefix or prompt replay\n");
+                    std::fprintf(stderr, "strata serve: conversation cache: skip restore (need %zu pages, have %zu; %s); "
+                                         "keep live/slot prefix or prompt replay\n",
+                                 demand_pages, available_pages, why.c_str());
                     incoming.reset();
                 }
             }
