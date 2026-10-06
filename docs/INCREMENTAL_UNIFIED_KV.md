@@ -523,7 +523,49 @@ pass. `generate.cpp` cannot be compiled in this VM (no CUDA toolkit), so the eng
 was compile-checked on the GPU host in a throwaway worktree (`/data/llm/Strata-check`,
 Ninja Release, CUDA 13.3, arch 120, g++-15 - the deployment cache's own settings): the
 changed TU builds clean, with only the two pre-existing `-Wunused` warnings (1023
-`argmax`, 6421 `w`). Not done: linking the full binary, the GPU gates
-(`tools/kv_handoff_smoke.py`, `ctest`'s 81 tests), or any deployment - nibbler still runs
-the audited `9319b4a7…`. The shortage-parking cost of the third fix stays unmeasured;
-production parking has never fallen back to replay.
+`argmax`, 6421 `w`). The full binary was linked and the GPU gates and deployment
+followed on 2026-10-06 (below); the "still runs the audited binary" note written before
+that build named `9319b4a7…`, which was a transcription error for the pre-fix
+`d318cd7b…`.
+
+### Deployment (2026-10-06, serving-path fixes)
+
+Built on nibbler in the deployment's own build directory (`/data/llm/Strata/build`,
+Ninja Release, CUDA 13.3, arch 120, g++-15, `STRATA_BUILD_CONVERSATION_TESTS=ON`,
+`cmake --build build -j 4`, 33 steps, exit 0). Only the two pre-existing `-Wunused`
+warnings remain (1023 `argmax`, 6421 `w`). Candidate `build/strata`:
+`be37cae8df1cb73879b7aace36dc6bd4709d38bfc86f4d9d6abb0ad0c5aa4ef3` from this commit's
+`generate.cpp` (`bece8f5b…`, no readability hunks - the three-hunk variant was only in
+the previous build). The host checkout moved to this commit as branch `nibbler-deployed`
+with a clean tree; `serve/server.py` is untouched by these commits, so the frontend did
+not change.
+
+Exclusive-GPU gates (`/data/llm/Strata-tests/servingfix-20261006/`, production unloaded
+for the whole window): `ctest-final-exclusive.log` **81/81 passed** in 100.61 s
+(`-E '^(ple_parity|expert_parity|pool_test)$'`, as in the previous rollout);
+`warm-small-v2.json`, `warm-streamed-v2.json` (35000/35004-token histories, 3 cycles),
+`cancellation-pressure-v2.json`, `coherence-v2.json` (pressure restore, 4096-MiB parking),
+`private-http.json`, `private-vision.json` and `private-http-warm.json` all
+`passed: true`. Every gate restored production hash-identical (the
+`*.production-unchanged.log` files).
+
+Rollout `deploy-servingfix.sh` re-checked the artifacts and installed them after
+unloading only Qwen: `engine/strata-nibbler` `be37cae8…`, `serve/server.py`
+`262f00a6…` (unchanged), tracked and runtime config `8178be74…` and shared Chat
+settings `b61e757d…` byte-identical before and after. Live checks: two slots, 262144
+backing, 32768 residency, vision, `kv_handoff=1 kv_incremental=1 kv_reserve_ahead=256`,
+`conversation_cache_mib=8192`, `/health` 200, `Host: nibbler.local.keen.land` 200 and an
+unknown host 403, llama-swap active, pocket-tts ready. The host's own frontend suites
+pass against the deployed source: 12 `test_kv_handoff` (the deployed source now carries
+the test added here), 18 incremental-KV, 26 unified lifecycle, 13 unified reporting, 11
+parallel, 8 lifecycle, 10 monitor. A two-turn chat through 8088 reused 212 of 240 prompt
+tokens on the second turn.
+
+Rollback: `bash /data/llm/Strata-tests/servingfix-20261006/rollback-handoff.sh` restores
+`baseline.strata` (`d318cd7b…`, the pre-fix binary) and `baseline.server.py` after
+hash checks, reloads only Qwen, and leaves configs, shared settings, router and TTS
+untouched. Not executed.
+
+The shortage-parking cost of the third fix is still unmeasured: the only parked event
+observed after the reload parked one 227-MiB image with zero evictions, so production
+parking has still never fallen back to replay.
