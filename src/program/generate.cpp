@@ -6867,7 +6867,36 @@ int main(int argc, char** argv) {
             // fitting request or discard its live/checkpoint alternative.
             if (incoming && unified_kv) {
                 const int64_t restore_end = std::max<int64_t>(n, int64_t(incoming->live.ids.size()));
-                if (unified_kv->page_count(restore_end) > unified_kv->pages().free_pages_after_release(0)) {
+                const size_t demand_pages = unified_kv->page_count(restore_end);
+                size_t available_pages = unified_kv->pages().free_pages_after_release(0);
+                // A restore needs a wholly private extent, and the capacity it needs is often
+                // held by an idle slot whose conversation is already parked. Releasing that
+                // claim costs no token data (the image stays in the parking cache) and its next
+                // turn restores a copy instead of reading its whole history again - measured at
+                // 0.64 s per 125k tokens against 68-82 s to re-read them. Reclaim only idle
+                // slots whose image matches their WHOLE conversation (a partial image would
+                // make them re-read the tail), never a picture or partly-read slot, and never
+                // the slot this request continues in: the live/slot-prefix alternative this
+                // check protects must stay intact. Pages shared with another live owner are not
+                // exclusive and so add nothing here, which keeps the forecast conservative.
+                for (int b = 0; b < int(bs.size()) && demand_pages > available_pages; ++b) {
+                    if (b == slot_source || b == admit_slot) continue;
+                    const BSlot& sl = bs[size_t(b)];
+                    if (sl.active || sl.partial || sl.img || sl.ids.empty()) continue;
+                    const size_t seq = size_t(b) + 1;
+                    if (unified_kv->pages().mapping(seq).empty()) continue;
+                    const auto image = conversations.best(sl.ids, {}, sl.cvec);
+                    if (image.tokens < int64_t(sl.ids.size())) continue;   // not recoverable: keep the claim
+                    const size_t freed = unified_kv->pages().exclusive_pages(seq);
+                    if (!unified_kv->release(seq, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                    bs[size_t(b)].cached = false;
+                    bs[size_t(b)].ids.clear();
+                    bs[size_t(b)].checks.clear();
+                    available_pages += freed;
+                    std::fprintf(stderr, "strata serve: conversation cache: reclaimed idle slot %d "
+                                         "(%zu pages) for a canonical restore\n", b, freed);
+                }
+                if (demand_pages > available_pages) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip restore (private image exceeds "
                                          "available shared capacity); keep live/slot prefix or prompt replay\n");
                     incoming.reset();
