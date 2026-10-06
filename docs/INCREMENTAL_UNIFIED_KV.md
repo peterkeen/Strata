@@ -669,6 +669,7 @@ replaying*, below.
 - MTP is suppressed across the handoff (`TARGET_ONLY slot clone` /
   `TARGET_ONLY decode: T=1`), consistent with the coherence rule, so a restored turn
   drafts nothing until a full replay rebuilds history.
+
 - KV-growing pressure is visible as a lower streaming hit rate: 85.8-86.7% of block
   reads hit VRAM during phase 2 against 97.9-98.0% in light traffic, with 326-648 MiB
   read from RAM over the window. VRAM free stayed at 1,674 MiB throughout.
@@ -748,11 +749,50 @@ turn (restored turns log `drafts accepted 0 of 0`), and how long a deferred requ
 when the busy owner's turn is long (the gate admits a wait only when that turn's remaining
 allowance is small relative to the replay).
 
+### Getting the eviction order right (2026-10-06)
+
+`drop_superseded` only fires when the outgoing chain holds a parked copy's deepest checkpoint
+**exactly**. A client re-renders its last reply, so that chain's resume points sit a few tokens
+past the copy's deepest checkpoint and the test misses: both probe runs logged 0 drops across 13
+parks, `make_room` then evicted oldest-first, and the live 340,003-cell phase lost a
+conversation's *only* 150k image - its partner replayed 169,998 tokens in 93.9 s with no skip,
+deferral or reclaim line to explain it. The page-table arithmetic was never the problem; a copy of
+that conversation existed when the other stream parked, and the cache chose the wrong entry to
+release.
+
+`make_room` now takes the incoming chain (`put` passes its live ids and image keys) and, when an
+entry must go, gives up one that chain **covers** first: the copy's deepest checkpoint is a proper
+prefix of the incoming live ids with the same images, and the copy's own tail beyond that point is
+at most 4096 tokens. A superseded copy's tail is one turn's reply; a longer one is worth more than
+the eviction it avoids and stays in the oldest-first order. `drop_superseded` is unchanged, so
+nothing is dropped without eviction pressure - an eager version of the same rule broke two existing
+tests (a duplicate that still carries a unique checkpoint, and "an oversized put drops nothing"),
+which is what pointed at the eviction order instead. `conversation_cache_test` is 4,205 checks (was
+4,191).
+
+A large prompt with no parked match now logs why:
+`conversation cache: no image for a 169999-token prompt (parked=1 bytes=5610502220 evictions=1; slot -1
+holds 0)`. That line is how the phase-3 replay above was attributed to eviction rather than to an
+unmatched image.
+
+Measured on the private 3-phase probe (candidate `f5f8b42a…`): 0 `skip restore`, 1 deferral, 3
+reclaims, 3 restores, 0 `ERR`. Phase 2's second stream restored (`150000 tokens = 125004 reused +
+24996 read in 16036 ms`) and phase 3 kept both streams warm at the grown size (14.2 s and 27.2 s
+wall, the latter with 9 pressure pauses while the other stream finished). The live contention case
+that this change targets - a third small parked entry tipping the LRU - has not been re-run since
+the fix.
+
+Gate note: exclusive-GPU gates must wait for the GPU to be *actually* free after the model unload
+(the unload acknowledges before the engine's VRAM returns). Without that wait
+`prefill_fused_iq_test` fails with `cudaMalloc: out of memory` while nothing else is running;
+`native-gates.sh` waits for under 2 GiB used before `ctest`.
 ### Verification
 
 `shared_kv_pages_test` 135,708 checks (was 135,660), `shared_kv_reservation_test` 73,
-`conversation_cache_test` 4,191. Exclusive-GPU gates on the frozen candidate:
+`conversation_cache_test` 4,205 (was 4,191). Exclusive-GPU gates on the frozen candidate:
 `ctest` 81/81, `warm-small-v2`, `warm-streamed-v2`, `cancellation-pressure-v2`,
 `coherence-v2`, `private-http`, `private-vision`, `private-http-warm` all passed, with
 production restored hash-identical after each window. `coherence-v2` is the gate that
-caught the unguarded deferral.
+caught the unguarded deferral. The same gate set was re-run for the eviction-order change
+(candidate `f5f8b42a…`): `ctest` 81/81 and all seven gates passed again, and `coherence-v2`
+logs no `no image` lines.

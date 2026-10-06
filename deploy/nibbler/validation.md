@@ -294,3 +294,29 @@ lifecycle, 13 unified reporting, 11 parallel, 8 lifecycle, 10 monitor).
 Rollback: `bash /data/llm/Strata-tests/kvrestore3-20261006/rollback-kvrestore.sh` restores
 `baseline.strata` (`be37cae8…`) and `baseline.server.py` after hash checks, reloads only
 Qwen, and leaves configs, shared settings, router and TTS untouched. Not executed.
+
+#### Eviction-order follow-up (not rolled out)
+
+`fa7b977` makes `make_room` give up a copy the incoming chain covers before the oldest-first
+order. `drop_superseded`'s exact test missed every park in both probe runs (the client
+re-renders its last reply), so the live 340,003-cell phase evicted a conversation's only
+150k image and its partner replayed 169,998 tokens in 93.9 s.
+
+Validation on the frozen candidate `f5f8b42a…` (source `fa7b977`), artifacts in
+`/data/llm/Strata-tests/evict-20261006/`: `ctest-final-exclusive.log` **81/81 passed**,
+`warm-small-v2`, `warm-streamed-v2`, `cancellation-pressure-v2`, `coherence-v2`,
+`private-http`, `private-vision` and `private-http-warm` all `passed: true`, production
+restored hash-identical after each window; CPU tests `conversation_cache_test` 4,205 (was
+4,191), `shared_kv_pages_test` 135,708, `shared_kv_reservation_test` 73. The three-phase
+probe on a private endpoint with production-equivalent settings logged 0 `skip restore`,
+1 deferral, 3 reclaims, 3 restores, 0 `ERR`, with phase 3 warm on both streams (14.2 s and
+27.2 s wall against the 93.9 s replay).
+
+Not deployed: `engine/strata-nibbler` is still `1d71f758…` (the reclaim-restore fix). The
+live-contention case this change targets - a third small parked entry tipping the LRU - has
+not been re-run since the fix, so the live probe would have to follow a rollout.
+
+Gate note for future windows: the model unload acknowledges before the engine's VRAM
+returns, and `prefill_fused_iq_test` then fails with `cudaMalloc: out of memory` while
+nothing else is running. `native-gates.sh` now waits for under 2 GiB GPU memory used before
+`ctest`.
