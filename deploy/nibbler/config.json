@@ -17,7 +17,7 @@
     "--kv-unified",
     "--vision",
     "--vram-reserve-mib", "2048",
-    "--conversation-cache-mib", "4096",
+    "--conversation-cache-mib", "8192",
     "--conversation-cache-slots", "4",
     "--conversation-cache-min-free-mib", "4096"
   ],
@@ -34,7 +34,7 @@
   "gpu": 0,
   "gpus_asked": true,
   "host": "127.0.0.1",
-  "allowed_hosts": ["nibbler", "nibbler.tailnet-a578.ts.net"],
+  "allowed_hosts": ["nibbler", "nibbler.tailnet-a578.ts.net", "nibbler.local.keen.land"],
   "vision": {
     "exe": "/data/llm/Strata/engine/strata-vision",
     "mmproj": "/data/llm/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",

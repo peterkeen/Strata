@@ -1,5 +1,9 @@
 # Nibbler validation and deployment — 2026-10-03/04
 
+> The branch, binary and source statements in this section describe the
+> 2026-10-03/04 rollout. The current deployment is the dated section at the end
+> of this file.
+
 Branch: `nibbler/prefill-and-conversation-cache`. Upstream was fetched and verified
 at `99f3dbd0b21d1401b3769e0c0d963913607f380b`. No fork or upstream push was made.
 Hardware: RTX 5060 Ti 16 GB / Ryzen 9 9900X; existing CUDA 13.3/GCC 15 Release build.
@@ -116,3 +120,47 @@ The router config and unrelated pocket-tts service were not changed.
 To publish later, create your GitHub fork, add it as a separate remote, and push
 `nibbler/prefill-and-conversation-cache`. Do not use upstream's auto-update script
 blindly on this deployment; build/install the branch binary deliberately.
+
+## Current deployment — 2026-10-06
+
+Native source: `feature/kv-warm-handoff` at `3e98524`. Live artifacts, re-hashed
+on nibbler with a root shell:
+
+- `engine/strata-nibbler`: `d318cd7baf926c2b1a3d3eebfd94a615d5e9fe909fd560dcd556d61174771cac` (unchanged)
+- `serve/server.py`: `262f00a67b7056b3e2d7f2e0192dd4f923f865ea55f64cf9aa84a0fff0e8bb26`, byte-identical to `3e98524`
+- `deploy/nibbler/config.json` and `/data/llm/Strata-run/nibbler/config.json`: `8178be74bc7b08ec609d754291dc576c322b333cbd169f65bf02d6e08f33fa27` from this commit. Production ran `e806bfeb934c1fe7350ec305d49af66ed8089bbeb8d5198b032967e236b38166` before it, whose extra `nibbler.local.keen.land` host entry was committed nowhere - `deploy/nibbler/start-strata` copies the tracked config over the runtime config at every model start, so any `git checkout`/`git pull` on the host would have dropped that host and answered those requests with 403.
+- Shared Chat settings: `b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a` (unchanged)
+
+The deployed binary's `generate.cpp` differs from this commit's only in three
+readability hunks (`store(true)` / `store(false)` / an implicit bool instead of
+`!= 0`); that file hashes to `1339145eb288e5b68bead93cb8828bc545adb340c5b7e064359eced4d9627af1`,
+frozen in `/data/llm/Strata-tests/handoff-20261005/native-v2.candidate.sha256`.
+Comparing all 388 tracked source/config files on the host against `3e98524` found
+those hunks, the config above and three stale frontend test files - nothing else.
+
+Deployment hygiene that came with this commit:
+
+- The host checkout sat at `00a7289f` with the deployed frontend and the unified-KV
+  headers as uncommitted edits, and it is now aligned to this commit: a rebuild
+  reproduces the deployed source, and the tree's own tests match `serve/server.py`.
+  The stale `serve/test_unified_lifecycle.py` had errored 4 of 15 against the
+  deployed frontend (`blocked_resume() got an unexpected keyword argument
+  'max_new'`), and `serve/test_kv_handoff.py` / `serve/test_incremental_kv.py`
+  were not on the host at all.
+- `/etc/systemd/system/strata.service` and `strata.service.d/` are removed. That
+  dead unit started the pre-unified-KV stack (`engine/strata`, port 8088,
+  `--vram-reserve-mib 700`, no `--kv-unified`), so `systemctl start strata` would
+  have put a second, older engine on the GPU beside the live one. The live stack
+  is llama-swap's `qwen3.8-flash-next-iq3_s`:
+  `/opt/native-inference/bin/start-strata-sharp-medium ${PORT}` calls
+  `deploy/nibbler/start-strata` (frontend 5801, proxy 8088).
+- Parking raised to `--conversation-cache-mib 8192`. `--conversation-cache-slots 4`
+  and the 4096 MiB available-RAM floor are unchanged: the raise is about the
+  measured 2.0-2.4 GiB parked images, and nibbler has 123 GiB total with 35 GiB
+  available at idle and `Max locked memory` unlimited for both processes.
+
+Measured before the raise (engine log window of 11 h, 0 `ERR` lines): 2,777
+requests; prompt reuse 180,131 of 181,577, 182,654 of 185,136 and 186,211 of
+186,819 tokens; 169 `TARGET_ONLY slot clone` and 293 `TARGET_ONLY decode`; drafts
+ran on 2,260 of 2,777 requests at 67.7% acceptance (1,382,206 of 2,041,742
+offered); 22 pressure events, all parked, no budget/RAM-floor/allocation miss.

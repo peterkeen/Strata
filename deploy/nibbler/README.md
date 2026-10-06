@@ -15,8 +15,11 @@ This hardware-specific config retains the installed IQ3_S model, sharp tokenizer
   limit remains 262144 per request; it is not divided between slots.
 - A 2048 MiB VRAM reserve for private state, prefill and lazy graph headroom.
   The old 700 MiB reserve failed a three-slot graph-instantiation probe.
-- A 4096 MiB host conversation cache, at most four parked entries, and a 4096 MiB
-  physical RAM floor. The budget is not four guaranteed full-context slots.
+- An 8192 MiB host conversation cache, at most four parked entries, and a 4096 MiB
+  physical RAM floor. The budget is not four guaranteed full-context slots: parked
+  target-only images measured 2.0-2.4 GiB for 130k-155k-token conversations
+  (nibbler, 2026-10-06), so the old 4096 MiB budget held `parked=1` and a second
+  pressure event evicted the first entry.
 - Incremental engines reserve known prompts plus at most 256 output cells, then
   preflight every exact write/COW extent. Optional headroom shortage does not
   preempt a request. Actual exhaustion releases a safely parked owner and the

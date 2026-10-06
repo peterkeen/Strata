@@ -453,3 +453,42 @@ The deployed native binary was built from source that differs from the
 committed `generate.cpp` only in the three review readability edits (explicit
 `store(1)`/`store(0)` and `!= 0`), which are semantically identical. Heartbeat
 `27e8220b` removed after rollout. The user's config edit is not committed.
+
+## Deployment re-verification and follow-up (2026-10-06)
+
+Every production hash from the rollout record was re-checked from a root shell on
+nibbler and matched: `engine/strata-nibbler` `d318cd7b…`, `serve/server.py`
+`262f00a6…` (byte-identical to `3e98524`), the runtime config `e806bfeb…`, and the
+shared Chat settings `b61e757d…`. The host's `src/program/generate.cpp` still
+hashed to the frozen `1339145e…`; diffing it against `3e98524` gave exactly the
+three readability hunks, and a file-by-file hash of all 388 tracked source/config
+files found nothing else except the config and three stale frontend test files.
+
+Live effect of the handoff, from the running production log (11 h window, 0 `ERR`
+lines): 2,777 requests; prompt reuse 180,131/181,577, 182,654/185,136 and
+186,211/186,819 tokens; 169 `TARGET_ONLY slot clone` and 293 `TARGET_ONLY decode`;
+drafts ran on 2,260 of 2,777 requests at 67.7% acceptance (1,382,206 of 2,041,742
+offered), so target-only clone-back suppresses drafts on a minority of requests.
+Parking took 22 pressure events, all parked, no budget/RAM-floor/allocation miss,
+but each parked target-only image measured 2.0-2.4 GiB, so the 4096 MiB budget
+held `parked=1` and a second pressure event evicted the first. `--conversation-cache-mib`
+is raised to 8192 for that measurement; the four-entry cap and the 4096 MiB
+available-RAM floor are unchanged.
+
+Three deployment gaps fixed here (see [the nibbler deployment record](../deploy/nibbler/validation.md)):
+the live host-allowlist entry had been committed nowhere; the host checkout sat at
+`00a7289f` with the deployment as uncommitted edits, whose stale
+`serve/test_unified_lifecycle.py` errored 4 of 15 against the deployed frontend
+(`blocked_resume() got an unexpected keyword argument 'max_new'`) while
+`serve/test_kv_handoff.py`/`serve/test_incremental_kv.py` were absent; and a dead
+`strata.service` still pointed at the pre-unified-KV stack on port 8088.
+
+Still open in the serving path, found by the same audit and not addressed by this
+commit: `finish_shared_slot` acknowledges `handoff` even when `keep` is false and
+it released the backing (`serve/server.py` then advertises a prefix that is gone);
+`BSTOP`/`BHANDOFF` parse their slot with `atoi`, so a malformed field acts on slot
+0 (unlike the validated `BGEN` parse); and a pending `HANDOFF` relabels a
+reservation-shortage stop as a handoff, skipping the pressure parking that a
+`cancel` would have taken. None of the three is reachable through the shipped
+frontend today; the parking cost of the third is unmeasured, since production
+parking never fell back to replay.
