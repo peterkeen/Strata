@@ -77,4 +77,12 @@ void native_expert_set_mode(int mode, int phase);
 void iq_set_old_kernels(bool old);
 bool iq_old_kernels();
 
+/// Test/bench-only selector for the existing STRATA_NO_SUB16_GU layout family (GU AND down, not the whole
+/// historical PR delta).  false enables 16-lane GU at n_embd=2560 and 8/16-lane IQ4_NL/Q2_0 down at n_ff=640;
+/// true selects the wider-warp decode-once fallback.  Initial state still comes from STRATA_NO_SUB16_GU.
+/// Does not override per-column, codebook, rows2 or alternate expert modes.  Process-wide, not synchronized:
+/// select before capture, never during it, and restore the getter's prior value after tests.  Graphs keep theirs.
+void native_grouped_set_no_sub16_gu(bool no_sub16);
+bool native_grouped_no_sub16_gu();
+
 }  // namespace strata::kernels

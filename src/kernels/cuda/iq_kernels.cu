@@ -2696,6 +2696,8 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
 
 void iq_set_old_kernels(bool old) { g_old_kernels = old; }
 bool iq_old_kernels() { return g_old_kernels; }
+void native_grouped_set_no_sub16_gu(bool no_sub16) { g_no_sub16_gu = no_sub16; }
+bool native_grouped_no_sub16_gu() { return g_no_sub16_gu; }
 
 bool iq_supported(int t) noexcept { return is_iq(t); }
 bool embed_type_supported(int t) noexcept { return is_iq(t) || t == 30; }

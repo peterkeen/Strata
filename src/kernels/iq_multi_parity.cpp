@@ -11,6 +11,11 @@
 // (2) native_expert_grouped, every gate/up format with the down formats: groups of 0..11 entries (more than a pass
 //     of GRP_NC), unused grid rows (cap_groups > groups), scattered destinations; bitwise, new vs old, the rows it
 //     must not write included.
+// (3) Sub16 layout parity: native_expert_grouped with STRATA_NO_SUB16_GU=0 (sub16-enabled, the default) against
+//     STRATA_NO_SUB16_GU=1 (wider-warp fallback) for the IQ3_S-file's actual GU/down format pairs at 2560 x 640.
+//     Selector set before capture and restored after; selector change gates both GU and down sub-layouts.
+//     Covers group tails 1/2/3/4/5/8/11, empty groups, scattered dests; guard: untouched sentinel rows stay.
+//     Direct and captured-graph changed-input replay agree bitwise (identity contract, not just tolerance).
 //
 // Random bytes are valid codes for every format here (all grid indices are in range); only the fp16 block scales
 // are set, small enough that the grouped path's SwiGLU output keeps a finite fp16 q8_1 scale.
@@ -28,6 +33,7 @@
 #include <numeric>
 #include <random>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace k = strata::kernels;
@@ -180,8 +186,10 @@ struct Grouped {
     uint8_t *dxq = nullptr, *dscr = nullptr;
     float* dout = nullptr;
     size_t out_floats = 0;
+    std::vector<bool> written_rows;
 
-    Grouped(int gu, int dt, int64_t H, int64_t FF, const std::vector<int>& counts, int tokens, std::mt19937& rng) {
+    Grouped(int gu, int dt, int64_t H, int64_t FF, const std::vector<int>& counts, int tokens, std::mt19937& rng,
+            bool holes = false) {
         L = k::native_expert_layout(gu, dt, H, FF);
         n_groups = (int) counts.size();
         cap_groups = n_groups + 2;              // the extra grid rows must exit
@@ -194,7 +202,11 @@ struct Grouped {
         for (int e = 0; e < n_ent; ++e) tok.push_back(tk(rng));
         dst.resize(n_ent);
         std::iota(dst.begin(), dst.end(), 0);
+        // Layout gate: leave an interior hole as well as a leading and trailing untouched row.
+        if (holes) for (int e = 0; e < n_ent; ++e) dst[e] = 1 + e + (e >= n_ent / 2);
         std::shuffle(dst.begin(), dst.end(), rng);
+        written_rows.assign(cap_ent, false);
+        for (int d : dst) written_rows[d] = true;
         std::vector<unsigned long long> ptr;
         for (int g = 0; g < n_groups; ++g) {
             // one blob per group: gate rows | up rows (format gu, H values) | down rows (format dt, FF values)
@@ -228,9 +240,10 @@ struct Grouped {
         dout = dalloc<float>(out_floats);
     }
     ~Grouped() {
-        for (auto* b : blobs) cudaFree(b);
-        cudaFree(dptr); cudaFree(dstart); cudaFree(dn); cudaFree(ddst); cudaFree(dtok);
-        cudaFree(dx); cudaFree(dxq); cudaFree(dscr); cudaFree(dout);
+        for (auto* b : blobs) ck(cudaFree(b), "free blob");
+        ck(cudaFree(dptr), "free ptr"); ck(cudaFree(dstart), "free start"); ck(cudaFree(dn), "free count");
+        ck(cudaFree(ddst), "free dst"); ck(cudaFree(dtok), "free tok"); ck(cudaFree(dx), "free x");
+        ck(cudaFree(dxq), "free xq"); ck(cudaFree(dscr), "free scratch"); ck(cudaFree(dout), "free out");
     }
     void run(bool old, cudaStream_t s) {
         k::iq_set_old_kernels(old);
@@ -402,6 +415,158 @@ void check_q8_1_finite(cudaStream_t s, std::mt19937& rng) {
     cudaFree(dq);
 }
 
+// -------------------------------- (3) paired layout family, NOT the entire PR-h2715a752 delta:
+// fork 9921eec already had subwarp down.  No per-column/codebook/rows2 A/B here.
+// Contract: zero tolerance (memcmp), including active GU floats, the intermediate Q8_1 bytes consumed by down,
+// final output and untouched rows.  The subwarp helpers explicitly preserve the fallback's addition tree.
+// Written floats must also be finite.  Input bytes are quantized ONCE per input, outside capture, and checked
+// unchanged after every call.  Both graphs replay A, changed input B and a zero-group call at the same addresses.
+// This is a synthetic layout gate, not a model-weight oracle.  CUDA failures exit nonzero, never skip/pass.
+struct LayoutModeGuard {
+    const bool prior = k::native_grouped_no_sub16_gu(), old = k::iq_old_kernels();
+    LayoutModeGuard() { k::iq_set_old_kernels(false); } // fixed decode-once for the entire layout gate
+    ~LayoutModeGuard() {
+        k::native_grouped_set_no_sub16_gu(prior);
+        k::iq_set_old_kernels(old);
+    }
+};
+
+void layout_call(Grouped& G, cudaStream_t s) {
+    k::native_expert_grouped(G.L, G.dptr, G.dstart, G.dn, G.ddst, G.dtok, G.cap_groups, G.cap_ent,
+                             G.dxq, G.dscr, G.dout, s, 3); // also exercise the group stride
+}
+
+cudaGraphExec_t layout_graph(Grouped& G, bool no_sub16, cudaStream_t s) {
+    k::native_grouped_set_no_sub16_gu(no_sub16); // only before capture, never during it
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    ck(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal), "layout capture begin");
+    layout_call(G, s);
+    ck(cudaStreamEndCapture(s, &graph), "layout capture end");
+    ck(cudaGraphInstantiate(&exec, graph, 0), "layout instantiate");
+    ck(cudaGraphDestroy(graph), "layout graph free");
+    return exec;
+}
+
+// Includes dalloc's 256-byte tail guards.  Scratch is deliberately stale before each call.
+struct LayoutResult {
+    std::vector<uint32_t> out;
+    std::vector<uint8_t> scratch;
+};
+LayoutResult layout_result(Grouped& G, bool no_sub16, cudaGraphExec_t graph, bool empty,
+                           const std::vector<uint8_t>& input, cudaStream_t s) {
+    const size_t sb = k::native_expert_scratch_bytes(G.cap_ent, G.L.n_ff);
+    ck(cudaMemsetAsync(G.dout, 0xFF, G.out_floats * 4 + 256, s), "layout output reset");
+    ck(cudaMemsetAsync(G.dscr, 0xA5, sb + 256, s), "layout scratch reset");
+    // Replay with the HOST selector opposite to capture: a graph must keep its captured kernels.
+    k::native_grouped_set_no_sub16_gu(graph ? !no_sub16 : no_sub16);
+    if (graph) ck(cudaGraphLaunch(graph, s), "layout replay");
+    else layout_call(G, s);
+    ck(cudaStreamSynchronize(s), "layout sync");
+    LayoutResult r{std::vector<uint32_t>(G.out_floats + 64), std::vector<uint8_t>(sb + 256)};
+    ck(cudaMemcpy(r.out.data(), G.dout, r.out.size() * 4, cudaMemcpyDeviceToHost), "layout output");
+    ck(cudaMemcpy(r.scratch.data(), G.dscr, r.scratch.size(), cudaMemcpyDeviceToHost), "layout scratch");
+    std::vector<uint8_t> got(input.size());
+    ck(cudaMemcpy(got.data(), G.dxq, got.size(), cudaMemcpyDeviceToHost), "layout input");
+    size_t guards = (got != input);
+    for (size_t i = input.size() - 256; i < got.size(); ++i) guards += got[i] != 0xA5;
+    const size_t fa = ((size_t) G.cap_ent * G.L.n_ff * 4 + 255) & ~(size_t) 255;
+    // Check active GU floats as well as the final output: finite down output alone is not an oracle for GU.
+    for (size_t i = 0; !empty && i < (size_t) G.n_ent * G.L.n_ff; ++i) {
+        float gate, up;
+        std::memcpy(&gate, r.scratch.data() + i * 4, 4);
+        std::memcpy(&up, r.scratch.data() + fa + i * 4, 4);
+        guards += !std::isfinite(gate) || !std::isfinite(up);
+    }
+    for (size_t i = 0; i < r.out.size(); ++i) {
+        const bool written = i < G.out_floats && !empty && G.written_rows[i / G.L.n_embd];
+        float v;
+        std::memcpy(&v, &r.out[i], 4);
+        guards += written ? !std::isfinite(v) : r.out[i] != 0xFFFFFFFFu;
+    }
+    for (size_t i = sb; i < r.scratch.size(); ++i) guards += r.scratch[i] != 0xA5;
+    if (guards) {
+        std::printf("  layout %s no_sub16=%d empty=%d: %zu finite/input/untouched/tail failures\n",
+                    graph ? "graph" : "direct", no_sub16, empty, guards);
+        ++g_fail;
+    }
+    return r;
+}
+
+void layout_equal(const Grouped& G, const LayoutResult& ref, const LayoutResult& got, bool empty) {
+    const size_t fa = ((size_t) G.cap_ent * G.L.n_ff * 4 + 255) & ~(size_t) 255;
+    const size_t active = empty ? 0 : (size_t) G.n_ent;
+    const size_t gu = active * G.L.n_ff * 4, hq = active * (G.L.n_ff / 32) * 36;
+    const bool same = ref.out == got.out &&
+        std::memcmp(ref.scratch.data(), got.scratch.data(), gu) == 0 &&
+        std::memcmp(ref.scratch.data() + fa, got.scratch.data() + fa, gu) == 0 &&
+        std::memcmp(ref.scratch.data() + 3 * fa, got.scratch.data() + 3 * fa, hq) == 0;
+    if (!same) { std::printf("  layout GU/Q8_1/down bitwise mismatch\n"); ++g_fail; }
+}
+
+void check_sub16_layout(cudaStream_t s) {
+#if defined(STRATA_HIP_GFX906)
+    std::printf("sub16 layout FAIL: requires the CUDA layout dispatch, not gfx906 alternate layouts\n");
+    ++g_fail; return;
+#endif
+    std::mt19937 rng(2715); // keep the inherited checks' seed/input sequence unchanged
+    // V2 bypasses the selector for IQ3_S/IQ4_NL.  Reject rather than silently testing the same kernels twice.
+    const char* v2 = std::getenv("STRATA_EXPERT_V2");
+    if (v2 && v2[0] == '1') {
+        std::printf("sub16 layout FAIL: STRATA_EXPERT_V2 must be unset/0\n"); ++g_fail; return;
+    }
+    LayoutModeGuard mode;
+    // EXACT unique pairs in tests/data/native_experts/iq3_s.txt; IQ4_XS/Q2_0 is NOT in that manifest.
+    const std::pair<int, int> pairs[] = {{18,20}, {18,42}, {22,20}, {22,42}, {21,20}, {21,42}, {23,20}};
+    for (const auto& [gu, dt] : pairs) {
+        if (!k::native_expert_supported(gu, dt, 2560, 640)) {
+            std::printf("sub16 layout FAIL: required pair %d/%d unsupported\n", gu, dt); ++g_fail; continue;
+        }
+        const int before = g_fail;
+        Grouped G(gu, dt, 2560, 640, {1, 0, 2, 3, 0, 4, 5, 8, 11}, 16, rng, true);
+        const size_t qb = (size_t) G.n_tok * (G.L.n_embd / 32) * 36;
+        cudaGraphExec_t graphs[2] = {nullptr, nullptr};
+        std::vector<uint8_t> previous_input;
+        std::vector<uint32_t> previous_output;
+        for (int input_id = 0; input_id < 3; ++input_id) {
+            const int input_before = g_fail;
+            const bool empty = input_id == 2;
+            if (input_id == 1) {
+                const auto x = random_x((size_t) G.n_tok * G.L.n_embd, rng);
+                ck(cudaMemcpy(G.dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "layout changed x");
+            }
+            if (!empty) { // one quantization, shared byte-for-byte by ALL four executions below
+                ck(cudaMemsetAsync(G.dxq, 0xA5, qb + 256, s), "layout input guard");
+                k::quantize_q8_1_rows(G.dx, G.n_tok, G.L.n_embd, G.dxq, s);
+                ck(cudaStreamSynchronize(s), "layout quantize");
+            }
+            const int ng = empty ? 0 : G.n_groups;
+            ck(cudaMemcpy(G.dn, &ng, sizeof ng, cudaMemcpyHostToDevice), "layout groups");
+            std::vector<uint8_t> input(qb + 256);
+            ck(cudaMemcpy(input.data(), G.dxq, input.size(), cudaMemcpyDeviceToHost), "layout shared Q8_1");
+            const auto ref = layout_result(G, false, nullptr, empty, input, s);
+            const auto fallback = layout_result(G, true, nullptr, empty, input, s);
+            layout_equal(G, ref, fallback, empty);
+            if (input_id == 0) { // warm direct calls also initialize static launch choices before capture
+                graphs[0] = layout_graph(G, false, s);
+                graphs[1] = layout_graph(G, true, s);
+            }
+            for (int no_sub16 = 0; no_sub16 < 2; ++no_sub16)
+                layout_equal(G, ref, layout_result(G, no_sub16 != 0, graphs[no_sub16], empty, input, s), empty);
+            if (input_id == 1 && (input == previous_input || ref.out == previous_output)) {
+                std::printf("  layout changed-input replay checked no change FAIL\n"); ++g_fail;
+            }
+            previous_input = input; previous_output = ref.out;
+            if (g_fail != input_before)
+                std::printf("  layout pair %d/%d input=%s FAIL\n", gu, dt,
+                            input_id == 0 ? "A" : empty ? "empty" : "changed B");
+        }
+        for (auto graph : graphs) ck(cudaGraphExecDestroy(graph), "layout exec free");
+        std::printf("sub16 layout %-8s/%-7s 2560x640 tails 1/2/3/4/5/8/11, empty, scattered: %s\n",
+                    name_of(gu), name_of(dt), g_fail == before ? "bitwise direct + A/B/empty graph replay" : "FAIL");
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -409,6 +574,11 @@ int main(int argc, char** argv) {
     cudaStream_t s;
     ck(cudaStreamCreate(&s), "stream");
     std::mt19937 rng(18);
+    const bool prior_layout = k::native_grouped_no_sub16_gu(), prior_old = k::iq_old_kernels();
+    check_sub16_layout(s); // isolated paired gate runs before the historical old/per-column checks
+    if (k::native_grouped_no_sub16_gu() != prior_layout || k::iq_old_kernels() != prior_old) {
+        std::printf("sub16 layout selector restoration FAIL\n"); ++g_fail;
+    }
     for (int t : {16, 17, 18, 20, 21, 22, 23, 29, 42}) {
         check_mmvq(t, 2560, 67, s, rng);   // the model's n_embd; 67 rows: a partial block of 4 rows
         check_mmvq(t, 1024, 5, s, rng);
@@ -420,6 +590,6 @@ int main(int argc, char** argv) {
     check_q8_1_finite(s, rng);
     if (do_bench) bench(s, rng);
     std::printf("iq_multi_parity: %d failures\n", g_fail);
-    cudaStreamDestroy(s);
+    ck(cudaStreamDestroy(s), "stream free");
     return g_fail ? 1 : 0;
 }
