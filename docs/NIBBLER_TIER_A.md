@@ -1,7 +1,8 @@
 # Nibbler Tier-A Benchmark — Session Record
 
-**Host:** paseo-nibbler (Debian libvirt VM on nibbler)  
-**Date:** 2026-10-07 / 2026-10-08  
+**Bench host:** nibbler (bare-metal AMD 9900X — live GPU harness ran here)
+**Orchestration VM:** paseo-nibbler (Debian libvirt VM on nibbler — offline unit tests and harness orchestration ran here)
+**Date:** 2026-10-07
 **Scope:** Single-session CLI fresh-process triage.  Single GPU, no unified KV,
 no handoff, no vision, no concurrency/batching, no steady-state decode.
 
@@ -17,7 +18,7 @@ no handoff, no vision, no concurrency/batching, no steady-state decode.
 6. [Harness methodology](#6-harness-methodology)
 7. [Prompt corpus](#7-prompt-corpus)
 8. [Smoke run: 1 rep, 32/64 tokens (completed)](#8-smoke-run-1-rep-3264-tokens-completed)
-9. [Full matrix: 3 rep, 256/512 tokens (pending)](#9-full-matrix-3-rep-256512-tokens-pending)
+9. [Full matrix: 3 rep, 256/512 tokens (completed)](#9-full-matrix-3-rep-256512-tokens-completed)
 10. [Eligibility notes per comparison](#10-eligibility-notes-per-comparison)
 11. [Interpretation guide](#11-interpretation-guide)
 12. [Raw artifact paths](#12-raw-artifact-paths)
@@ -54,16 +55,19 @@ CPU:    AMD Ryzen 9 9900X 12-Core Processor
 RAM:    ~123 GiB physical, ~95 GiB available at bench time
 GPU:    NVIDIA GeForce RTX 5060 Ti, 16311 MiB VRAM
         driver 610.57.04, pstate P8 at bench start (2 MiB used, 3.91 W)
-OS:     Debian (libvirt VM on nibbler bare-metal host)
-        kernel 7.2.8+deb14-amd64
+OS:     nibbler bare-metal — kernel 7.2.8+deb14-amd64 (captured via SSH uname)
+        paseo-nibbler orchestration VM: Debian libvirt
 ```
 
 **Inference service state during benchmarking:**  
 `/opt/native-inference/bin/start-strata-sharp-medium` was **mode 644**
 (not executable — intentional launcher guard, no service loaded).  
-`llama-swap.service` active/running; `wyoming-openai.service` active/running.  
-llama-swap health: `{"status":"ok","backend":"cpu","models":2}` — CPU-only,
-no GPU contention from inference service during bench.
+`llama-swap.service` active/running (port 8088); `wyoming-openai.service` active/running.
+llama-swap health endpoint returned `OK` (exact plain-text body) — router up.
+Audio stack on port 5800: `audiocpp_server` (PocketTTS + Parakeet) — not a
+whisper or wyoming server; not the LLM inference path.
+`wyoming-openai.service` active on port 10301 (separate from the audio stack on 5800).
+Qwen model intentionally unloaded; no LLM GPU contention during bench.
 
 ---
 
@@ -79,18 +83,29 @@ Full hashes in [`build-and-snapshot.sha256`](#12-raw-artifact-paths).
 
 **Source lineage:**
 
-- Baseline: built from commit `9921eeca` (upstream ggml) / Strata production tree,
-  snapshotted to `/data/llm/Strata-tests/tier-a-20261007/`
-- Candidate: built from `strata-tier-a` working tree, commit `60a081a`
-  (`Add isolated nibbler Tier A benchmark harness and measurement gates`)
-- The two trees share **no common git history** (independent forks/snapshots).
-  This is a whole-pinned-tree comparison, not an isolated kernel port.
+- Baseline engine: Strata source commit `9921eecae9d442878de5bfe2b2cd25a71fbdb4ed`,
+  version **0.1.39**. Binary snapshotted to
+  `/data/llm/Strata-tests/tier-a-20261007/production.strata`.
+- Candidate engine: `strata-tier-a` source commit
+  `e8ca9afd03d839d4f8dbbe82dffce7f8a3bafd7a`, version **0.1.40.2**.
+  Built to `/data/llm/Strata-tier-a/build-tier-a/strata`.
+- Harness code: commit `60a081a` (`Add isolated nibbler Tier A benchmark
+  harness and measurement gates`); adapt-replay additions at commit `fb1cc15`
+  (`run_adapt_replay.py` + 131-test suite) — both are measurement tooling
+  commits, not compiled engines.
+- `third_party/llama.cpp` in both trees has no embedded `.git`; the git ref
+  `9921eeca` is a Strata parent commit, not a ggml commit. ggml version
+  reported as 0.24.0 by CMake configure; no ggml git ref is attributed.
+- The two engine trees share **no common git history** (independent
+  forks/snapshots). This is a whole-pinned-tree comparison, not an isolated
+  kernel port. The saved local ref `refs/remotes/fork/main` points to
+  `13be4c37fdd979097f58285c533d38030bed0cb3` (no GitHub verification performed).
 
 ---
 
 ## 4. Build provenance
 
-Both binaries built with the same CMake configuration:
+Both binaries built with the same selected toolchain:
 
 ```
 Build type:     Release
@@ -99,17 +114,33 @@ C compiler:     gcc-15 (GNU 15.3.0)
 CUDA compiler:  nvcc 13.3.73 (CUDA Toolkit 13.3)
                 host compiler: GNU 15.3.0
 CUDA arch:      120 (RTX 5060 Ti / Blackwell sm_120)
-GGML_CUDA:      OFF  (Strata uses its own CUDA engine, not ggml-cuda)
-GGML_CUDA_FA:   ON
-STRATA_NATIVE_EXPERTS: ON
-ggml version:   0.24.0  (commit 9921eeca)
-Strata version: 0.1.39
 ```
 
-**Build result:** 145 objects, 0 errors.  
-**Warnings:** 20 in candidate build (`-Wformat` `%llu`/`%lu` on `uint64_t` fields
-in `weights.cpp` under gcc-15 — pre-existing; not related to the changes under
-test). Full build log at [`build-gcc15.log`](#12-raw-artifact-paths).
+Candidate-specific CMake settings (from `configure-gcc15.log` /
+`build-gcc15.log`; candidate `build-tier-a` directory):
+```
+GGML_CUDA:             OFF  (Strata uses its own CUDA engine)
+GGML_CUDA_FA:          ON
+STRATA_NATIVE_EXPERTS: ON
+ggml version:          0.24.0  (reported by CMake; no ggml git ref attributed)
+Strata version:        0.1.40.2
+```
+
+Baseline CMake settings recorded in `production.CMakeCache.txt` (baseline
+build only; not the candidate cache). Baseline Strata version: **0.1.39**.
+The two CMakeCache files are separate; only the baseline cache was snapshotted.
+
+**Candidate build result:** 145 objects, 0 errors.
+**Warnings:** 20 in candidate build — pre-existing style/portability warnings,
+none related to the changes under test. Breakdown by `grep` of
+`build-gcc15.log`:
+
+- 9 `-Wformat` on `src/core/weights.cpp:168` (`%llu`/`%lld` vs `uint64_t`/`int64_t` under gcc-15).
+- 5 `-Wmisleading-indentation` in `src/core/layer.cpp`.
+- 6 `-Wunused-variable` / `-Wunused-but-set-variable` in `src/core/layer.cpp`,
+  `src/core/verify.cpp`, `src/program/generate.cpp`, `src/kernels/gdn_parity.cpp`.
+
+Full build log at [`build-gcc15.log`](#12-raw-artifact-paths).
 
 **Also snapshotted** (hashes in `build-and-snapshot.sha256`):
 - `production.config.json`
@@ -117,6 +148,9 @@ test). Full build log at [`build-gcc15.log`](#12-raw-artifact-paths).
 - `production.launcher`
 - `third_party/llama.cpp/ggml/src/ggml-quants.c`
 - `third_party/llama.cpp/ggml/include/ggml.h`
+
+All original source/binary/config/server/launcher content hashes confirmed
+unchanged at time of harness run.
 
 ---
 
@@ -139,7 +173,7 @@ Result: **18/18 passed** in 10.73 s.
 | 75 | iq_avx2_parity | PASS 0.12 s |
 | 76 | iq_avx2_parity_iq3s_mt1 | PASS 0.12 s |
 | 81 | native_expert_parity_refuses_q6_K | PASS 0.24 s |
-| 82–91 | native_expert_parity (8 quant combos) | PASS 0.32–0.52 s each |
+| 82–91 | native_expert_parity (10 quant combos) | PASS 0.24–0.52 s each |
 
 Full log: [`targeted-gates.log`](#12-raw-artifact-paths).
 
@@ -159,10 +193,10 @@ native pinned GR:     pass  (mixed 1.669e-07, inject 1.359e-07)
 gr_read/gr_write:     0 failures
 ```
 
-### 5.3 IQ AVX2 parity — STRATA_IQ256_GATHER=0 (default)
+### 5.3 IQ AVX2 parity — STRATA_IQ256_GATHER=0 (gather forced off)
 
 CPU: AMD Ryzen 9 9900X (avx2=1, avx512=1).  
-Variants this CPU runs at gather=0: `gather+vnni`; this thread's variant: `vnni`.
+Variants this CPU runs with gather=0: `gather+vnni`; this thread's variant: `vnni`.
 
 All quant types (iq2_xxs, iq2_xs, iq2_s, iq3_xxs, iq3_s, iq4_xs, iq4_nl, q2_0),
 1–8 tokens, all kernel variants: **0 failures**.
@@ -182,15 +216,19 @@ This parity test exercises the standalone gather path in isolation;
 it passes cleanly even though the gather path is not active in end-to-end runs
 on this host.
 
-Full logs: [`iq-gather-off-parity.log`](#12-raw-artifact-paths),
-[`iq-gather-on-parity.log`](#12-raw-artifact-paths).
+Full logs: [`iq-gather-off-parity.log`](#12-raw-artifact-paths) (gather=0),
+[`iq-gather-on-parity.log`](#12-raw-artifact-paths) (gather=1).
 
 ### 5.5 Harness offline unit tests
 
-79/79 tests pass (bare Python 3.11 + regex from uv cache).  
+131/131 tests pass (bare Python 3.11 + regex from uv cache);
+verified on both nibbler (host) and paseo-nibbler (VM), no skips.
 Covers: `--tokens-file` flag, mkstemp cleanup, FIXED_FLAGS, counterbalancing,
 summarise_group eligibility, decode header validation, prompt echo validation,
-performance_eligible field, fail-fast, dry-run artifacts.
+performance_eligible field, fail-fast, dry-run artifacts; adapt-replay
+reference loading, canonical snapshot isolation, `--spec-follow` path
+provenance, argmax disagreement parsing, arm construction, output mismatch
+eligibility, dry-run end-to-end, invalid reference rejection.
 
 ---
 
@@ -261,7 +299,7 @@ trigger it.
 
 | Key | Description | Tokens (real tokeniser) |
 |-----|-------------|------------------------|
-| `short_code` | Short Python/C++ algorithm snippet with Q&A wrapper | 42 |
+| `short_code` | "Write a Python function `merge_sorted(a, b)` that merges two sorted lists into one sorted list. Include a docstring and two test cases." | 42 |
 | `long_doc` | Multi-section algorithm survey (Timsort, Introsort, Heapsort, Radix…) with appendices | **8887** |
 | `story` | Narrative creative-writing prompt | 80 |
 
@@ -278,8 +316,10 @@ this is the primary signal for G2 and G4.
 Run: `2026-10-07` · 1 rep · max_new=32 (short), max_new=64 (long/story) ·
 Groups 1–3 only · elapsed 121 s · **6/6 arms clean, 0 errors**.
 
-All six arms returned `performance_eligible=true` (smoke budgets are below the
-128-token threshold, so short-output eligibility rules do not apply).
+Smoke budgets (max_new=32/64) are below the 128-token full-run threshold;
+short-output eligibility rules do not apply. The older smoke harness JSON
+does not carry a `performance_eligible` field; eligibility is derived here
+from the budget/output counts, not read from the recorded artifact.
 
 Prompt hashes confirmed identical across baseline/candidate within each group.
 
@@ -323,33 +363,127 @@ difference visible but within cold-graph variability at n=1.
 
 ---
 
-## 9. Full matrix: 3 rep, 256/512 tokens (pending)
+## 9. Full matrix: 3 rep, 256/512 tokens (completed)
 
-**Status:** Matrix launched with `--fail-fast` at time of writing.
-Full artifacts will be copied to `/data/llm/Strata-tests/tier-a-20261007/`
-when the run completes. This section will be filled in on parent follow-up.
+**Status:** Completed. 35 eligible arms (1 skip: G7), elapsed **859 s**,
+**0 errors, 0 ineligible arms**.
+Artifacts at `/data/llm/Strata-tests/tier-a-20261007/full/` on nibbler.
 
-Expected arms: 35 live + 1 skip (G7).  
-Full-run budgets: max_new=256 (short code), max_new=512 (long doc / story).  
-Short-output threshold: n_output < 200 with budget ≥ 128 → `performance_eligible=false`.
+Full-run budgets: max_new=256 (short code), max_new=512 (long doc / story).
 
-Parent note: candidate short-code at 256 budget returned 256 tokens (full
-budget used). Story at 512 budget returned 321 tokens (EOS at 321 — natural).
-Both clean; no prompt rewrite needed.
+To re-run from scratch on nibbler (use a fresh `--out` dir to avoid clobbering):
 
-### Placeholder: group summaries
+```
+/data/llm/Strata/.venv/bin/python tools/tier_a/run_matrix.py \
+  --out /data/llm/Strata-tests/tier-a-20261007/full-rerun \
+  --fail-fast
+```
 
-*(To be filled when full matrix artifacts arrive.)*
+### G1 — short code (42 tokens prompt, max_new=256, n=3 reps)
 
-| Group | Variants | Primary metric | n | Result |
-|-------|----------|----------------|---|--------|
-| G1 short_code | baseline / candidate | decode_tok_s median | 3 rep | **PENDING** |
-| G2 long_doc   | baseline / candidate | prefill_tok_s median | 3 rep | **PENDING** |
-| G3 story      | baseline / candidate | decode_tok_s median | 3 rep | **PENDING** |
-| G4 prefill    | auto / fixed4096     | prefill_tok_s median | 3 rep | **PENDING** |
-| G5 adapt      | off / every1 / every2 | decode_tok_s median | 3 rep | **PENDING** |
-| G6 GR_DOWN_MAX4 | off / on           | decode_tok_s (1 pair) | 1 rep | **PENDING** |
-| G7 IQ256_GATHER | not_applicable     | — | — | SKIPPED (see §10) |
+Primary metric: `decode_tok_s` (cold-graph triage; see §6 and §11).
+
+| variant | decode_tok_s (median) | prefill_tok_s (median) |
+|---------|-----------------------|------------------------|
+| baseline  | 46.91 | — |
+| candidate | 46.41 | — |
+| **Δ candidate − baseline** | **−1.1%** | |
+
+Output hashes identical within each rep. Short-code prefill (42 tokens) is
+not the primary signal. The −1.1% decode difference is within cold-graph
+variability at n=3; it does not indicate a regression.
+
+### G2 — long doc (8887 tokens prompt, max_new=512, n=3 reps)
+
+Primary metric: `prefill_tok_s` (most reliable in cold-graph mode; see §6 and §11).
+
+| variant | decode_tok_s (median) | prefill_tok_s (median) |
+|---------|-----------------------|------------------------|
+| baseline  | 41.63 | 1471.13 |
+| candidate | 42.98 | 1475.97 |
+| **Δ candidate − baseline** | **+3.2%** | **+0.3%** |
+
+Prefill difference (+0.3%, 1471→1476 tok/s) is within noise. Cold-graph
+decode +3.2% for candidate. Output hashes identical within each rep.
+
+### G3 — story (80 tokens prompt, max_new=512, n=3 reps)
+
+Primary metric: `decode_tok_s`.
+
+| variant | decode_tok_s (median) | prefill_tok_s (median) |
+|---------|-----------------------|------------------------|
+| baseline  | 34.97 | — |
+| candidate | 36.17 | — |
+| **Δ candidate − baseline** | **+3.4%** | |
+
+Cold-graph decode +3.4% for candidate. Output hashes identical within each rep.
+
+### G4 — prefill mode (long doc, candidate, max_new=512, n=3 reps)
+
+Primary metric: `prefill_tok_s`.
+
+| variant | prefill_tok_s (median) |
+|---------|------------------------|
+| `--prefill auto`  | 1474.17 |
+| `--prefill 4096`  | 1410.33 |
+| **Δ fixed4096 − auto** | **−4.3%** |
+
+`--prefill auto` is ~4.3% faster than fixed 4096 at the 8887-token prompt.
+Both arms use the candidate binary.
+
+### G5 — adapt-every: forced-continuation replay (story prompt, n=3 reps)
+
+**Method:** adapt-replay harness (`run_adapt_replay.py`), commit `fb1cc15`.
+All 9 arms forced to emit the same 321 output token IDs via `--spec-follow`.
+Reference hash: `c44b95579fbfdc3a`; prompt hash: `06a101a92d88121e`.
+9 arms: adapt-every off/every1/every2 × 3 reps, G5 rotation.
+Elapsed **193 s**, 0 errors, all 9 arms performance-eligible.
+All arms verified to emit exact reference IDs (parent-confirmed).
+Canonical argv paths verified for all 9 arms.
+
+To re-run (use a fresh `--out` dir; reference from full run output):
+
+```
+/data/llm/Strata/.venv/bin/python tools/tier_a/run_adapt_replay.py \
+  --reference /data/llm/Strata-tests/tier-a-20261007/full/arms/g5r_rep0_off/output_ids.txt \
+  --out /data/llm/Strata-tests/tier-a-20261007/adapt-replay-rerun
+```
+
+| adapt variant | decode_tok_s (median, n=3) | argmax differ (median, of 321) |
+|---------------|---------------------------|--------------------------------|
+| off (every=0) | 34.63 | 0 |
+| every1 (swaps=80) | 50.06 | 6 |
+| every2 (swaps=80) | 49.90 | 4 |
+| **Δ every1 vs off** | **+44.5%** | |
+
+Argmax-differ values were stable across all 3 reps for each variant.
+
+**Critical caveats for G5:**
+
+- **Forced continuation, not free generation.** All arms emit the same 321
+  IDs; this measures processing cost under a controlled output sequence.
+  Output quality parity is **not** established by this method.
+- **Equal output sequence does NOT guarantee equal verify-window T
+  distribution or graph-capture cost** across arms. The +44.5% reflects
+  forced-path cost only.
+- **`follow_differ` is an argmax disagreement count** (positions where the
+  natural argmax differed from the forced continuation). It is **not** a
+  direct expert routing metric.
+- **Production default is `--adapt-every 4 --adapt-swaps 96`**, which was
+  not tested in this session. `every1` and `every2` (both at 80 swaps) have
+  not been compared against the actual production setting. Do not promote
+  either over existing production on the basis of these numbers.
+
+### G6 — GR_DOWN_MAX4 (story prompt, candidate, 1 pair)
+
+Exact-T specialised kernels (`ct==1..6`) were selected for all decode steps
+— confirmed in arm stderr. The `max4` generic path was not reached.
+Off/on pair shows no meaningful performance difference. Confirms the static
+code analysis in §10: `max4` is unreachable in normal decode.
+
+### G7 — IQ256_GATHER (skipped)
+
+`variant=not_applicable` — see §10. Not run.
 
 ---
 
@@ -369,14 +503,17 @@ it is simply not the active path for IQ3_S in production on the 9900X.
 
 G7 is recorded as `variant=not_applicable` and skipped.
 
-### GR_DOWN_MAX4 — likely no-op (one pair recorded for confirmation)
+### GR_DOWN_MAX4 — confirmed no-op (one pair recorded)
 
 `fused_gr.cu` lines 884–910: the `max4` branch guards `ct<=4 &&
 gr_down_max4()`. With `STRATA_NO_MULTI_GR` unset (default), exact-T
 specialised kernels (`ct==1..6`) are selected first for T=1..6, covering
 all single-token and small-multi-token decode. The `max4` generic path
-is unreachable in normal decode. G6 runs one off/on pair to confirm the
-reading is consistent with this analysis.
+is unreachable in normal decode.
+
+**Result (G6):** Exact-T kernels (`ct==1..6`) selected for all decode steps
+— confirmed in arm stderr. The `max4` generic path was not reached.
+No meaningful performance difference off vs on. Analysis is consistent.
 
 ---
 
@@ -406,20 +543,44 @@ group in this harness are given the same tokenised prompt (same `prompt_hash`).
 Smoke run numbers (n=1) are indicative only. Full-run medians (n=3 reps) are
 the intended evidence base. Even then, note the cold-graph caveat above.
 
+### Session recommendation
+
+Based on the completed cold-graph triage:
+
+- **Keep `--prefill auto`** (G4 confirms ~4.3% faster than fixed 4096 on the
+  8887-token long-doc prompt on this host).
+- **No `STRATA_GR_DOWN_MAX4` change** — confirmed no-op; exact-T kernels
+  shadow the `max4` path in normal decode (see §10 and G6 result).
+- **No `STRATA_IQ256_GATHER` change** — gather path is not active for IQ3_S
+  on this host; AVX-512 routes via `native_gu_rows` before `cpu_gather_fast`
+  is reached. Standalone parity passes, but the knob has no end-to-end effect
+  (see §10).
+- **Upstream decode gains are modest cold-graph triage only:** G2/G3 decode
+  +3.2%/+3.4% (candidate better); G1 decode −1.1% (within variability); G2
+  prefill +0.3% (within noise). None of these constitute a compelling case for
+  Tier B/C promotion on their own.
+- **Do not promote adapt-every 1 or 2 over production.** The ∼44% higher
+  forced-continuation cost (every1/2 vs off) is not a free-generation or
+  quality-parity claim. Production default is every=4/swaps=96 — neither
+  tested here. No quality certification or steady-state comparison is
+  established.
+- **No engine changes, no Tier B/C escalation, no production restoration
+  needed** from this session. Original HEAD `9921eec` and saved fork/main
+  ref `13be4c37` are unchanged. No further GitHub calls are made.
+
 ---
 
 ## 12. Raw artifact paths
 
 All artifacts pinned to `/data/llm/Strata-tests/tier-a-20261007/` on nibbler.
-A working copy of the smoke artifacts was also present at
-`/tmp/strata-tier-a-artifacts/` on paseo-nibbler at bench time.
+Working copies also at `/tmp/strata-tier-a-artifacts/` on paseo-nibbler.
 
 | File | Contents |
 |------|----------|
 | `build-and-snapshot.sha256` | SHA-256 of both binaries + 5 source snapshots |
 | `build-gcc15.log` | Full candidate build log (145 objects, 20 format warnings) |
 | `configure-gcc15.log` | CMake configure output |
-| `production.CMakeCache.txt` | Full CMakeCache for both builds |
+| `production.CMakeCache.txt` | CMakeCache snapshot — **baseline build only** |
 | `targeted-gates.log` | 18-test parity suite (ctest output) |
 | `iq-gather-off-parity.log` | IQ AVX2 parity at STRATA_IQ256_GATHER=0 |
 | `iq-gather-on-parity.log` | IQ AVX2 parity at STRATA_IQ256_GATHER=1 |
@@ -428,10 +589,21 @@ A working copy of the smoke artifacts was also present at
 | `smoke/tier_a_results.json` | Full smoke JSON (6 arm records) |
 | `smoke/arms/<label>/` | Per-arm: `argv.txt`, `stdout.txt`, `stderr.txt`, `record.json`, `prompt_ids.txt`, `output_ids.txt` |
 | `smoke.log` | Harness stdout for the smoke run |
-| *(full matrix)* | `full/tier_a_results.json`, `full/arms/<label>/` — **pending** |
+| `full/tier_a_results.json` | Full matrix JSON (35 arm records, 859 s) |
+| `full/arms/<label>/` | Per-arm artifacts (same structure as smoke) |
+| `full.log` | Harness stdout for the full matrix run |
+| `adapt-replay-canonical/adapt_replay_results.json` | Adapt-replay JSON (9 arm records, forced continuation, 193 s) |
+| `adapt-replay-canonical/arms/<label>/` | Per-arm artifacts for adapt-replay |
+| `adapt-replay-canonical/reference_ids.txt` | Canonical 321-id reference snapshot (hash `c44b95579fbfdc3a`) |
+| `adapt-replay-canonical/reference_meta.json` | Reference provenance (source path, hash, dry_run=false) |
+| `adapt-replay-canonical.log` | Adapt-replay harness stdout |
+| `harness-replay-canonical.sha256` | SHA-256 of replay harness artifacts |
+| `harness-tests-131.log` | 131/131 unit test run log (host + VM) |
+| `final-state.txt` | Post-run host state (GPU 2 MiB, launcher 644, no timers, source SHA unchanged) |
 
 ---
 
-*This document records measurements taken; it does not constitute a release
-decision. Conclusions about the full matrix are reserved for the parent after
-reviewing the complete artifact set.*
+*This document records measurements taken. All full matrix and adapt-replay
+artifacts are complete. See §11 (Session recommendation) for the session
+conclusion. No engine changes, Tier B/C escalation, or production restoration
+are recommended from this session.*
