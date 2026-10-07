@@ -497,12 +497,15 @@ Argmax-differ values were stable across all 3 reps for each variant.
 
 ### G6 — GR_DOWN_MAX4 (story prompt, candidate, 1 pair)
 
-Exact-T specialised kernels (`ct==1..6`) selected for all decode steps —
-confirmed via arm stderr dispatch log (selected path only; the `max4` generic
-branch was not separately instrumented). The `max4` path was not reached.
-off=36.79 tok/s, on=35.62 tok/s; output hash `c44b95579fbfdc3a` (identical).
-n=1; descriptive only, no statistical inference. Confirms the static code
-analysis in §10: `max4` is unreachable in normal single-token decode.
+The saved stderr reports selection of the staged hyper-connection path.
+With STRATA_NO_MULTI_GR unset, the source dispatch in
+`src/kernels/cuda/fused_gr.cu` (lines 887–898) chooses exact-T staged
+kernels for ct=1..6 before the generic max4 branch. Therefore no
+kernel-dispatch change is expected from STRATA_GR_DOWN_MAX4 for this
+selected path. This combines a startup diagnostic with source-based
+inference; it is not a runtime trace of every kernel launch.
+off=36.79 tok/s, on=35.62 tok/s; n=1 per arm; identical output hash
+`c44b95579fbfdc3a`; descriptive only, not statistical proof.
 
 ### G7 — IQ256_GATHER (skipped)
 
@@ -526,19 +529,23 @@ it is simply not the active path for IQ3_S in production on the 9900X.
 
 G7 is recorded as `variant=not_applicable` and skipped.
 
-### GR_DOWN_MAX4 — confirmed no-op (one pair recorded)
+### GR_DOWN_MAX4 — expected no-op in selected staged path (dispatch analysis)
 
 `fused_gr.cu` lines 884–910: the `max4` branch guards `ct<=4 &&
-gr_down_max4()`. With `STRATA_NO_MULTI_GR` unset (default), exact-T
-specialised kernels (`ct==1..6`) are selected first for T=1..6, covering
-all single-token and small-multi-token decode. The `max4` generic path
-is unreachable in normal decode.
+gr_down_max4()`. With `STRATA_NO_MULTI_GR` unset (default), the source
+dispatch in `src/kernels/cuda/fused_gr.cu` (lines 887–898) chooses
+exact-T staged kernels for ct=1..6 before the generic max4 branch. The
+`max4` generic path is not reached for this selected staged path.
 
-**Result (G6):** Exact-T kernels (`ct==1..6`) selected for all decode steps
-— confirmed via arm stderr dispatch log (selected path only; `max4` branch
-not separately instrumented). The `max4` path was not reached.
-off=36.79 tok/s, on=35.62 tok/s (n=1; descriptive only, no statistical inference).
-Output hash identical (`c44b95579fbfdc3a`). Analysis consistent with code.
+**Result (G6):** The saved stderr reports selection of the staged
+hyper-connection path. With STRATA_NO_MULTI_GR unset, the source dispatch
+in `src/kernels/cuda/fused_gr.cu` (lines 887–898) chooses exact-T staged
+kernels for ct=1..6 before the generic max4 branch. Therefore no
+kernel-dispatch change is expected from STRATA_GR_DOWN_MAX4 for this
+selected path. This combines a startup diagnostic with source-based
+inference; it is not a runtime trace of every kernel launch.
+off=36.79 tok/s, on=35.62 tok/s; n=1 per arm; identical output hash
+`c44b95579fbfdc3a`; descriptive only, not statistical proof.
 
 ---
 
@@ -572,10 +579,11 @@ the intended evidence base. Even then, note the cold-graph caveat above.
 
 Based on the completed cold-graph triage:
 
-- **Keep `--prefill auto`** (G4 confirms ~4.3% faster than fixed 4096 on the
-  8887-token long-doc prompt on this host).
-- **No `STRATA_GR_DOWN_MAX4` change** — confirmed no-op; exact-T kernels
-  shadow the `max4` path in normal decode (see §10 and G6 result).
+- **Keep `--prefill auto`** (G4 shows ~4.5% higher prefill throughput than
+  fixed 4096 on the 8887-token long-doc prompt on this host).
+- **No `STRATA_GR_DOWN_MAX4` change** — expected no dispatch change for the
+  selected staged path; source dispatch + staged startup diagnostic confirm
+  exact-T branch is chosen before max4 (see §10 and G6 result).
 - **No `STRATA_IQ256_GATHER` change** — gather path is not active for IQ3_S
   on this host; AVX-512 routes via `native_gu_rows` before `cpu_gather_fast`
   is reached. Standalone parity passes, but the knob has no end-to-end effect
@@ -592,6 +600,16 @@ Based on the completed cold-graph triage:
 - **No engine changes, no Tier B/C escalation, no production restoration
   needed** from this session. Original HEAD `9921eec` and saved fork/main
   ref `13be4c37` are unchanged. No further GitHub calls are made.
+
+### Known limitations
+
+Two harness follow-ups are tracked separately and not addressed in this
+session: (1) direct CLI cancellation cleanup — arm processes are not
+cancelled via the harness in the current implementation (sta-d76); (2)
+prefill token-count validation outside this epic scope (sta-0a7). Neither
+affects the results reported here: all arms ran under supervised
+control-group conditions, and the prefill metrics used (`prefill_tok_s`)
+are valid for the prompts where they are the primary signal.
 
 ---
 
@@ -624,10 +642,10 @@ Working copies also at `/tmp/strata-tier-a-artifacts/` on paseo-nibbler.
 | `adapt-replay-canonical.log` | Adapt-replay harness stdout |
 | `harness-replay-canonical.sha256` | SHA-256 of replay harness Python source files |
 | `harness-tests-131.log` | 131/131 unit test run log (nibbler host run only) |
+| `final-state.txt` | Post-run host state (GPU 2 MiB, launcher 644, no timers, source SHA unchanged) |
 
 Additional VM-side test log (not in host artifact tree):
 `/tmp/tier-a-tests-131.log` on paseo-nibbler — same 131/131 result, separate run.
-| `final-state.txt` | Post-run host state (GPU 2 MiB, launcher 644, no timers, source SHA unchanged) |
 
 ---
 
