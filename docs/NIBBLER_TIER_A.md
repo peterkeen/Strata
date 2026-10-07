@@ -59,9 +59,9 @@ OS:     nibbler bare-metal — kernel 7.2.8+deb14-amd64 (captured via SSH uname)
         paseo-nibbler orchestration VM: Debian libvirt
 ```
 
-**Inference service state during benchmarking:**  
+**Inference service state during benchmarking:**
 `/opt/native-inference/bin/start-strata-sharp-medium` was **mode 644**
-(not executable — intentional launcher guard, no service loaded).  
+(not executable — intentional launcher guard, no service loaded).
 `llama-swap.service` active/running (port 8088); `wyoming-openai.service` active/running.
 llama-swap health endpoint returned `OK` (exact plain-text body) — router up.
 Audio stack on port 5800: `audiocpp_server` (PocketTTS + Parakeet) — not a
@@ -160,7 +160,7 @@ All gates run against the candidate build before any live arm.
 
 ### 5.1 Targeted parity suite (18 tests)
 
-Run: `ctest` from `build-tier-a`, selecting targeted kernel tests.  
+Run: `ctest` from `build-tier-a`, selecting targeted kernel tests.
 Result: **18/18 passed** in 10.73 s.
 
 | # | Test | Result |
@@ -195,7 +195,7 @@ gr_read/gr_write:     0 failures
 
 ### 5.3 IQ AVX2 parity — STRATA_IQ256_GATHER=0 (gather forced off)
 
-CPU: AMD Ryzen 9 9900X (avx2=1, avx512=1).  
+CPU: AMD Ryzen 9 9900X (avx2=1, avx512=1).
 Variants this CPU runs with gather=0: `gather+vnni`; this thread's variant: `vnni`.
 
 All quant types (iq2_xxs, iq2_xs, iq2_s, iq3_xxs, iq3_s, iq4_xs, iq4_nl, q2_0),
@@ -207,7 +207,7 @@ the reference, not a candidate regression.
 
 ### 5.4 IQ AVX2 parity — STRATA_IQ256_GATHER=1 (gather forced on)
 
-Same CPU. Variants with gather=1: `gather+vnni`; this thread's: `gather+vnni`.  
+Same CPU. Variants with gather=1: `gather+vnni`; this thread's: `gather+vnni`.
 All quant types, 1–8 tokens, all variants: **0 failures**.
 
 Context: on the 9900X, IQ3_S decode in production routes through
@@ -221,8 +221,9 @@ Full logs: [`iq-gather-off-parity.log`](#12-raw-artifact-paths) (gather=0),
 
 ### 5.5 Harness offline unit tests
 
-131/131 tests pass (bare Python 3.11 + regex from uv cache);
-verified on both nibbler (host) and paseo-nibbler (VM), no skips.
+131/131 tests pass, no skips.
+Run on nibbler host (existing `/data/llm/Strata/.venv`) and on paseo-nibbler VM
+(system Python 3.11 + regex module from uv cache); both environments pass.
 Covers: `--tokens-file` flag, mkstemp cleanup, FIXED_FLAGS, counterbalancing,
 summarise_group eligibility, decode header validation, prompt echo validation,
 performance_eligible field, fail-fast, dry-run artifacts; adapt-replay
@@ -254,7 +255,7 @@ eligibility, dry-run end-to-end, invalid reference rejection.
   --max-new <N>
 ```
 
-**Env (both arms):** `STRATA_PF_FUSED=1  STRATA_IQ_MT_MIN=1`  
+**Env (both arms):** `STRATA_PF_FUSED=1  STRATA_IQ_MT_MIN=1`
 **Controlled vars** (stripped from ambient env, re-injected per arm only):
 `STRATA_GR_DOWN_MAX4`, `STRATA_IQ256_GATHER`, `STRATA_NO_AVXVNNI`,
 `STRATA_IQ_MT_MIN`, `STRATA_PF_FUSED`, `STRATA_PF_FUSED_NATIVE`,
@@ -274,7 +275,7 @@ eligibility, dry-run end-to-end, invalid reference rejection.
 > `prefill_tok_s` is unaffected (prefill uses a separate batched kernel, not
 > captured into the decode graph).
 
-**Performance eligibility:**  
+**Performance eligibility:**
 Arms where `max_new ≥ 128` and `n_output < 200` are flagged
 `performance_eligible=false` with reason `short_output`. Their raw data is
 preserved; they are excluded from group medians. Short-output is not a
@@ -330,8 +331,8 @@ Prompt hashes confirmed identical across baseline/candidate within each group.
 | baseline  | 47.33 | 68.2  | 0.880 (22/25) | `3ce6c2acab68091e` |
 | candidate | 47.22 | 69.6  | 0.885 (23/26) | `3ce6c2acab68091e` |
 
-Output hashes **identical**. Cold-graph decode numbers within noise (1 rep,
-no median). Prefill within noise.
+Output hashes **identical**. Cold-graph decode numbers are descriptive only (1 rep,
+no median); no statistical significance established. Prefill likewise descriptive.
 
 ### G2 — long doc (8887 tokens prompt, max_new=64)
 
@@ -351,8 +352,8 @@ difference < noise). TTFT dominated by 8887-token prefill (~6.5 s).
 | candidate | 33.61 | 106.2 | 0.529 (27/51) | `bde23c3fa23955c3` |
 
 Output hashes **identical**. Story prompt has lower draft acceptance (0.529)
-than short code (0.880) — expected: creative text is less predictable. Decode
-difference visible but within cold-graph variability at n=1.
+than short code (0.880). Decode difference visible; descriptive only (n=1,
+no statistical significance established).
 
 **Summary (smoke, cold-graph triage — 1 rep, not median):**
 
@@ -374,6 +375,7 @@ Full-run budgets: max_new=256 (short code), max_new=512 (long doc / story).
 To re-run from scratch on nibbler (use a fresh `--out` dir to avoid clobbering):
 
 ```
+cd /data/llm/Strata-tier-a && \
 /data/llm/Strata/.venv/bin/python tools/tier_a/run_matrix.py \
   --out /data/llm/Strata-tests/tier-a-20261007/full-rerun \
   --fail-fast
@@ -390,8 +392,9 @@ Primary metric: `decode_tok_s` (cold-graph triage; see §6 and §11).
 | **Δ candidate − baseline** | **−1.1%** | |
 
 Output hashes identical within each rep. Short-code prefill (42 tokens) is
-not the primary signal. The −1.1% decode difference is within cold-graph
-variability at n=3; it does not indicate a regression.
+not the primary signal. The −1.1% decode difference is descriptive; this
+three-repetition cold-process probe does not establish statistical significance
+or a performance regression.
 
 ### G2 — long doc (8887 tokens prompt, max_new=512, n=3 reps)
 
@@ -403,8 +406,9 @@ Primary metric: `prefill_tok_s` (most reliable in cold-graph mode; see §6 and �
 | candidate | 42.98 | 1475.97 |
 | **Δ candidate − baseline** | **+3.2%** | **+0.3%** |
 
-Prefill difference (+0.3%, 1471→1476 tok/s) is within noise. Cold-graph
-decode +3.2% for candidate. Output hashes identical within each rep.
+The measured prefill difference is +0.3% (1471→1476 tok/s); statistical
+significance is not established. Cold-graph decode +3.2% for candidate.
+Output hashes identical within each rep.
 
 ### G3 — story (80 tokens prompt, max_new=512, n=3 reps)
 
@@ -428,10 +432,24 @@ Primary metric: `prefill_tok_s`.
 | `--prefill 4096`  | 1410.33 |
 | **Δ fixed4096 − auto** | **−4.3%** |
 
-`--prefill auto` is ~4.3% faster than fixed 4096 at the 8887-token prompt.
-Both arms use the candidate binary.
+`--prefill auto` produces ~4.5% higher prefill throughput than fixed 4096
+(1474 vs 1410 tok/s, (auto−fixed)/fixed); equivalently, fixed 4096 is ~4.3%
+lower than auto ((fixed−auto)/auto). Both arms use the candidate binary.
 
 ### G5 — adapt-every: forced-continuation replay (story prompt, n=3 reps)
+
+**Natural free-generation results (full matrix, story prompt, G5 arms, n=3 reps):**
+Output lengths and hashes diverge by adapt variant; direct throughput comparison
+is not meaningful without controlling the output sequence.
+
+| adapt variant | decode_tok_s (median) | n_output | output_hash |
+|---------------|-----------------------|----------|-------------|
+| off (every=0) | 36.33 | 321 | `c44b95579fbfdc3a` |
+| every1 (swaps=80) | 50.12 | 314 | `d7ea25e026394580` |
+| every2 (swaps=80) | 50.40 | 303 | `3d5c59e7ff2b2945` |
+
+Because output sequences differ, the above values are not a controlled
+comparison; the forced-replay below controls for output sequence.
 
 **Method:** adapt-replay harness (`run_adapt_replay.py`), commit `fb1cc15`.
 All 9 arms forced to emit the same 321 output token IDs via `--spec-follow`.
@@ -444,9 +462,11 @@ Canonical argv paths verified for all 9 arms.
 To re-run (use a fresh `--out` dir; reference from full run output):
 
 ```
+cd /data/llm/Strata-tier-a && \
 /data/llm/Strata/.venv/bin/python tools/tier_a/run_adapt_replay.py \
-  --reference /data/llm/Strata-tests/tier-a-20261007/full/arms/g5r_rep0_off/output_ids.txt \
-  --out /data/llm/Strata-tests/tier-a-20261007/adapt-replay-rerun
+  --reference /data/llm/Strata-tests/tier-a-20261007/full/arms/g5_rep0_off/output_ids.txt \
+  --out /data/llm/Strata-tests/tier-a-20261007/adapt-replay-rerun \
+  --fail-fast
 ```
 
 | adapt variant | decode_tok_s (median, n=3) | argmax differ (median, of 321) |
@@ -464,8 +484,9 @@ Argmax-differ values were stable across all 3 reps for each variant.
   IDs; this measures processing cost under a controlled output sequence.
   Output quality parity is **not** established by this method.
 - **Equal output sequence does NOT guarantee equal verify-window T
-  distribution or graph-capture cost** across arms. The +44.5% reflects
-  forced-path cost only.
+  distribution or graph-capture cost** across arms. The +44.5% is a
+  throughput difference (decode_tok_s is higher for adapt variants) under
+  forced continuation only; it is not a free-generation or quality-parity result.
 - **`follow_differ` is an argmax disagreement count** (positions where the
   natural argmax differed from the forced continuation). It is **not** a
   direct expert routing metric.
@@ -476,10 +497,12 @@ Argmax-differ values were stable across all 3 reps for each variant.
 
 ### G6 — GR_DOWN_MAX4 (story prompt, candidate, 1 pair)
 
-Exact-T specialised kernels (`ct==1..6`) were selected for all decode steps
-— confirmed in arm stderr. The `max4` generic path was not reached.
-Off/on pair shows no meaningful performance difference. Confirms the static
-code analysis in §10: `max4` is unreachable in normal decode.
+Exact-T specialised kernels (`ct==1..6`) selected for all decode steps —
+confirmed via arm stderr dispatch log (selected path only; the `max4` generic
+branch was not separately instrumented). The `max4` path was not reached.
+off=36.79 tok/s, on=35.62 tok/s; output hash `c44b95579fbfdc3a` (identical).
+n=1; descriptive only, no statistical inference. Confirms the static code
+analysis in §10: `max4` is unreachable in normal single-token decode.
 
 ### G7 — IQ256_GATHER (skipped)
 
@@ -512,19 +535,21 @@ all single-token and small-multi-token decode. The `max4` generic path
 is unreachable in normal decode.
 
 **Result (G6):** Exact-T kernels (`ct==1..6`) selected for all decode steps
-— confirmed in arm stderr. The `max4` generic path was not reached.
-No meaningful performance difference off vs on. Analysis is consistent.
+— confirmed via arm stderr dispatch log (selected path only; `max4` branch
+not separately instrumented). The `max4` path was not reached.
+off=36.79 tok/s, on=35.62 tok/s (n=1; descriptive only, no statistical inference).
+Output hash identical (`c44b95579fbfdc3a`). Analysis consistent with code.
 
 ---
 
 ## 11. Interpretation guide
 
-**What these numbers are:**  
+**What these numbers are:**
 Cold-graph triage. Every `decode_tok_s` includes CUDA graph compilation
 overhead. Useful for catching regressions (a large unexplained drop) and
 confirming output hash parity. Not suitable for absolute throughput claims.
 
-**What they are not:**  
+**What they are not:**
 Steady-state throughput. Steady-state requires a persistent `--serve` harness
 with per-arm warmup generations. That is out of scope for this session.
 
@@ -533,13 +558,13 @@ prefill path uses a separate batched kernel not captured into the decode graph.
 For G2 (long doc, 8887 tokens) and G4 (prefill mode comparison),
 `prefill_tok_s` is the primary signal.
 
-**Comparing across arms:**  
+**Comparing across arms:**
 Always check `prompt_hash` equality first. Two arms with the same budget but
 different output text may hit different CUDA graph T-values in different orders,
 making their cold-graph decode numbers non-comparable. Arms within the same
 group in this harness are given the same tokenised prompt (same `prompt_hash`).
 
-**Do not claim speed gains before repeated evidence.**  
+**Do not claim speed gains before repeated evidence.**
 Smoke run numbers (n=1) are indicative only. Full-run medians (n=3 reps) are
 the intended evidence base. Even then, note the cold-graph caveat above.
 
@@ -556,11 +581,11 @@ Based on the completed cold-graph triage:
   is reached. Standalone parity passes, but the knob has no end-to-end effect
   (see §10).
 - **Upstream decode gains are modest cold-graph triage only:** G2/G3 decode
-  +3.2%/+3.4% (candidate better); G1 decode −1.1% (within variability); G2
-  prefill +0.3% (within noise). None of these constitute a compelling case for
-  Tier B/C promotion on their own.
-- **Do not promote adapt-every 1 or 2 over production.** The ∼44% higher
-  forced-continuation cost (every1/2 vs off) is not a free-generation or
+  +3.2%/+3.4% (candidate better); G1 decode −1.1%; G2 prefill +0.3%
+  (descriptive; significance unestablished). None of these constitute a
+  compelling case for Tier B/C promotion on their own.
+- **Do not promote adapt-every 1 or 2 over production.** The ∼44.5% higher
+  forced-continuation throughput (every1 vs off) is not a free-generation or
   quality-parity claim. Production default is every=4/swaps=96 — neither
   tested here. No quality certification or steady-state comparison is
   established.
@@ -578,7 +603,7 @@ Working copies also at `/tmp/strata-tier-a-artifacts/` on paseo-nibbler.
 | File | Contents |
 |------|----------|
 | `build-and-snapshot.sha256` | SHA-256 of both binaries + 5 source snapshots |
-| `build-gcc15.log` | Full candidate build log (145 objects, 20 format warnings) |
+| `build-gcc15.log` | Full candidate build log (145 objects, 20 build warnings: 9 format, 5 indentation, 6 unused) |
 | `configure-gcc15.log` | CMake configure output |
 | `production.CMakeCache.txt` | CMakeCache snapshot — **baseline build only** |
 | `targeted-gates.log` | 18-test parity suite (ctest output) |
@@ -589,7 +614,7 @@ Working copies also at `/tmp/strata-tier-a-artifacts/` on paseo-nibbler.
 | `smoke/tier_a_results.json` | Full smoke JSON (6 arm records) |
 | `smoke/arms/<label>/` | Per-arm: `argv.txt`, `stdout.txt`, `stderr.txt`, `record.json`, `prompt_ids.txt`, `output_ids.txt` |
 | `smoke.log` | Harness stdout for the smoke run |
-| `full/tier_a_results.json` | Full matrix JSON (35 arm records, 859 s) |
+| `full/tier_a_results.json` | Full matrix JSON (36 records: 35 eligible + 1 skip, 859 s) |
 | `full/arms/<label>/` | Per-arm artifacts (same structure as smoke) |
 | `full.log` | Harness stdout for the full matrix run |
 | `adapt-replay-canonical/adapt_replay_results.json` | Adapt-replay JSON (9 arm records, forced continuation, 193 s) |
@@ -597,8 +622,11 @@ Working copies also at `/tmp/strata-tier-a-artifacts/` on paseo-nibbler.
 | `adapt-replay-canonical/reference_ids.txt` | Canonical 321-id reference snapshot (hash `c44b95579fbfdc3a`) |
 | `adapt-replay-canonical/reference_meta.json` | Reference provenance (source path, hash, dry_run=false) |
 | `adapt-replay-canonical.log` | Adapt-replay harness stdout |
-| `harness-replay-canonical.sha256` | SHA-256 of replay harness artifacts |
-| `harness-tests-131.log` | 131/131 unit test run log (host + VM) |
+| `harness-replay-canonical.sha256` | SHA-256 of replay harness Python source files |
+| `harness-tests-131.log` | 131/131 unit test run log (nibbler host run only) |
+
+Additional VM-side test log (not in host artifact tree):
+`/tmp/tier-a-tests-131.log` on paseo-nibbler — same 131/131 result, separate run.
 | `final-state.txt` | Post-run host state (GPU 2 MiB, launcher 644, no timers, source SHA unchanged) |
 
 ---
