@@ -24,6 +24,7 @@
 // SOFTWARE.
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
+#include "strata/kernels/tier_b_diagnostics.hpp"
 #include <cuda_runtime.h>
 #include <atomic>
 #include <cmath>
@@ -207,6 +208,10 @@ void native_rope_apply(const float* x, float* out, int rows, int head_dim,
     const RopeTab rt = rope_table_for(scaling);
     const unsigned threads = (x == out && n_rot == 64 && native_norm_rope_usable(head_dim, n_rot)) ? 32u : 128u;
     const dim3 grid(threads == 32u ? 1u : unsigned((head_dim / 2 + 127) / 128), rows);
+    if (tier_b::enabled())
+        tier_b::emit("rope", "native_rope_apply", threads == 32u ? "rope_inplace32" : "rope128",
+                     -1, -1, -1, -1, rows, head_dim, n_rot, -1, -1, -1, -1,
+                     rt.cos != nullptr ? 1 : 0, stream);
     if (rt.cos != nullptr)
         apply<true><<<grid, threads, 0, static_cast<cudaStream_t>(stream)>>>(x, out, rows, head_dim, n_rot, theta_scale,
             k.freq_scale, k.corr_low, k.corr_high, k.ext_factor, k.attn_factor, positions, mrope_table(), rt);
@@ -231,6 +236,10 @@ void native_qsa_rms_norm_rope(const float* x, int in_stride, const float* gamma,
     const float theta_scale = powf((float) scaling.freq_base, -2.0f / n_rot);
     const RopeKernelArgs k = scaling.kernel_args(n_rot);
     const RopeTab rt = rope_table_for(scaling);
+    if (tier_b::enabled())
+        tier_b::emit("rope_norm", "native_qsa_rms_norm_rope", "norm_rope_fused",
+                     -1, -1, -1, -1, rows, head_dim, n_rot, -1, -1, -1, -1,
+                     rt.cos != nullptr ? 1 : 0, stream);
     if (rt.cos != nullptr)
         norm_rope_kernel<true><<<unsigned(rows), 256, 0, static_cast<cudaStream_t>(stream)>>>(
             x, in_stride, gamma, out, head_dim, n_rot, epsilon, theta_scale,

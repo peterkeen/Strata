@@ -7,6 +7,7 @@
 #include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/dp4a.hpp"
 #include "strata/kernels/q8_1_finite.hpp"
+#include "strata/kernels/tier_b_diagnostics.hpp"
 #include "s26_tsum.cuh"
 
 #include <cuda_fp16.h>
@@ -1946,6 +1947,38 @@ bool gu_split(int t) {
         default: return false;
     }
 }
+bool mmvq_split(int t) {
+    switch (t) {
+#define STRATA_MMVQ_SP(T) case T: return kSplit<T>;
+        STRATA_MMVQ_FMTS(STRATA_MMVQ_SP)
+#undef STRATA_MMVQ_SP
+        default: return false;
+    }
+}
+bool mmvq_supported(int t) {
+    switch (t) {
+#define STRATA_MMVQ_OK(T) case T: return true;
+        STRATA_MMVQ_FMTS(STRATA_MMVQ_OK)
+#undef STRATA_MMVQ_OK
+        default: return false;
+    }
+}
+bool gu_supported(int t) {
+    switch (t) {
+#define STRATA_GU_OK(T) case T: return true;
+        STRATA_GU_FMTS(STRATA_GU_OK)
+#undef STRATA_GU_OK
+        default: return false;
+    }
+}
+bool d_supported(int t) {
+    switch (t) {
+#define STRATA_D_OK(T) case T: return true;
+        STRATA_D_FMTS(STRATA_D_OK)
+#undef STRATA_D_OK
+        default: return false;
+    }
+}
 
 bool env_on(const char* name) {
     const char* v = std::getenv(name);
@@ -2739,11 +2772,19 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
     cudaStream_t s = (cudaStream_t) stream;
     const auto* W = (const uint8_t*) w;
     const auto* X = (const block_q8_1*) x_q8_1;
+    if (tier_b::enabled() && mmvq_supported(t))
+        tier_b::emit("iq_mmvq", "iq_mmvq",
+                     g_old_kernels ? "reference_old" : (mmvq_split(t) ? "split" : "reference"),
+                     t, -1, n_in, -1, n_out, -1, -1, ncols, -1, -1, -1, -1, stream);
     switch (t) {
 #define STRATA_MMVQ(T) case T: launch_mmvq<T>(W, rb, X, y, n_in, n_out, ncols, s); break;
         STRATA_MMVQ_FMTS(STRATA_MMVQ)
 #undef STRATA_MMVQ
-        default: std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
+        default:
+            if (tier_b::enabled())
+                tier_b::emit("iq_mmvq", "iq_mmvq", "unsupported",
+                             t, -1, n_in, -1, n_out, -1, -1, ncols, -1, -1, -1, -1, stream);
+            std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
     }
     check("iq_mmvq");
 }
@@ -3377,7 +3418,13 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                            const int32_t* n_groups, const int32_t* ent_dst, const int32_t* ent_tok, int64_t cap_groups,
                            int64_t cap_entries, const void* x_q8_1, void* scratch, float* out, void* stream,
                            int64_t grid_groups) {
-    if (cap_groups <= 0 || cap_entries <= 0) return;
+    if (cap_groups <= 0 || cap_entries <= 0) {
+        if (tier_b::enabled())
+            tier_b::emit("iq_grouped", "native_expert_grouped", "zero",
+                         L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                         cap_groups, cap_entries, grid_groups, -1, stream);
+        return;
+    }
     if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
     cudaStream_t s = (cudaStream_t) stream;
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
@@ -3397,6 +3444,10 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         else s26_launch_l<true, true, 4, 4, true, true>(L, cap_groups, s, grp_ptr, grp_start, n_groups, ent_dst, ent_tok, X, gate, up, h,
                                                         hq, out, (long long) cap_entries * L.n_ff);
         check("native_expert_grouped (v2)");
+        if (tier_b::enabled())
+            tier_b::emit("iq_grouped", "native_expert_grouped", "s26_fused",
+                         L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                         cap_groups, cap_entries, -1, -1, stream);
         return;
     }
     // stream B: UD-Q4_K_XL's Q4_K / Q5_K gate/up and Q5_1 / Q8_0 down (see S27 above)
@@ -3412,12 +3463,20 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
         else STRATA_V2K(13, 8);
 #undef STRATA_V2K
         check("native_expert_grouped (v2k)");
+        if (tier_b::enabled())
+            tier_b::emit("iq_grouped", "native_expert_grouped", "s27_fused",
+                         L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                         cap_groups, cap_entries, -1, -1, stream);
         return;
     }
     const bool v1 = g_grouped_v1;
     const int64_t gy = (v1 || grid_groups <= 0 || grid_groups > cap_groups) ? cap_groups : grid_groups;
     const int gu_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_embd == 2560 && gu_split(L.gu_type)) ? 16 : GU_ROWS;
     const dim3 ggu((unsigned) ((2 * L.n_ff + gu_rows - 1) / gu_rows), (unsigned) gy);
+    if (tier_b::enabled() && g_exp_phase == 2)
+        tier_b::emit("iq_grouped", "native_expert_grouped.gu", "skipped",
+                     L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                     cap_groups, cap_entries, gy, -1, stream);
 #if defined(STRATA_HIP_GFX906)
     const int em0 = exp_mode();
 #endif
@@ -3434,11 +3493,27 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
             default: native_gu_fused_kernel<22><<<gl, 256, sh, s>>>(grp_ptr, grp_start, n_groups, ent_tok, X, L, hq); break;
         }
         check("native_expert_grouped/gu fused");
+        if (tier_b::enabled())
+            tier_b::emit("iq_grouped", "native_expert_grouped.gu", "hip_fused",
+                         L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                         cap_groups, cap_entries, gy, -1, stream);
     }
     if (g_exp_phase != 2 && !fused_gu) {
 #else
     if (g_exp_phase != 2) {
 #endif
+    if (tier_b::enabled() && gu_supported(L.gu_type)) {
+        const bool gu_multi = gu_split(L.gu_type);
+        const bool gu16 = !g_old_kernels && gu_multi && !g_no_sub16_gu && L.n_embd == 2560;
+#if defined(STRATA_HIP_GFX906)
+        const char* gu_path = "hip_dispatch";   // HIP alternate dispatch: CUDA sub16 labels do not apply
+#else
+        const char* gu_path = g_old_kernels ? "reference_old" : gu16 ? "split_sub16" : gu_multi ? "split" : "reference";
+#endif
+        tier_b::emit("iq_grouped", "native_expert_grouped.gu", gu_path,
+                     L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                     cap_groups, cap_entries, gy, -1, stream);
+    }
 #if defined(STRATA_HIP_GFX906)
     const bool lds_gu = (em0 == 5 || em0 == 6 || em0 == 7 || em0 == 8) && (L.gu_type == 18 || L.gu_type == 21 || L.gu_type == 22 || L.gu_type == 23);
     if (lds_gu) {
@@ -3472,7 +3547,12 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #define STRATA_GU(T) case T: launch_gu<T>(ggu, s, grp_ptr, grp_start, n_groups, ent_tok, X, L, gate, up); break;
         STRATA_GU_FMTS(STRATA_GU)
 #undef STRATA_GU
-        default: std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
+        default:
+            if (tier_b::enabled())
+                tier_b::emit("iq_grouped", "native_expert_grouped.gu", "unsupported",
+                             L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                             cap_groups, cap_entries, gy, -1, stream);
+            std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
     }
 #if defined(STRATA_HIP_GFX906)
     }
@@ -3499,6 +3579,19 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
     if (g_exp_phase == 1) return;
     const int d_rows = (!g_old_kernels && !g_no_sub16_gu && L.n_ff == 640) ? (L.d_type == 20 ? 32 : (L.d_type == 42 ? 16 : 8)) : 8;
     const dim3 gd((unsigned) ((L.n_embd + d_rows - 1) / d_rows), (unsigned) gy);
+    if (tier_b::enabled() && d_supported(L.d_type)) {
+        const bool d_split = L.d_type == 20 || L.d_type == 23 || L.d_type == 42;
+        const bool d_sub = !g_old_kernels && !g_no_sub16_gu && L.n_ff == 640 &&
+                           (L.d_type == 20 || L.d_type == 42);
+#if defined(STRATA_HIP_GFX906)
+        const char* d_path = "hip_dispatch";   // HIP alternate dispatch: CUDA sub16 labels do not apply
+#else
+        const char* d_path = g_old_kernels ? "reference_old" : d_sub ? "split_sub16" : d_split ? "split" : "reference";
+#endif
+        tier_b::emit("iq_grouped", "native_expert_grouped.down", d_path,
+                     L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                     cap_groups, cap_entries, gy, -1, stream);
+    }
 #if defined(STRATA_HIP_GFX906)
     if ((em0 == 7 || em0 == 8) && (L.d_type == 20 || L.d_type == 42)) {
         const dim3 gl((unsigned) ((L.n_embd + LDS_RB - 1) / LDS_RB), (unsigned) cap_groups);
@@ -3527,7 +3620,12 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 #define STRATA_DOWN(T) case T: launch_down<T>(gd, s, grp_ptr, grp_start, n_groups, ent_dst, hq, L, out); break;
         STRATA_D_FMTS(STRATA_DOWN)
 #undef STRATA_DOWN
-        default: std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
+        default:
+            if (tier_b::enabled())
+                tier_b::emit("iq_grouped", "native_expert_grouped.down", "unsupported",
+                             L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
+                             cap_groups, cap_entries, gy, -1, stream);
+            std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
     }
     check("native_expert_grouped/down");
 }
