@@ -773,6 +773,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(native_grouped_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(native_grouped_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME native_grouped_parity COMMAND native_grouped_parity)
+  # Tier B first-wave paired benchmark (NOT a CTest test - it times on the GPU and must never run unbounded
+  # automatically).  sub16 vs wider-warp fallback layouts on the IQ3_S-file's seven mixed 2560x640 pairs, after
+  # a bitwise parity gate; uses iq_multi_parity's selector and self-guards gfx906.  Bounded example (defaults):
+  #   tier_b_expert_bench --groups 8 --tokens 2 --slots 8 --warmup 25 --samples 30 --max-bytes 536870912
+  add_executable(tier_b_expert_bench src/kernels/tier_b_expert_bench.cpp)
+  target_include_directories(tier_b_expert_bench PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(tier_b_expert_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_executable(shared_expert_parity src/kernels/shared_expert_parity.cpp)
   target_include_directories(shared_expert_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(shared_expert_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
@@ -832,6 +839,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(rope_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(rope_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME rope_parity COMMAND rope_parity --selftest)
+  # Tier B first-wave paired benchmark (NOT a CTest test - it times on the GPU and must never run unbounded
+  # automatically).  fused norm+RoPE vs the split reference on identical synthetic inputs after a bitwise gate.
+  # Bounded example (defaults): tier_b_rope_bench 200 50 5 1 8   (iters 10..20000, warmup 1..2000, samples 1..50,
+  # 1 <= t_lo <= t_hi <= 8; --no-graph skips warmed graph replay).
+  add_executable(tier_b_rope_bench src/kernels/tier_b_rope_bench.cpp)
+  target_include_directories(tier_b_rope_bench PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(tier_b_rope_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
 
   add_executable(quantize_act_parity src/kernels/quantize_act_parity.cpp)
   target_include_directories(quantize_act_parity PRIVATE ${_strata_gpu_include_directories})
