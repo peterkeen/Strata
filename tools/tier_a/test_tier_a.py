@@ -6,10 +6,8 @@ Engine subprocesses are replaced by tiny fixture binaries.
 DEPENDENCY NOTE
 ───────────────
 Tests that exercise strata_tokenizer (TestTokenizePrompt) require `regex`.
-Set PYTHONPATH before running if regex is not installed system-wide:
-
-    PYTHONPATH=/home/pete/.cache/uv/archive-v0/wicKyd1x7CYO0Nj0/lib/python3.11/site-packages \
-        python3 -m unittest discover -s tools/tier_a -p test_*.py
+Set PYTHONPATH to an existing Python environment with `regex` installed if it
+is not present system-wide (do not rely on an ephemeral package-cache path).
 
 All other test classes (TestParseStdout, TestBuildEnv, TestRunArm*, TestMathFinite,
 TestPrompts, TestHelpInvocation, TestRunMatrixDryRun) pass with bare Python 3.11.
@@ -673,6 +671,178 @@ class TestDecodeHeaderValidation(unittest.TestCase):
         self.assertEqual(p["decode_header_n"], -1)
 
 
+# ── TestPrefillValidation ────────────────────────────────────────────────────
+
+class TestPrefillValidation(unittest.TestCase):
+    """sta-0a7: multi-token arms require a valid primary prefill diagnostic.
+
+    generate.cpp reports only conditioning positions: len(prompt)-1 tokens.
+    prefill_ms, prefill_tok_s and ttft_ms must be positive and finite.
+    Missing / malformed / nonfinite / zero / negative / count-mismatch prefill
+    sets ArmResult.error (so the arm cannot be performance eligible).
+    """
+
+    PROMPT = [1, 2, 3]   # len 3 -> prefill must report 2 tokens
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="tier_a_prefill_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _stdout_with_prefill(self, prefill_line: str) -> str:
+        return textwrap.dedent(f"""\
+            prompt  : 1 2 3
+            output  : 10 20 30 40
+            decode                   4 tokens in 120.0 ms  ->  33.33 tok/s
+            {prefill_line}
+            speculation              5 rounds of 4, drafts accepted 3 of 8 (0.375), 1.60 tokens per round
+        """)
+
+    def _run(self, stdout: str, token_ids=None) -> ArmResult:
+        token_ids = self.PROMPT if token_ids is None else token_ids
+        exe = _write_fixture(self._tmp, stdout)
+        return run_arm(exe, [], token_ids, 4, {}, (), 10.0, tmp_dir=self._tmp)
+
+    _VALID_LINE = ("prefill                  2 tokens in 85.0 ms  ->  100.00 tok/s"
+                   "  (time to first token 90.0 ms)")
+
+    def test_valid_prefill_multi_token_ok(self):
+        r = self._run(self._stdout_with_prefill(self._VALID_LINE))
+        self.assertIsNone(r.error, f"valid prefill rejected: {r.error}")
+        self.assertAlmostEqual(r.prefill_ms, 85.0)
+        self.assertAlmostEqual(r.prefill_tok_s, 100.0)
+        self.assertAlmostEqual(r.ttft_ms, 90.0)
+
+    def test_missing_prefill_multi_token_is_error(self):
+        stdout = textwrap.dedent("""\
+            prompt  : 1 2 3
+            output  : 10 20 30 40
+            decode                   4 tokens in 120.0 ms  ->  33.33 tok/s
+            speculation              5 rounds of 4, drafts accepted 3 of 8 (0.375), 1.60 tokens per round
+        """)
+        r = self._run(stdout)
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill", r.error)
+
+    def test_count_mismatch_prefill_is_error(self):
+        line = self._VALID_LINE.replace("2 tokens", "5 tokens")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill_count_mismatch", r.error)
+        self.assertIn("header=5", r.error)
+        self.assertIn("expected=2", r.error)
+
+    def test_zero_prefill_ms_is_error(self):
+        line = self._VALID_LINE.replace("85.0 ms", "0.0 ms")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill_ms", r.error)
+
+    def test_zero_prefill_tok_s_is_error(self):
+        line = self._VALID_LINE.replace("100.00 tok/s", "0.00 tok/s")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill_tok_s", r.error)
+
+    def test_negative_prefill_ms_is_error(self):
+        line = self._VALID_LINE.replace("85.0 ms", "-85.0 ms")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill_ms", r.error)
+
+    def test_nan_prefill_ms_is_error(self):
+        line = self._VALID_LINE.replace("85.0 ms", "nan ms")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill_ms", r.error)
+
+    def test_inf_prefill_tok_s_is_error(self):
+        line = self._VALID_LINE.replace("100.00 tok/s", "inf tok/s")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill_tok_s", r.error)
+
+    def test_malformed_prefill_header_is_error(self):
+        line = self._VALID_LINE.replace("2 tokens", "abc tokens")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill", r.error)
+
+    def test_malformed_ttft_is_error(self):
+        line = self._VALID_LINE.replace("90.0 ms", "?? ms")
+        r = self._run(self._stdout_with_prefill(line))
+        self.assertIsNotNone(r.error)
+        self.assertIn("prefill", r.error)
+
+    def test_malformed_prefill_does_not_escape_parser(self):
+        """Malformed numeric text must not raise from parse_stdout alone."""
+        for bad in ("??", "1.2.3", "0x10", "1e+"):
+            with self.subTest(bad=bad):
+                line = self._VALID_LINE.replace("85.0 ms", f"{bad} ms")
+                stdout = self._stdout_with_prefill(line)
+                p = parse_stdout(stdout)
+                # Parser defaults apply; error is recorded, not raised.
+                self.assertEqual(p["prefill_ms"], 0.0)
+                self.assertIsNotNone(p["prefill_error"])
+
+    def test_single_token_no_prefill_ok(self):
+        """One-token prompts need no prefill diagnostic; unchanged behavior."""
+        stdout = textwrap.dedent("""\
+            prompt  : 7
+            output  : 10 20 30 40
+            decode                   4 tokens in 120.0 ms  ->  33.33 tok/s
+            speculation              5 rounds of 4, drafts accepted 3 of 8 (0.375), 1.60 tokens per round
+        """)
+        r = self._run(stdout, token_ids=[7])
+        self.assertIsNone(r.error, f"single-token run rejected: {r.error}")
+        self.assertEqual(r.prefill_ms, 0.0)
+        self.assertEqual(r.ttft_ms, 0.0)
+
+    def test_error_precedence_preserved(self):
+        """Existing decode/output errors win over prefill validation."""
+        stdout = textwrap.dedent("""\
+            prompt  : 1 2 3
+            output  :
+            decode                   0 tokens in 0.0 ms  ->  0.00 tok/s
+        """)
+        r = self._run(stdout)
+        self.assertIsNotNone(r.error)
+        self.assertIn("zero_output_tokens", r.error)
+        self.assertNotIn("prefill", r.error)
+
+    def test_prefill_error_not_performance_eligible(self):
+        """A prefill-error ArmResult is flagged ineligible by run_matrix."""
+        import io, contextlib, json as _json, unittest.mock as mock
+        from tier_a import run_matrix
+
+        err_result = ArmResult(
+            prompt_ids=[1, 2, 3], output_ids=list(range(10, 30)),
+            output_hash="e" * 16, n_output=20,
+            decode_ms=100.0, decode_tok_s=40.0,
+            prefill_ms=0.0, prefill_tok_s=0.0, ttft_ms=0.0,
+            draft_accepted=0, draft_offered=0, draft_rate=0.0, tokens_per_round=0.0,
+            stdout_raw="", stderr_raw="", wall_s=0.0, exit_code=0,
+            error="prefill_count_mismatch: header=5 expected=2", argv=["fake"],
+        )
+        tmp = tempfile.mkdtemp(prefix="tier_a_prefill_elig_")
+        try:
+            with mock.patch("tier_a.run_matrix.run_arm", return_value=err_result):
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    run_matrix.run(["--dry-run", "--smoke", "--out", tmp])
+            payload = _json.loads((Path(tmp) / "tier_a_results.json").read_text())
+            non_skipped = [rec for rec in payload["results"] if not rec.get("skipped")]
+            self.assertTrue(non_skipped, "no non-skipped records written")
+            for rec in non_skipped:
+                self.assertFalse(rec["performance_eligible"],
+                                 f"{rec['label']} eligible despite prefill error")
+                self.assertIn("prefill_count_mismatch",
+                              rec["performance_ineligible_reason"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ── TestPerformanceEligibility ────────────────────────────────────────────────
 
 class TestPerformanceEligibility(unittest.TestCase):
@@ -963,8 +1133,8 @@ class TestHelpInvocation(unittest.TestCase):
 
 @unittest.skipUnless(
     __import__("importlib.util", fromlist=[""]).find_spec("regex") is not None,
-    "regex package not available; set PYTHONPATH to uv cache archive "
-    "(see DEPENDENCY NOTE at top of file)",
+    "regex package not available; set PYTHONPATH to an environment with regex "
+    "installed (see DEPENDENCY NOTE at top of file)",
 )
 class TestTokenizePrompt(unittest.TestCase):
 

@@ -12,6 +12,11 @@ stdout contains:
     speculation              N rounds of S, drafts accepted A of T (R.RRR), P.PP tokens per round
     ... (--stats adds more lines to stderr)
 
+For multi-token prompts, the primary prefill diagnostic must report
+len(prompt_ids) - 1 tokens and positive finite timing, rate, and TTFT.
+Single-token prompts need no prefill diagnostic.  Validation errors are recorded
+in ArmResult.error after existing decode/output/prompt checks.
+
 stderr is captured raw (startup messages, expert-tier diagnostics, --stats output).
 
 The module is pure Python (stdlib only; no strata_tokenizer / regex import).
@@ -21,9 +26,9 @@ DEPENDENCY NOTE
 ───────────────
 strata_tokenizer.py (used by tokenize_prompt.py) requires the `regex` package,
 which is not in the system Python on paseo-nibbler.  Before running live arms
-or calling load_prompts_encoded() set:
-
-    export PYTHONPATH=/home/pete/.cache/uv/archive-v0/wicKyd1x7CYO0Nj0/lib/python3.11/site-packages
+or calling load_prompts_encoded(), use an existing Python environment with
+`regex` installed, or add that environment's site-packages to PYTHONPATH.
+Do not rely on an ephemeral package-cache archive path.
 
 This module itself has no such dependency; offline tests pass with bare Python.
 """
@@ -73,9 +78,15 @@ _RE_PROMPT  = re.compile(r"^prompt\s+:((?:\s+-?\d+)+)", re.MULTILINE)
 _RE_OUTPUT  = re.compile(r"^output\s+:((?:\s+-?\d+)*)", re.MULTILINE)
 _RE_DECODE  = re.compile(
     r"^decode\s+(\d+) tokens in ([\d.]+) ms\s+->\s+([\d.]+) tok/s", re.MULTILINE)
+# Inspect the first primary line, not a later valid line that could hide a
+# malformed one.  Match one complete line; never borrow TTFT from another line.
+_RE_PREFILL_LINE = re.compile(r"^prefill\b[^\r\n]*", re.MULTILINE)
 _RE_PREFILL = re.compile(
-    r"^prefill\s+(\d+) tokens in ([\d.]+) ms\s+->\s+([\d.]+) tok/s"
-    r".*?time to first token ([\d.]+) ms", re.MULTILINE)
+    r"prefill[ \t]+([+-]?\d+) tokens in (\S+) ms[ \t]+->[ \t]+(\S+) tok/s"
+    r"[ \t]+\(time to first token (\S+) ms\)[ \t]*")
+_RE_PREFILL_NUMBER = re.compile(
+    r"[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|nan|inf(?:inity)?)",
+    re.IGNORECASE)
 _RE_SPEC    = re.compile(
     r"^speculation\s+(\d+) rounds of \d+, drafts accepted (\d+) of (\d+)"
     r" \(([\d.]+)\), ([\d.]+) tokens per round", re.MULTILINE)
@@ -83,7 +94,9 @@ _RE_SPEC    = re.compile(
 
 def parse_stdout(text: str) -> dict:
     """Parse the engine's stdout.  Returns a dict with all extracted fields.
-    Missing sections produce zero/empty defaults so callers always get every key."""
+    Missing sections produce zero/empty defaults so callers always get every key.
+    Prefill parse status/count are internal dict fields; ArmResult is unchanged.
+    Malformed prefill numbers retain defaults and a recorded parse error."""
     out: dict = {}
 
     m = _RE_PROMPT.search(text)
@@ -105,13 +118,21 @@ def parse_stdout(text: str) -> dict:
         out["decode_header_n"] = -1  # no decode line present
         out["decode_ms"] = out["decode_tok_s"] = 0.0
 
-    m = _RE_PREFILL.search(text)
-    if m:
-        out["prefill_ms"]    = float(m.group(2))
-        out["prefill_tok_s"] = float(m.group(3))
-        out["ttft_ms"]       = float(m.group(4))
-    else:
-        out["prefill_ms"] = out["prefill_tok_s"] = out["ttft_ms"] = 0.0
+    out["prefill_ms"] = out["prefill_tok_s"] = out["ttft_ms"] = 0.0
+    out["prefill_header_n"] = -1
+    line = _RE_PREFILL_LINE.search(text)
+    out["prefill_error"] = "missing_prefill" if line is None else "malformed_prefill"
+    m = _RE_PREFILL.fullmatch(line.group(0)) if line else None
+    if m and all(_RE_PREFILL_NUMBER.fullmatch(x) for x in m.group(2, 3, 4)):
+        try:
+            header_n = int(m.group(1))
+            prefill_ms, prefill_tok_s, ttft_ms = map(float, m.group(2, 3, 4))
+        except (ValueError, OverflowError):
+            pass  # fail closed, including Python's integer digit limit
+        else:
+            out.update(prefill_header_n=header_n, prefill_ms=prefill_ms,
+                       prefill_tok_s=prefill_tok_s, ttft_ms=ttft_ms,
+                       prefill_error=None)
 
     m = _RE_SPEC.search(text)
     if m:
@@ -364,6 +385,22 @@ def run_arm(
                     f"prompt_mismatch: supplied {len(token_ids)} ids, "
                     f"engine echoed {len(parsed_prompt)}"
                 )
+
+        # generate.cpp reports only the conditioning positions: n_prompt - 1.
+        # Append this check so existing exit/decode/output/prompt errors win.
+        if error is None and len(token_ids) > 1:
+            error = parsed["prefill_error"]
+            if error is None and parsed["prefill_header_n"] != len(token_ids) - 1:
+                error = (
+                    f"prefill_count_mismatch: header={parsed['prefill_header_n']} "
+                    f"expected={len(token_ids) - 1}"
+                )
+            if error is None:
+                for field in ("prefill_ms", "prefill_tok_s", "ttft_ms"):
+                    value = parsed[field]
+                    if not math_finite(value) or value <= 0:
+                        error = f"nonfinite_or_nonpositive {field}={value}"
+                        break
 
         return ArmResult(
             prompt_ids    = parsed.get("prompt_ids", list(token_ids)),
