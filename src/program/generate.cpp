@@ -58,6 +58,7 @@
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
+#include "strata/program/tier_b_export.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/message_boundary.hpp"
 #include "strata/spec/draft_policy.hpp"
@@ -544,6 +545,10 @@ struct Options {
     std::string spec_follow;
     /// Per verify window: a line with its size, a hash of its final residual rows and its argmaxes.
     std::string window_hashes;
+    /// Tier B (sta-osh.5): export completed native verification-window evidence and bounded full
+    /// logit rows to this directory (see strata/program/tier_b_export.hpp).  Off unless set or
+    /// STRATA_TIER_B_EXPORT is set.
+    std::string tier_b_export;
     /// Plan v0.3 P6: the MTP draft layer's runtime directory (tools/mtp_rt.py); drafts come from it.
     std::string mtp;
     int64_t mtp_window = 32768;   ///< the draft layer attends to the last N cells (0 = every cell)
@@ -796,6 +801,8 @@ void usage() {
                  "  --window-hashes PATH per verify window, a line with its index, position, size, a 64-bit hash of\n"
                  "                       its final residual rows and its argmaxes: two builds that do the same\n"
                  "                       arithmetic write the same file (use with --spec-follow, --adapt-every 0)\n"
+                 "  --tier-b-export DIR bounded export of completed native verify windows + full logit rows\n"
+                 "                       for paired correctness runs (off; also STRATA_TIER_B_EXPORT)\n"
                  "  --gpu-stages         R0.9: capture the layer as three graphs (mixer / ffn+router / post)\n"
                  "                       and time them from OUTSIDE the capture.  The per-stage table on the\n"
                  "                       real graph that --stage-timing cannot give.  Prints and exits.\n"
@@ -1735,6 +1742,7 @@ int main(int argc, char** argv) {
         else if (a == "--spec-corrupt") o.spec_corrupt = std::atoi(next("--spec-corrupt"));
         else if (a == "--spec-follow") o.spec_follow = next("--spec-follow");
         else if (a == "--window-hashes") o.window_hashes = next("--window-hashes");
+        else if (a == "--tier-b-export") o.tier_b_export = next("--tier-b-export");
         else if (a == "--mtp") o.mtp = next("--mtp");
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
@@ -2372,6 +2380,21 @@ int main(int argc, char** argv) {
         }
     }
     const bool native_pack = strata::kernels::cpu::expert_layout().native;
+    const std::string tier_b_dir = !o.tier_b_export.empty() ? o.tier_b_export
+                                   : (std::getenv("STRATA_TIER_B_EXPORT") != nullptr
+                                          ? std::getenv("STRATA_TIER_B_EXPORT") : "");
+    if (!tier_b_dir.empty()) {
+        const char* why = o.serve ? "it is for the non-server native generate path"
+                        : !native_pack ? "it requires a native (IQ) pack and native verify windows"
+                        : o.spec < 2 ? "it requires --spec T (T >= 2)"
+                        : !o.spec_follow.empty() ? "it cannot be used with --spec-follow forced continuations"
+                        : (o.graph_only || o.gpu_only_full || o.gpu_stages) ? "it is not a measurement/early-exit mode"
+                        : nullptr;
+        if (why != nullptr) {
+            std::fprintf(stderr, "strata generate: --tier-b-export unsupported: %s\n", why);
+            return 2;
+        }
+    }
     // STRATA_EARLY_REMOTE_CONTEXTS=1: create EVERY secondary context here, like CUDA1's.  Under WSL2 the driver's
     // pinned/mapped host budget (dxg gpadl, ~1 GiB) is spent by CUDA0's weights and MTP before the later loop runs,
     // and a new context then fails with cudaErrorMemoryAllocation (CUDA2: "cudaSetDevice(2) failed: out of memory").
@@ -11218,6 +11241,15 @@ int main(int argc, char** argv) {
     // round emits (accepted drafts + 1) tokens.  `commit` keeps the state of the tokens that were emitted.
     const bool ended = o.stop_eos && !produced.empty() &&
                        std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) produced.back()) != o.eos_ids.end();
+    if (!tier_b_dir.empty() && !(spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended)) {
+        strata::program::TierBExport tier_b_export;
+        std::string terr;
+        if (!tier_b_export.open(tier_b_dir, 16, (int64_t) 64 << 20, n_vocab, terr) ||
+            !tier_b_export.finish(true, terr)) {
+            std::fprintf(stderr, "strata generate: %s\n", terr.c_str());
+            return 1;
+        }
+    }
     if (spec_pos > 0 && (int64_t) produced.size() < o.max_new && !ended) {
         auto read_ids = [](const std::string& path, std::vector<int64_t>& ids) {
             std::ifstream in(path);
@@ -11434,6 +11466,24 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::vector<float> hash_rows;
+        // Tier B (sta-osh.5): completed native window evidence + bounded full logit rows. Off pays only
+        // the cached branch. On pre-reserves whole windows before readback; truncation is explicit.
+        strata::program::TierBExport tier_b_export;
+        bool tier_b_export_failed = false;
+        {
+            std::string terr;
+            if (!tier_b_dir.empty()) {
+                if (ver.vocab() != n_vocab) {
+                    std::fprintf(stderr, "strata generate: tier-b export vocab mismatch (%lld vs %lld)\n",
+                                 (long long) ver.vocab(), (long long) n_vocab);
+                    return 1;
+                }
+                if (!tier_b_export.open(tier_b_dir, 16, (int64_t) 64 << 20, n_vocab, terr)) {
+                    std::fprintf(stderr, "strata generate: %s\n", terr.c_str());
+                    return 1;
+                }
+            }
+        }
         std::vector<int64_t> accepted_hist((size_t) o.spec, 0);
         int64_t rounds = 0, drafts_total = 0, drafts_ok = 0, corrupt_counter = 0;
         const int S_mtp = o.mtp_max_t > 0 ? std::min(o.mtp_max_t, o.spec) : o.spec;
@@ -11570,6 +11620,70 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "strata generate: %s\n", err.c_str());
                 return 1;
             }
+            // Tier B (sta-osh.5): completed native verification-window evidence + bounded full logit
+            // rows (Verifier::copy_logits, NOT the ordinary --dump-logits path).  This runs only when the
+            // export is enabled and the whole window fits its remaining budget; after truncation, future
+            // windows do not pay wait/readback/hash diagnostic work.
+            const int64_t tier_b_round = rounds;
+            const int64_t tier_b_pos = p;
+            const int tier_b_T = T;
+            const int tier_b_a = a;
+            uint64_t tier_b_input_hash = 0;
+            uint64_t tier_b_window_hash = 0;
+            int64_t tier_b_rows_offset = -1, tier_b_rows_bytes = 0;
+            const char* tier_b_status = "ok";
+            bool tier_b_should_write = false;
+            if (tier_b_export.enabled() && !tier_b_export_failed) {
+                if (tier_b_export.can_write_window(T, err)) {
+                    tier_b_should_write = true;
+                    if (!ver.wait_commit(err)) {
+                        if (adapt_thr.joinable()) adapt_thr.join();
+                        std::fprintf(stderr, "strata generate: %s\n", err.c_str());
+                        return 1;
+                    }
+                    tier_b_input_hash = fnv1a(window.data(), (size_t) T * sizeof(int32_t));
+                    bool win_ok = true;
+                    if (g.hc <= 0 || g.n_embd <= 0 || g.hc > INT64_MAX / g.n_embd ||
+                        (int64_t) T > INT64_MAX / (g.hc * g.n_embd) ||
+                        (uint64_t) ((int64_t) T * g.hc * g.n_embd) >
+                            (uint64_t) std::numeric_limits<size_t>::max() / sizeof(float)) {
+                        win_ok = false; tier_b_status = "residual_shape_error";
+                    } else {
+                        const size_t n_floats = (size_t) ((int64_t) T * g.hc * g.n_embd);
+                        hash_rows.resize(n_floats);
+                        if (cudaMemcpy(hash_rows.data(), ver.final_R_all(), n_floats * sizeof(float),
+                                       cudaMemcpyDeviceToHost) != cudaSuccess) {
+                            win_ok = false; tier_b_status = "residual_readback_error";
+                        } else {
+                            tier_b_window_hash = fnv1a(hash_rows.data(), n_floats * sizeof(float));
+                        }
+                    }
+                    std::vector<float> logit_rows;
+                    if (win_ok) {
+                        const int64_t vv = ver.vocab();
+                        if (vv <= 0 || vv > INT64_MAX / T ||
+                            (uint64_t) ((int64_t) T * vv) > (uint64_t) std::numeric_limits<size_t>::max()) {
+                            win_ok = false; tier_b_status = "logits_shape_error";
+                        } else {
+                            logit_rows.resize((size_t) ((int64_t) T * vv));
+                            for (int t = 0; t < T; ++t) {
+                                if (!ver.copy_logits(t, logit_rows.data() + (size_t) t * (size_t) vv)) {
+                                    win_ok = false; tier_b_status = "logits_readback_error"; break;
+                                }
+                            }
+                        }
+                    }
+                    if (win_ok && !tier_b_export.write_rows(logit_rows.data(), T,
+                                                            tier_b_rows_offset, tier_b_rows_bytes, err)) {
+                        win_ok = false; tier_b_status = "io_error";
+                    }
+                    if (!win_ok) tier_b_export_failed = true;
+                } else if (tier_b_export.failed()) {
+                    tier_b_should_write = true;
+                    tier_b_export_failed = true;
+                    tier_b_status = "io_error";
+                }
+            }
             ++rounds;
             drafts_total += T - 1;
             drafts_ok += a;
@@ -11577,12 +11691,28 @@ int main(int argc, char** argv) {
             if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
             if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
             bool eos = false;
+            const int64_t produced_before = (int64_t) produced.size();
             for (int i = 0; i <= a && (int64_t) produced.size() < max_new && !eos; ++i) {
                 produced.push_back(outv[(size_t) i]);
                 if (sfx_on) sfx.append(outv[(size_t) i]);
                 if (o.lookup_chain > 0) extra_sources_append(&outv[(size_t) i], 1);
                 eos = o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outv[(size_t) i]) != o.eos_ids.end();
                 if (!follow.empty()) { follow_differ += fdiff[(size_t) i]; ++follow_emitted; }
+            }
+            if (tier_b_should_write) {
+                const int emitted_actual = (int) ((int64_t) produced.size() - produced_before);
+                if (!tier_b_export.write_window(tier_b_round, tier_b_pos, tier_b_T, tier_b_a, emitted_actual,
+                                                tier_b_input_hash, tier_b_window_hash,
+                                                tier_b_rows_offset, tier_b_rows_bytes,
+                                                outv.data(), tier_b_T, tier_b_status, err)) {
+                    tier_b_export_failed = true;
+                }
+                if (tier_b_export_failed || tier_b_export.failed()) {
+                    if (adapt_thr.joinable()) adapt_thr.join();
+                    std::fprintf(stderr, "strata generate: tier-b export failed%s%s\n",
+                                 err.empty() ? "" : ": ", err.c_str());
+                    return 1;
+                }
             }
             if (eos) {
                 if (adapt_thr.joinable()) adapt_thr.join();
@@ -11613,6 +11743,16 @@ int main(int argc, char** argv) {
             return 1;
         }
         if (hashes != nullptr) std::fclose(hashes);
+        // Tier B (sta-osh.5): the completion footer is written ONLY here, after every window committed
+        // and the last commit was waited on - a fully successful generation.  Error paths return above
+        // and leave no `# complete 1` (fail closed).
+        if (tier_b_export.enabled()) {
+            std::string terr;
+            if (!tier_b_export.finish(true, terr)) {
+                std::fprintf(stderr, "strata generate: %s\n", terr.c_str());
+                return 1;
+            }
+        }
         std::printf("%-24s %lld rounds of %d, drafts accepted %lld of %lld (%.3f), %.2f tokens per round\n",
                     "speculation", (long long) rounds, o.spec, (long long) drafts_ok, (long long) drafts_total,
                     drafts_total > 0 ? (double) drafts_ok / (double) drafts_total : 0.0,
