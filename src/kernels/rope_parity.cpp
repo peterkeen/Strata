@@ -6,8 +6,8 @@
 //      double exactly as `ref/qsa.py::rope_freqs` does.  Compared as float32 after the cast, so a mismatch
 //      here is a real arithmetic difference and not a formatting one.
 //   2. THE ROTATION against a host rotation written from `ref/qsa.py::rope_neox`, using the SAME table the
-//      kernel is given.  Both sides then perform identical float32 operations, so this is BIT-EXACT - and a
-//      bit-exact rotation plus a table that matches the reference means the composition matches too.
+//      kernel is given.  Host/device FMA contraction can differ, so this uses the row-magnitude-relative
+//      1e-6 tolerance documented in check 2, NOT bit equality.
 //
 // A single end-to-end comparison would have had to carry one loose tolerance for both, and the interesting
 // failure - the NEOX pairing being wrong - is a PERMUTATION that a loose tolerance over all 256 dims would
@@ -27,14 +27,17 @@
 #include "strata/kernels/rope.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include "strata/kernels/native_rope.hpp"
+#include "strata/kernels/mrope.hpp"
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -42,19 +45,72 @@ namespace {
 
 void check(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
-        std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e));
-        std::exit(1);
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
     }
 }
 
+// Own the test's CUDA resources, including on launch/capture exceptions. Cleanup errors
+// are failures too; attempt all releases before exiting rather than hiding a CUDA error.
+struct CudaResources {
+    std::vector<void*> allocations;
+    cudaStream_t stream = nullptr;
+    cudaGraph_t graph = nullptr;
+    cudaGraphExec_t exec = nullptr;
+    bool capturing = false;
+    const float* registered_cos = nullptr;
+
+    CudaResources() = default;
+    CudaResources(const CudaResources&) = delete;
+    CudaResources& operator=(const CudaResources&) = delete;
+
+    template<class T> cudaError_t allocate(T** ptr, size_t bytes) {
+        const auto e = cudaMalloc(ptr, bytes);
+        if (e == cudaSuccess) {
+            try { allocations.push_back(*ptr); }
+            catch (...) { check(cudaFree(*ptr), "cleanup untracked allocation"); throw; }
+        }
+        return e;
+    }
+    ~CudaResources() {
+        bool failed = false;
+        auto release = [&](cudaError_t e, const char* what) {
+            if (e != cudaSuccess) {
+                std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e));
+                failed = true;
+            }
+        };
+        if (capturing) release(cudaStreamEndCapture(stream, &graph), "cleanup end capture");
+        if (stream) release(cudaStreamSynchronize(stream), "cleanup synchronize");
+        if (exec) release(cudaGraphExecDestroy(exec), "cleanup graph exec");
+        if (graph) release(cudaGraphDestroy(graph), "cleanup graph");
+        strata::kernels::rope_table_release(registered_cos);
+        if (stream) release(cudaStreamDestroy(stream), "cleanup stream");
+        for (void* ptr : allocations) release(cudaFree(ptr), "cleanup allocation");
+        if (failed) std::exit(1);
+    }
+};
+
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
     bool selftest = false;
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--selftest") selftest = true;
         else { std::fprintf(stderr, "usage: rope_parity [--selftest]\n"); return 2; }
     }
+
+    // The table opt-in is cached at the first native call. Enable it before check 5;
+    // no table is registered there, so check 5 still exercises analytic arithmetic.
+    // Check 6 switches paths by registering/releasing a table, not by changing the
+    // cached environment flag after capture.
+#ifdef _WIN32
+    const int env_error = _putenv_s("STRATA_ROPE_TABLE", "1");
+#else
+    const int env_error = setenv("STRATA_ROPE_TABLE", "1", 1);
+#endif
+    if (env_error != 0) throw std::runtime_error("cannot enable STRATA_ROPE_TABLE for check 6");
+    CudaResources resources;
+    bool skipped6 = false;
 
     const int n_rot = 64;          // the artifact's rope.dimension_count
     const double theta = 1.0e7;    // rope.freq_base
@@ -108,11 +164,11 @@ int main(int argc, char** argv) {
 
     float *d_x = nullptr, *d_out = nullptr, *d_cos = nullptr, *d_sin = nullptr;
     int* d_pos = nullptr;
-    check(cudaMalloc(&d_x, x.size() * sizeof(float)), "malloc x");
-    check(cudaMalloc(&d_out, ref.size() * sizeof(float)), "malloc out");
-    check(cudaMalloc(&d_cos, hcos.size() * sizeof(float)), "malloc cos");
-    check(cudaMalloc(&d_sin, hsin.size() * sizeof(float)), "malloc sin");
-    check(cudaMalloc(&d_pos, pos.size() * sizeof(int)), "malloc pos");
+    check(resources.allocate(&d_x, x.size() * sizeof(float)), "malloc x");
+    check(resources.allocate(&d_out, ref.size() * sizeof(float)), "malloc out");
+    check(resources.allocate(&d_cos, hcos.size() * sizeof(float)), "malloc cos");
+    check(resources.allocate(&d_sin, hsin.size() * sizeof(float)), "malloc sin");
+    check(resources.allocate(&d_pos, pos.size() * sizeof(int)), "malloc pos");
     check(cudaMemcpy(d_x, x.data(), x.size() * sizeof(float), cudaMemcpyHostToDevice), "copy x");
     check(cudaMemcpy(d_cos, hcos.data(), hcos.size() * sizeof(float), cudaMemcpyHostToDevice), "copy cos");
     check(cudaMemcpy(d_sin, hsin.data(), hsin.size() * sizeof(float), cudaMemcpyHostToDevice), "copy sin");
@@ -370,19 +426,21 @@ int main(int argc, char** argv) {
 
         float *d_x2 = nullptr, *d_t2 = nullptr, *d_n2 = nullptr, *d_c2 = nullptr, *d_s2 = nullptr;
         int* d_p2 = nullptr;
-        check(cudaMalloc(&d_x2, x2.size() * sizeof(float)), "malloc x2");
-        check(cudaMalloc(&d_t2, x2.size() * sizeof(float)), "malloc t2");
-        check(cudaMalloc(&d_n2, x2.size() * sizeof(float)), "malloc n2");
-        check(cudaMalloc(&d_c2, sc.size() * sizeof(float)), "malloc c2");
-        check(cudaMalloc(&d_s2, ss.size() * sizeof(float)), "malloc s2");
-        check(cudaMalloc(&d_p2, pos2.size() * sizeof(int)), "malloc p2");
+        check(resources.allocate(&d_x2, x2.size() * sizeof(float)), "malloc x2");
+        check(resources.allocate(&d_t2, x2.size() * sizeof(float)), "malloc t2");
+        check(resources.allocate(&d_n2, x2.size() * sizeof(float)), "malloc n2");
+        check(resources.allocate(&d_c2, sc.size() * sizeof(float)), "malloc c2");
+        check(resources.allocate(&d_s2, ss.size() * sizeof(float)), "malloc s2");
+        check(resources.allocate(&d_p2, pos2.size() * sizeof(int)), "malloc p2");
+        resources.registered_cos = d_c2;
         check(cudaMemcpy(d_x2, x2.data(), x2.size() * sizeof(float), cudaMemcpyHostToDevice), "copy x2");
         check(cudaMemcpy(d_c2, sc.data(), sc.size() * sizeof(float), cudaMemcpyHostToDevice), "copy c2");
         check(cudaMemcpy(d_s2, ss.data(), ss.size() * sizeof(float), cudaMemcpyHostToDevice), "copy s2");
         check(cudaMemcpy(d_p2, pos2.data(), pos2.size() * sizeof(int), cudaMemcpyHostToDevice), "copy p2");
         // The native path demands an explicit stream - a null one is refused by validation, not defaulted.
         cudaStream_t cs5 = nullptr;
-        check(cudaStreamCreate(&cs5), "stream5");
+        check(cudaStreamCreate(&resources.stream), "stream5");
+        cs5 = resources.stream;
         strata::kernels::rope_neox_apply(d_x2, d_t2, nrows, head_dim, n_rot, d_c2, d_s2, d_p2, nullptr);
         strata::kernels::native_rope_apply(d_x2, d_n2, nrows, head_dim, n_rot, yarn, d_p2, cs5);
         check(cudaStreamSynchronize(cs5), "sync5");
@@ -435,86 +493,217 @@ int main(int argc, char** argv) {
                     none_bad5 ? "*** WRONG ***" : "agrees", none_bad5, nrows * head_dim, worst5);
         bad += (int) none_bad5;
 
-        // ---- 6. FUSED RMSNorm + RoPE (`native_qsa_rms_norm_rope`) MUST BE BIT-IDENTICAL to
-        // `native_qsa_rms_norm_weighted` followed by `native_rope_apply` for both contiguous
-        // (`in_stride == head_dim`) and strided Q/gate split (`in_stride == 2 * head_dim`) inputs,
-        // across supported head_dims (128, 256) and both unscaled and YaRN scaling.
-        // The kernel is off by default on the HIP build until this check passes there (native_norm_rope_usable): the
-        // check then reports SKIPPED, and STRATA_NORM_ROPE=1 runs it (gfx1151, Aurora, 0.1.40: it does not pass).
-        const bool run6 = strata::kernels::native_norm_rope_usable(256, 64);
-        if (!run6)
-            std::printf("  native_qsa_rms_norm_rope                   SKIPPED (the fused kernel is not enabled on this build)\n");
+        // ---- 6. FUSED RMSNorm + RoPE vs the existing split GPU reference.
+        // Bit equality is justified HERE: the same 256-thread XOR reduction,
+        // (scale*x)*gamma rounded before rotation, and the fused kernel's explicit
+        // rounding barriers/FMA match norm + in-place native RoPE on CUDA. This is
+        // not a float64/host-trig comparison and does not change checks 1-5's bars.
+        // HIP retains its opt-in identity gate; disabled HIP is an explicit nonzero
+        // skip, while disabled CUDA is a failure (never a vacuous parity pass).
+        const bool run6 = strata::kernels::native_norm_rope_usable(128, 64) &&
+                          strata::kernels::native_norm_rope_usable(256, 64);
+        if (!run6) {
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906) || defined(__HIPCC__)
+            std::printf("  check 6 SKIPPED: HIP fused norm/RoPE disabled; opt in with STRATA_NORM_ROPE=1 "
+                        "and unset STRATA_NO_NORM_ROPE (exit 77, not parity OK)\n");
+            skipped6 = true;
+#else
+            std::fprintf(stderr, "  check 6 FAILED: CUDA fused norm/RoPE disabled; unset STRATA_NO_NORM_ROPE\n");
+            ++bad;
+#endif
+        }
+        int cases6 = 0, replays6 = 0;
+        const size_t guard6 = 32;
+        const float sentinel6 = 12345.625f;
         for (int hd6 : {128, 256}) {
             if (!run6) break;
-            const int nr6 = 64;
-            const int rows6 = 96;
-            std::vector<float> x6_strided((size_t) rows6 * 2 * hd6);
-            std::vector<float> gamma6((size_t) hd6);
-            std::vector<int> pos6((size_t) rows6);
-            for (auto& v : x6_strided) v = gauss2(rng2);
-            for (auto& g : gamma6) g = 0.5f + std::fabs(gauss2(rng2));
-            for (int r = 0; r < rows6; ++r) pos6[(size_t) r] = (r * 53 + 1) % npos;
-
-            float *d_xs6 = nullptr, *d_g6 = nullptr, *d_ref6 = nullptr, *d_fus6 = nullptr;
-            int* d_pos6 = nullptr;
-            check(cudaMalloc(&d_xs6, x6_strided.size() * sizeof(float)), "malloc xs6");
-            check(cudaMalloc(&d_g6, gamma6.size() * sizeof(float)), "malloc g6");
-            check(cudaMalloc(&d_ref6, (size_t) rows6 * hd6 * sizeof(float)), "malloc ref6");
-            check(cudaMalloc(&d_fus6, (size_t) rows6 * hd6 * sizeof(float)), "malloc fus6");
-            check(cudaMalloc(&d_pos6, pos6.size() * sizeof(int)), "malloc pos6");
-            check(cudaMemcpy(d_xs6, x6_strided.data(), x6_strided.size() * sizeof(float), cudaMemcpyHostToDevice), "copy xs6");
-            check(cudaMemcpy(d_g6, gamma6.data(), gamma6.size() * sizeof(float), cudaMemcpyHostToDevice), "copy g6");
-            check(cudaMemcpy(d_pos6, pos6.data(), pos6.size() * sizeof(int), cudaMemcpyHostToDevice), "copy pos6");
-
-            long long fbad = 0;
-            for (const auto& sc6 : {none5, yarn}) {
-                // (a) strided Q/gate split (in_stride = 2 * hd6) vs cudaMemcpy2DAsync + norm + rope
-                check(cudaMemcpy2DAsync(d_ref6, (size_t) hd6 * sizeof(float), d_xs6, (size_t) 2 * hd6 * sizeof(float),
-                                        (size_t) hd6 * sizeof(float), (size_t) rows6, cudaMemcpyDeviceToDevice, cs5),
-                      "split6");
-                strata::kernels::native_qsa_rms_norm_weighted(d_ref6, d_g6, d_ref6, hd6, rows6, 1e-6f, cs5);
-                strata::kernels::native_rope_apply(d_ref6, d_ref6, rows6, hd6, nr6, sc6, d_pos6, cs5);
-
-                strata::kernels::native_qsa_rms_norm_rope(d_xs6, 2 * hd6, d_g6, d_fus6, rows6, hd6, nr6, 1e-6f, sc6,
-                                                          d_pos6, cs5);
-                check(cudaStreamSynchronize(cs5), "sync6a");
-                std::vector<float> href((size_t) rows6 * hd6), hfus((size_t) rows6 * hd6);
-                check(cudaMemcpy(href.data(), d_ref6, href.size() * sizeof(float), cudaMemcpyDeviceToHost), "back ref6a");
-                check(cudaMemcpy(hfus.data(), d_fus6, hfus.size() * sizeof(float), cudaMemcpyDeviceToHost), "back fus6a");
-                for (size_t i = 0; i < href.size(); ++i) {
-                    if (std::memcmp(&href[i], &hfus[i], 4) != 0) ++fbad;
-                }
-
-                // (b) contiguous in-place (in_stride = hd6, output == input)
-                check(cudaMemcpy2DAsync(d_ref6, (size_t) hd6 * sizeof(float), d_xs6, (size_t) 2 * hd6 * sizeof(float),
-                                        (size_t) hd6 * sizeof(float), (size_t) rows6, cudaMemcpyDeviceToDevice, cs5),
-                      "contig6_ref");
-                check(cudaMemcpy(d_fus6, d_ref6, (size_t) rows6 * hd6 * sizeof(float), cudaMemcpyDeviceToDevice),
-                      "contig6_fus");
-                strata::kernels::native_qsa_rms_norm_weighted(d_ref6, d_g6, d_ref6, hd6, rows6, 1e-6f, cs5);
-                strata::kernels::native_rope_apply(d_ref6, d_ref6, rows6, hd6, nr6, sc6, d_pos6, cs5);
-                strata::kernels::native_qsa_rms_norm_rope(d_fus6, hd6, d_g6, d_fus6, rows6, hd6, nr6, 1e-6f, sc6,
-                                                          d_pos6, cs5);
-                check(cudaStreamSynchronize(cs5), "sync6b");
-                check(cudaMemcpy(href.data(), d_ref6, href.size() * sizeof(float), cudaMemcpyDeviceToHost), "back ref6b");
-                check(cudaMemcpy(hfus.data(), d_fus6, hfus.size() * sizeof(float), cudaMemcpyDeviceToHost), "back fus6b");
-                for (size_t i = 0; i < href.size(); ++i) {
-                    if (std::memcmp(&href[i], &hfus[i], 4) != 0) ++fbad;
+            for (int t6 = 1; t6 <= 8; ++t6) {
+                const int heads6 = 24;  // token-major native verification rows; T=4 retains the old 96 rows
+                const int rows6 = t6 * heads6;
+                const size_t count6 = (size_t) rows6 * hd6;
+                for (const auto& sc6 : {none5, yarn}) {
+                    std::vector<float> cos6((size_t) npos * half), sin6(cos6.size());
+                    strata::kernels::build_rope_table(n_rot, sc6, npos, cos6.data(), sin6.data());
+                    check(cudaMemcpy(d_c2, cos6.data(), cos6.size() * sizeof(float), cudaMemcpyHostToDevice), "table cos6");
+                    check(cudaMemcpy(d_s2, sin6.data(), sin6.size() * sizeof(float), cudaMemcpyHostToDevice), "table sin6");
+                    for (bool table6 : {false, true}) {
+                        strata::kernels::rope_table_release(d_c2);
+                        if (table6) strata::kernels::rope_table_set(d_c2, d_s2, npos, sc6);
+                        const auto tab6 = strata::kernels::rope_table_for(sc6);
+                        check(cudaGetLastError(), "table selection6");
+                        if (table6 ? (tab6.cos != d_c2 || tab6.sin != d_s2 || tab6.max_pos != npos)
+                                   : (tab6.cos != nullptr))
+                            throw std::runtime_error("check 6 did not select the requested table/analytic path");
+                        for (int layout6 = 0; layout6 < 3; ++layout6) {
+                            const bool inplace6 = layout6 == 1;
+                            const int stride6 = layout6 == 2 ? 2 * hd6 : hd6;
+                            const char* layout_name6 = layout6 == 2 ? "q|gate" : inplace6 ? "inplace" : "contiguous";
+                            std::vector<float> xs6((size_t) rows6 * stride6 + 2 * guard6, sentinel6);
+                            std::vector<float> gamma6((size_t) hd6 + 2 * guard6, sentinel6);
+                            std::vector<int> pos6((size_t) rows6 + 2 * guard6, -17293);
+                            std::vector<float> poison6(count6 + 2 * guard6, sentinel6), seed6(poison6);
+                            for (int d = 0; d < hd6; ++d) gamma6[guard6 + d] = 0.5f + std::fabs(gauss2(rng2));
+                            // Declared after upload buffers: synchronize/release the stream before
+                            // those buffers are destroyed, even if an asynchronous upload throws.
+                            CudaResources res6;
+                            check(cudaStreamCreateWithFlags(&res6.stream, cudaStreamNonBlocking), "stream6");
+                            const auto cs6 = res6.stream;
+                            float *dx6 = nullptr, *dg6 = nullptr, *dr6 = nullptr, *df6 = nullptr, *dn6 = nullptr;
+                            int* dp6 = nullptr;
+                            check(res6.allocate(&dx6, xs6.size() * sizeof(float)), "malloc xs6");
+                            check(res6.allocate(&dg6, gamma6.size() * sizeof(float)), "malloc gamma6");
+                            check(res6.allocate(&dr6, poison6.size() * sizeof(float)), "malloc ref6");
+                            check(res6.allocate(&df6, poison6.size() * sizeof(float)), "malloc fused6");
+                            check(res6.allocate(&dn6, poison6.size() * sizeof(float)), "malloc norm snapshot6");
+                            check(res6.allocate(&dp6, pos6.size() * sizeof(int)), "malloc positions6");
+                            // All captured addresses stay fixed. Host uploads are outside capture,
+                            // on this same explicit nonblocking stream (no legacy-default ordering).
+                            auto upload6 = [&] {
+                                check(cudaMemcpyAsync(dx6, xs6.data(), xs6.size() * sizeof(float), cudaMemcpyHostToDevice, cs6), "upload xs6");
+                                check(cudaMemcpyAsync(dg6, gamma6.data(), gamma6.size() * sizeof(float), cudaMemcpyHostToDevice, cs6), "upload gamma6");
+                                check(cudaMemcpyAsync(dp6, pos6.data(), pos6.size() * sizeof(int), cudaMemcpyHostToDevice, cs6), "upload positions6");
+                                check(cudaMemcpyAsync(dr6, poison6.data(), poison6.size() * sizeof(float), cudaMemcpyHostToDevice, cs6), "poison ref6");
+                                check(cudaMemcpyAsync(df6, seed6.data(), seed6.size() * sizeof(float), cudaMemcpyHostToDevice, cs6), "seed fused6");
+                                check(cudaMemcpyAsync(dn6, poison6.data(), poison6.size() * sizeof(float), cudaMemcpyHostToDevice, cs6), "poison norm6");
+                            };
+                            auto launch6 = [&] {
+                                // Reuse the split copy + weighted norm + in-place native RoPE.
+                                check(cudaMemcpy2DAsync(dr6 + guard6, (size_t) hd6 * sizeof(float), dx6 + guard6,
+                                                        (size_t) stride6 * sizeof(float), (size_t) hd6 * sizeof(float),
+                                                        (size_t) rows6, cudaMemcpyDeviceToDevice, cs6), "split copy6");
+                                strata::kernels::native_qsa_rms_norm_weighted(dr6 + guard6, dg6 + guard6, dr6 + guard6,
+                                                                            hd6, rows6, 1e-6f, cs6);
+                                check(cudaMemcpyAsync(dn6 + guard6, dr6 + guard6, count6 * sizeof(float),
+                                                      cudaMemcpyDeviceToDevice, cs6), "snapshot norm6");
+                                strata::kernels::native_rope_apply(dr6 + guard6, dr6 + guard6, rows6, hd6, n_rot,
+                                                                  sc6, dp6 + guard6, cs6);
+                                strata::kernels::native_qsa_rms_norm_rope(inplace6 ? df6 + guard6 : dx6 + guard6,
+                                    stride6, dg6 + guard6, df6 + guard6, rows6, hd6, n_rot, 1e-6f, sc6, dp6 + guard6, cs6);
+                                check(cudaGetLastError(), "launch6");
+                            };
+                            long long identity_bad6 = 0, replay_bad6 = 0, guard_bad6 = 0, tail_bad6 = 0;
+                            std::vector<float> previous6;
+                            auto equal6 = [](const float& a, const float& b) {
+                                return std::memcmp(&a, &b, sizeof(float)) == 0;
+                            };
+                            auto read6 = [&](float* ptr, std::vector<float>& out) {
+                                check(cudaMemcpy(out.data(), ptr, out.size() * sizeof(float), cudaMemcpyDeviceToHost), "read6");
+                            };
+                            auto validate6 = [&](std::vector<float>& href6, std::vector<float>& hfus6) {
+                                read6(dr6, href6);
+                                read6(df6, hfus6);
+                                std::vector<float> hnorm6(poison6.size()), hxs6(xs6.size()), hg6(gamma6.size());
+                                std::vector<int> hp6(pos6.size());
+                                read6(dn6, hnorm6);
+                                read6(dx6, hxs6);
+                                read6(dg6, hg6);
+                                check(cudaMemcpy(hp6.data(), dp6, hp6.size() * sizeof(int), cudaMemcpyDeviceToHost), "read positions6");
+                                // Read-only source includes every gate/padding channel and both guards.
+                                guard_bad6 += std::memcmp(hxs6.data(), xs6.data(), xs6.size() * sizeof(float)) != 0;
+                                guard_bad6 += std::memcmp(hg6.data(), gamma6.data(), gamma6.size() * sizeof(float)) != 0;
+                                guard_bad6 += std::memcmp(hp6.data(), pos6.data(), pos6.size() * sizeof(int)) != 0;
+                                for (size_t i = 0; i < poison6.size(); ++i) {
+                                    if (i < guard6 || i >= guard6 + count6) {
+                                        guard_bad6 += !equal6(href6[i], sentinel6);
+                                        guard_bad6 += !equal6(hfus6[i], sentinel6);
+                                        guard_bad6 += !equal6(hnorm6[i], sentinel6);
+                                        continue;
+                                    }
+                                    identity_bad6 += !std::isfinite(href6[i]) || !std::isfinite(hfus6[i]) ||
+                                                     !std::isfinite(hnorm6[i]) || !equal6(href6[i], hfus6[i]);
+                                    // RMSNorm changes the tail; RoPE must leave its NORMALIZED bits
+                                    // untouched. Comparing against raw x here would be the wrong contract.
+                                    if ((i - guard6) % hd6 >= (size_t) n_rot) {
+                                        tail_bad6 += !equal6(href6[i], hnorm6[i]);
+                                        tail_bad6 += !equal6(hfus6[i], hnorm6[i]);
+                                    }
+                                }
+                            };
+                            for (int generation6 = 0; generation6 < 3; ++generation6) {
+                                // Replay 1 changes BOTH input and position; replay 2 changes only
+                                // positions, making frozen graph positions independently observable.
+                                if (generation6 < 2) {
+                                    for (int r = 0; r < rows6; ++r) {
+                                        for (int d = 0; d < stride6; ++d)
+                                            xs6[guard6 + (size_t) r * stride6 + d] =
+                                                d < hd6 ? gauss2(rng2) : 20.0f + std::fabs(gauss2(rng2));
+                                        if (inplace6) std::copy_n(xs6.data() + guard6 + (size_t) r * stride6, hd6,
+                                                                 seed6.data() + guard6 + (size_t) r * hd6);
+                                    }
+                                }
+                                for (int r = 0; r < rows6; ++r) {
+                                    const int token6 = r / heads6;
+                                    int p6 = (token6 * 53 + 1 + generation6 * 113) % npos;
+                                    // Registered-table replay also exercises TAB=true's per-row
+                                    // out-of-range analytic fallback, not just the TAB=false launch.
+                                    if (table6 && generation6 == 2 && token6 % 2 == 0) p6 += npos;
+                                    pos6[guard6 + r] = p6;
+                                }
+                                upload6();
+                                launch6();
+                                check(cudaStreamSynchronize(cs6), "direct sync6");
+                                std::vector<float> direct_ref6(poison6.size()), direct_fus6(poison6.size());
+                                validate6(direct_ref6, direct_fus6);
+                                if (!previous6.empty()) {
+                                    bool rotation_changed6 = false, tail_changed6 = false;
+                                    for (size_t i = 0; i < count6; ++i) {
+                                        const bool changed6 = !equal6(direct_ref6[guard6 + i], previous6[guard6 + i]);
+                                        if (i % hd6 < (size_t) n_rot) rotation_changed6 |= changed6;
+                                        else tail_changed6 |= changed6;
+                                    }
+                                    // Changed inputs must change normalized tails; position-only
+                                    // changes must move rotations while leaving those tails alone.
+                                    if (!rotation_changed6 || (generation6 == 1 ? !tail_changed6 : tail_changed6))
+                                        ++replay_bad6;
+                                }
+                                previous6 = direct_ref6;
+                                if (generation6 == 0) {
+                                    check(cudaStreamBeginCapture(cs6, cudaStreamCaptureModeThreadLocal), "begin capture6");
+                                    res6.capturing = true;
+                                    launch6();
+                                    const auto end6 = cudaStreamEndCapture(cs6, &res6.graph);
+                                    res6.capturing = false;
+                                    check(end6, "end capture6");
+                                    check(cudaGraphInstantiate(&res6.exec, res6.graph, nullptr, nullptr, 0), "instantiate6");
+                                }
+                                // Reset in-place inputs and output poison before EVERY graph launch;
+                                // replay must not accidentally consume the preceding normalized output.
+                                upload6();
+                                check(cudaGraphLaunch(res6.exec, cs6), "graph launch6");
+                                check(cudaStreamSynchronize(cs6), "graph sync6");
+                                std::vector<float> graph_ref6(poison6.size()), graph_fus6(poison6.size());
+                                validate6(graph_ref6, graph_fus6);
+                                for (size_t i = 0; i < count6; ++i) {
+                                    replay_bad6 += !equal6(graph_ref6[guard6 + i], direct_ref6[guard6 + i]);
+                                    replay_bad6 += !equal6(graph_fus6[guard6 + i], direct_fus6[guard6 + i]);
+                                }
+                                ++replays6;
+                            }
+                            const auto failures6 = identity_bad6 + replay_bad6 + guard_bad6 + tail_bad6;
+                            std::printf("  norm+rope T=%d rows=%d hd=%d nr=64 %s %s %s: %s "
+                                        "(identity=%lld replay=%lld guards=%lld tails=%lld; 3 direct/graph pairs)\n",
+                                        t6, rows6, hd6, layout_name6,
+                                        sc6.type == strata::kernels::RopeScalingType::None ? "none" : "yarn",
+                                        table6 ? "table+OOB" : "analytic", failures6 ? "*** WRONG ***" : "bit-identical",
+                                        identity_bad6, replay_bad6, guard_bad6, tail_bad6);
+                            bad += (int) failures6;
+                            ++cases6;
+                        }
+                        strata::kernels::rope_table_release(d_c2);
+                    }
                 }
             }
-            std::printf("  native_qsa_rms_norm_rope hd=%3d nr=%2d      %s (%lld of %d elements differ)\n",
-                        hd6, nr6, fbad ? "*** WRONG ***" : "bit-identical", fbad, rows6 * hd6 * 4);
-            bad += (int) fbad;
-            cudaFree(d_xs6);
-            cudaFree(d_g6);
-            cudaFree(d_ref6);
-            cudaFree(d_fus6);
-            cudaFree(d_pos6);
         }
+        if (run6) std::printf("  check 6 executed %d cases, %d graph launches (%d changed-input/position replays)\n",
+                              cases6, replays6, replays6 - cases6);
     }
 
     std::printf("\nrope: %d failures\n", bad);
     if (bad) return 1;
+    if (skipped6) return 77;  // Do not print OK when the fused identity gate did not execute.
     if (selftest) std::printf("rope_parity OK\n");
     return 0;
+} catch (const std::exception& e) {
+    std::fprintf(stderr, "rope_parity FAILED: %s\n", e.what());
+    return 1;
 }
