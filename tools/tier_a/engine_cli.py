@@ -39,6 +39,9 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
+# SIGTERM grace period (seconds) before escalating to SIGKILL on cancellation.
+_TERM_GRACE_S = 5.0
+
 
 # ── output record ─────────────────────────────────────────────────────────────
 
@@ -182,6 +185,66 @@ def _sentinel(
     )
 
 
+# ── subprocess lifecycle helpers ──────────────────────────────────────────────
+
+def _terminate_owned_pgroup(proc: subprocess.Popen) -> None:
+    """Stop this run's child/group, reap the child, and close owned pipes.
+
+    start_new_session=True makes the POSIX PGID equal proc.pid.  Use that
+    known ID even if the leader has already exited with descendants alive.
+    Do not poll/reap the leader during the TERM grace: keeping an unreaped
+    leader reserves its PID until all group signals have been sent.  Leader
+    exit and pipe EOF are not evidence that descendants have stopped.
+
+    If TERM reports no group, discard the ID rather than signal it again
+    after a grace period (when it could have been reused).  Otherwise give
+    the group a bounded grace, then KILL regardless of leader liveness.
+    Finally wait for the child with a timeout and explicitly close our pipe
+    handles; wait() alone does not close them.  Never drain pipes here.
+    Non-POSIX systems retain direct-child terminate/kill fallback.
+    """
+    pgid = proc.pid if hasattr(os, "killpg") else None
+    group_present = True
+    try:
+        try:
+            if pgid is not None:
+                os.killpg(pgid, signal.SIGTERM)
+            else:
+                proc.terminate()
+        except ProcessLookupError:
+            group_present = False
+        except OSError:
+            pass  # still attempt escalation after another signal error
+
+        if group_present:
+            try:
+                time.sleep(_TERM_GRACE_S)
+            finally:
+                # Escalate even if the grace itself is interrupted.  Do not
+                # release the leader PID with poll()/wait() before this.
+                try:
+                    if pgid is not None:
+                        os.killpg(pgid, signal.SIGKILL)
+                    else:
+                        proc.kill()
+                except OSError:
+                    pass
+    finally:
+        try:
+            proc.wait(timeout=_TERM_GRACE_S)
+        except BaseException:  # best-effort; preserve original cancellation
+            pass
+        finally:
+            # Tracebacks may retain proc indefinitely.  Close each parent's
+            # read handle explicitly even if wait or another close failed.
+            for pipe in (proc.stdout, proc.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except BaseException:
+                        pass
+
+
 # ── single arm runner ──────────────────────────────────────────────────────────
 
 def run_arm(
@@ -235,6 +298,7 @@ def run_arm(
         try:
             stdout_b, stderr_b = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
+            # Normal timeout: SIGKILL immediately (engine exceeded budget).
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
@@ -247,6 +311,16 @@ def run_arm(
                 stderr_raw=stderr_b.decode("utf-8", "replace"),
                 exit_code=-1, wall_s=wall_s,
             )
+        except BaseException:
+            # KeyboardInterrupt, SystemExit, or any other unexpected exception.
+            # Terminate the owned process group: SIGTERM first, then SIGKILL
+            # after a bounded grace period, then reap so no zombie is left.
+            # Wrapped in try/except so cleanup errors never mask the original exc.
+            try:
+                _terminate_owned_pgroup(proc)
+            except BaseException:  # noqa: BLE001
+                pass
+            raise  # re-raise original exception unchanged
 
         wall_s    = time.monotonic() - t0
         stdout_tx = stdout_b.decode("utf-8", "replace")

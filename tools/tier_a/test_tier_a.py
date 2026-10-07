@@ -25,9 +25,11 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -37,6 +39,7 @@ sys.path.insert(0, str(ROOT))
 
 from tier_a.engine_cli import (  # noqa: E402
     ArmResult, build_env, math_finite, parse_stdout, run_arm,
+    _terminate_owned_pgroup, _TERM_GRACE_S,
 )
 from tier_a.prompts import LONG_DOC_Q, SHORT_CODE, STORY, prompt_token_count_approx  # noqa: E402
 
@@ -993,6 +996,752 @@ class TestTokenizePrompt(unittest.TestCase):
         ids = tok.encode("<|im_start|>hi<|im_end|>", parse_special=True)
         vocab = {t: i for i, t in enumerate(tok.tokens)}
         self.assertIn(vocab["<|im_start|>"], ids)
+
+
+# ── TestCancellationCleanup ──────────────────────────────────────────────────────────────────────
+
+class TestCancellationCleanup(unittest.TestCase):
+    """Regression tests for sta-d76: exceptional/cancellation exits of run_arm
+    must not leave owned child / process-group processes running."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="tier_a_cancel_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    # ------------------------------------------------------------------ #
+    # Offline mock tests (no real child processes)                        #
+    # ------------------------------------------------------------------ #
+
+    def test_keyboard_interrupt_reraises(self):
+        """KeyboardInterrupt must propagate out of run_arm unchanged."""
+        import unittest.mock as mock
+
+        proc = mock.Mock()
+        proc.communicate.side_effect = KeyboardInterrupt
+        with mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc):
+            # _terminate_owned_pgroup is called; mock it out so we don't
+            # need a real process group to kill.
+            with mock.patch("tier_a.engine_cli._terminate_owned_pgroup"):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_arm(
+                        "/bin/true", [], [1, 2, 3], 8,
+                        {}, (), 10.0, tmp_dir=self._tmp,
+                    )
+
+    def test_system_exit_reraises(self):
+        """SystemExit must propagate out of run_arm unchanged."""
+        import unittest.mock as mock
+
+        proc = mock.Mock()
+        proc.communicate.side_effect = SystemExit(2)
+        with mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc):
+            with mock.patch("tier_a.engine_cli._terminate_owned_pgroup"):
+                with self.assertRaises(SystemExit) as cm:
+                    run_arm(
+                        "/bin/true", [], [1, 2, 3], 8,
+                        {}, (), 10.0, tmp_dir=self._tmp,
+                    )
+                self.assertEqual(cm.exception.code, 2)
+
+    def test_arbitrary_exception_reraises(self):
+        """An arbitrary RuntimeError from communicate must propagate."""
+        import unittest.mock as mock
+
+        boom = RuntimeError("injected failure")
+        proc = mock.Mock()
+        proc.communicate.side_effect = boom
+        with mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc):
+            with mock.patch("tier_a.engine_cli._terminate_owned_pgroup"):
+                with self.assertRaises(RuntimeError) as cm:
+                    run_arm(
+                        "/bin/true", [], [1, 2, 3], 8,
+                        {}, (), 10.0, tmp_dir=self._tmp,
+                    )
+                self.assertIs(cm.exception, boom)
+
+    def test_cancellation_calls_terminate_owned_pgroup(self):
+        """_terminate_owned_pgroup must be called exactly once on KI."""
+        import unittest.mock as mock
+
+        calls = []
+        def _fake_terminate(proc):
+            calls.append(proc)
+
+        proc = mock.Mock()
+        proc.communicate.side_effect = KeyboardInterrupt
+        with mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc):
+            with mock.patch("tier_a.engine_cli._terminate_owned_pgroup",
+                            side_effect=_fake_terminate):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_arm(
+                        "/bin/true", [], [1, 2, 3], 8,
+                        {}, (), 10.0, tmp_dir=self._tmp,
+                    )
+        self.assertEqual(len(calls), 1, "_terminate_owned_pgroup not called exactly once")
+
+    def test_cancellation_tokenfile_cleaned_up(self):
+        """Even on KeyboardInterrupt the --tokens-file must be deleted.
+
+        A mocked child raises KeyboardInterrupt from communicate(); the
+        finally-block in run_arm must still unlink the .ids temp file.
+        """
+        import unittest.mock as mock
+
+        proc = mock.Mock()
+        proc.communicate.side_effect = KeyboardInterrupt
+        with mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc):
+            with mock.patch("tier_a.engine_cli._terminate_owned_pgroup"):
+                with self.assertRaises(KeyboardInterrupt):
+                    run_arm(
+                        "/bin/true", [], [1, 2, 3], 8,
+                        {}, (), 10.0, tmp_dir=self._tmp,
+                    )
+
+        # No .ids temp file should remain in self._tmp
+        ids_files = list(Path(self._tmp).glob("*.ids"))
+        self.assertEqual(ids_files, [],
+                         f"tokens-file(s) not cleaned up after KI: {ids_files}")
+
+    # ------------------------------------------------------------------ #
+    # _terminate_owned_pgroup unit tests (real process, no GPU)           #
+    # ------------------------------------------------------------------ #
+
+    def test_terminate_owned_pgroup_already_exited(self):
+        """Calling _terminate_owned_pgroup on an already-exited process must
+        not raise."""
+        proc = subprocess.Popen(
+            ["/bin/true"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        proc.wait()  # let it exit naturally
+        # Should not raise even though process is gone
+        try:
+            _terminate_owned_pgroup(proc)
+        except Exception as e:  # noqa: BLE001
+            self.fail(f"_terminate_owned_pgroup raised on dead proc: {e}")
+
+    def test_terminate_owned_pgroup_kills_sleeping_process(self):
+        """A sleeping child must be terminated (not survive) within the grace
+        period."""
+        proc = subprocess.Popen(
+            ["/bin/sleep", "60"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            self.assertIsNone(proc.poll(), "process exited before test start")
+            _terminate_owned_pgroup(proc)
+            rc = proc.poll()
+            self.assertIsNotNone(rc, "process still running after _terminate_owned_pgroup")
+        finally:
+            # Safety: kill if somehow still alive
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+    # ------------------------------------------------------------------ #
+    # Real child+grandchild orphan test (no GPU)                          #
+    # ------------------------------------------------------------------ #
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only process group test")
+    def test_no_orphan_grandchild_after_cancellation(self):
+        """Grandchild processes in the engine's session must not survive after
+        cancellation.
+
+        Scenario:
+          - Fixture shell script forks a background grandchild (sleep 60)
+            and writes the grandchild's PID to stdout.
+          - run_arm's communicate() is interrupted by a mock KeyboardInterrupt
+            after we can confirm the grandchild exists.
+          - After the exception propagates, the grandchild must be dead
+            (not just the direct child).
+
+        Because the grandchild is in the same session/pgroup (it inherits
+        start_new_session), killpg(SIGTERM/SIGKILL) covers it.
+        """
+        import unittest.mock as mock
+
+        # Script: fork a grandchild (sleep 60), print its PID, then hang
+        grandchild_pid_file = Path(self._tmp) / "gc_pid.txt"
+        script = Path(self._tmp) / "parent_with_grandchild.sh"
+        script.write_text(
+            f"#!/bin/sh\n"
+            f"sleep 60 &\n"
+            f"echo $! > {grandchild_pid_file}\n"
+            f"sleep 60\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        # Launch via Popen directly (not run_arm) so we control when KI fires
+        proc = subprocess.Popen(
+            [str(script)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        # Wait for grandchild to start
+        deadline = time.monotonic() + 5.0
+        gc_pid = None
+        while time.monotonic() < deadline:
+            if grandchild_pid_file.exists():
+                try:
+                    gc_pid = int(grandchild_pid_file.read_text().strip())
+                    break
+                except ValueError:
+                    pass
+            time.sleep(0.05)
+
+        self.assertIsNotNone(gc_pid,
+                             "grandchild PID file not written in time")
+
+        # Confirm grandchild is alive
+        try:
+            os.kill(gc_pid, 0)  # signal 0 = existence check
+        except ProcessLookupError:
+            self.skipTest(f"grandchild {gc_pid} already gone before test logic ran")
+
+        # Simulate cancellation: terminate the owned pgroup
+        _terminate_owned_pgroup(proc)
+
+        # Grandchild must now be dead
+        import time as _time
+        _time.sleep(0.1)  # brief settle after reap
+        try:
+            os.kill(gc_pid, 0)
+            alive = True
+        except ProcessLookupError:
+            alive = False
+        except PermissionError:
+            alive = False  # process is a zombie or not ours; treat as gone
+
+        self.assertFalse(alive,
+                         f"grandchild {gc_pid} survived _terminate_owned_pgroup")
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only process group test")
+    def test_run_arm_ki_no_orphan_grandchild(self):
+        """run_arm: KI raised during communicate() must leave no orphan
+        grandchild in the engine's process group.
+
+        Uses a fixture that forks a grandchild before hanging, combines it
+        with a mock KeyboardInterrupt injected into communicate().
+        """
+        import unittest.mock as mock
+
+        grandchild_pid_file = Path(self._tmp) / "gc2_pid.txt"
+        script = Path(self._tmp) / "engine_with_grandchild.sh"
+        script.write_text(
+            f"#!/bin/sh\n"
+            f"sleep 60 &\n"
+            f"echo $! > {grandchild_pid_file}\n"
+            f"sleep 60\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        # We need the real Popen to run the script but intercept communicate().
+        # Use a wrapper that waits for the grandchild to appear, then raises KI.
+        def _delayed_ki(self_proc, *args, **kwargs):
+            # Wait until grandchild is up
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if grandchild_pid_file.exists():
+                    try:
+                        int(grandchild_pid_file.read_text().strip())
+                        break
+                    except ValueError:
+                        pass
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+        with mock.patch.object(subprocess.Popen, "communicate", _delayed_ki):
+            with self.assertRaises(KeyboardInterrupt):
+                run_arm(
+                    str(script), [], [1, 2, 3], 8,
+                    {}, (), 30.0, tmp_dir=self._tmp,
+                )
+
+        # Read grandchild PID
+        self.assertTrue(grandchild_pid_file.exists(),
+                        "grandchild PID file not written")
+        gc_pid = int(grandchild_pid_file.read_text().strip())
+
+        import time as _time
+        _time.sleep(0.1)  # brief settle
+        try:
+            os.kill(gc_pid, 0)
+            alive = True
+        except (ProcessLookupError, PermissionError):
+            alive = False
+
+        self.assertFalse(alive,
+                         f"orphan grandchild {gc_pid} survived run_arm KI")
+
+    # ------------------------------------------------------------------ #
+    # Regression: success/timeout paths unaffected                        #
+    # ------------------------------------------------------------------ #
+
+    def test_successful_run_unaffected(self):
+        """Normal successful run still completes and returns clean ArmResult."""
+        exe = _write_fixture(self._tmp, _make_stdout(output_ids=(10, 20, 30, 40)))
+        r = run_arm(exe, [], [1, 2, 3], 8, {}, (), 10.0, tmp_dir=self._tmp)
+        self.assertIsNone(r.error)
+        self.assertEqual(r.n_output, 4)
+
+    def test_timeout_path_unaffected(self):
+        """Timeout path still returns sentinel with 'timeout' in error."""
+        script = Path(self._tmp) / "hang2.sh"
+        script.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        r = run_arm(str(script), [], [1, 2], 8, {}, (), 0.3, tmp_dir=self._tmp)
+        self.assertIsNotNone(r.error)
+        self.assertIn("timeout", r.error)
+        self.assertEqual(r.exit_code, -1)
+
+
+# ── TestTerminateOwnedPgroupUnit ────────────────────────────────────────────────────
+
+class TestTerminateOwnedPgroupUnit(unittest.TestCase):
+    """Unit tests for _terminate_owned_pgroup in isolation."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="tier_a_tpg_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_grace_constant_positive(self):
+        """_TERM_GRACE_S must be a positive number."""
+        self.assertIsInstance(_TERM_GRACE_S, (int, float))
+        self.assertGreater(_TERM_GRACE_S, 0)
+
+    def test_term_grace_does_not_exceed_timeout_budget(self):
+        """_TERM_GRACE_S should stay small enough not to dominate test run
+        times; budget is <= 10 seconds."""
+        self.assertLessEqual(_TERM_GRACE_S, 10.0,
+                             f"_TERM_GRACE_S={_TERM_GRACE_S} too large")
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only")
+    def test_does_not_kill_unrelated_process(self):
+        """_terminate_owned_pgroup must ONLY kill the owned process group,
+        not an unrelated process.  We start two independent processes;
+        only the first has _terminate_owned_pgroup called on it."""
+        # An unrelated background sleep
+        unrelated = subprocess.Popen(
+            ["/bin/sleep", "30"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        # Target process
+        target = subprocess.Popen(
+            ["/bin/sleep", "30"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            # Their pgids must differ (both use start_new_session=True)
+            self.assertNotEqual(
+                os.getpgid(target.pid), os.getpgid(unrelated.pid),
+                "pgids must differ for this test to be meaningful",
+            )
+            _terminate_owned_pgroup(target)
+            # target must be dead
+            self.assertIsNotNone(target.poll(),
+                                 "target survived _terminate_owned_pgroup")
+            # unrelated must still be alive
+            self.assertIsNone(unrelated.poll(),
+                              "_terminate_owned_pgroup killed unrelated process")
+        finally:
+            for p in (unrelated, target):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+                p.stdout.close()
+                p.stderr.close()
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only")
+    def test_term_then_kill_escalation(self):
+        """A process that ignores SIGTERM must still be killed within
+        _TERM_GRACE_S + _TERM_GRACE_S seconds by SIGKILL escalation."""
+        # Script ignores SIGTERM and sleeps forever
+        script = Path(self._tmp) / "sigterm_ignore.sh"
+        script.write_text(
+            "#!/bin/sh\ntrap '' TERM\nsleep 60\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        proc = subprocess.Popen(
+            [str(script)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        t0 = time.monotonic()
+        try:
+            _terminate_owned_pgroup(proc)
+            elapsed = time.monotonic() - t0
+            self.assertIsNotNone(proc.poll(),
+                                 "SIGTERM-ignoring process survived _terminate_owned_pgroup")
+            # Must complete within 2x grace window
+            self.assertLess(
+                elapsed, _TERM_GRACE_S * 2 + 1.0,
+                f"escalation took {elapsed:.1f}s; expected < {_TERM_GRACE_S * 2 + 1.0:.1f}s",
+            )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+# ── TestCancellationAcGaps ────────────────────────────────────────────────────────────────────────
+
+class TestCancellationAcGaps(unittest.TestCase):
+    """Regression tests that reproduce the three specific AC gaps identified
+    in the sta-d76 review: these tests *would have failed* against the buggy
+    implementation and must pass against the fixed one.
+
+    Gap 1 – parent exits on TERM, grandchild ignores TERM:
+      Old code: once proc.poll() non-None → exited=True → SIGKILL skipped.
+      Grandchild in same pgroup survives.
+
+    Gap 2 – leader already exited/reaped before cleanup runs:
+      Old code: os.getpgid(proc.pid) on a reaped leader raises
+      ProcessLookupError → falls to proc.terminate() on dead leader → no-op.
+      Descendants remain alive.
+
+    Gap 3 – child closes stdout/stderr but continues running:
+      Old code used proc.communicate() to reap, which blocks until all
+      readers are done with the pipe.  A grandchild keeping the write-end
+      of stdout open can prevent reap from completing.
+
+    Gap 4 (mock) – cleanup itself raising must not mask caller's exception.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="tier_a_acgap_")
+
+    def tearDown(self):
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    # Fast tests patch _TERM_GRACE_S to 0.5s; real-process tests tolerate
+    # up to 2.0s worst-case.
+    _FAST_GRACE = 0.5
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only")
+    def test_grandchild_ignores_term_parent_exits_on_term(self):
+        """Gap 1: parent exits cleanly on SIGTERM, grandchild traps/ignores SIGTERM.
+        Old bug: leader exit set exited=True → SIGKILL branch skipped →
+        grandchild survived.  Fixed: SIGKILL is always sent unconditionally.
+        """
+        import unittest.mock as mock
+
+        gc_pid_file = Path(self._tmp) / "gc_gap1.txt"
+        ready_file  = Path(self._tmp) / "gc_gap1_ready.txt"
+        script = Path(self._tmp) / "gap1.sh"
+        # Parent: exits on SIGTERM (default).  Grandchild: ignores SIGTERM.
+        script.write_text(
+            f"#!/bin/sh\n"
+            f"(trap '' TERM; sleep 60) &\n"
+            f"echo $! > {gc_pid_file}\n"
+            f"touch {ready_file}\n"
+            f"sleep 60\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        proc = subprocess.Popen(
+            [str(script)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        # Wait for grandchild to be forked
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if ready_file.exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue(ready_file.exists(), "grandchild not started in time")
+        gc_pid = int(gc_pid_file.read_text().strip())
+
+        try:
+            os.kill(gc_pid, 0)
+        except ProcessLookupError:
+            self.skipTest(f"grandchild {gc_pid} vanished before test")
+
+        with mock.patch("tier_a.engine_cli._TERM_GRACE_S", self._FAST_GRACE):
+            _terminate_owned_pgroup(proc)
+
+        time.sleep(0.1)
+        try:
+            os.kill(gc_pid, 0)
+            alive = True
+        except (ProcessLookupError, PermissionError):
+            alive = False
+
+        self.assertFalse(
+            alive,
+            f"Gap 1 regression: SIGTERM-ignoring grandchild {gc_pid} survived "
+            f"after parent exited on TERM (SIGKILL was not sent unconditionally)",
+        )
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only")
+    def test_leader_already_exited_descendant_still_alive(self):
+        """Gap 2: process group leader has already exited and been reaped
+        before _terminate_owned_pgroup is called; a descendant is still alive.
+        Old bug: os.getpgid(proc.pid) raised ProcessLookupError on the reaped
+        leader → fell back to proc.terminate() on dead leader → descendant
+        survived.  Fixed: pgid captured as proc.pid before any signals.
+        """
+        import unittest.mock as mock
+
+        gc_pid_file = Path(self._tmp) / "gc_gap2.txt"
+        ready_file  = Path(self._tmp) / "gc_gap2_ready.txt"
+        script = Path(self._tmp) / "gap2.sh"
+        # Leader exits immediately after forking a grandchild that sleeps.
+        script.write_text(
+            f"#!/bin/sh\n"
+            f"sleep 60 &\n"
+            f"echo $! > {gc_pid_file}\n"
+            f"touch {ready_file}\n"
+            # Leader exits here; grandchild is re-parented to init but stays
+            # in the same pgroup (same session, pgid = original leader pid).
+            f"exit 0\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        proc = subprocess.Popen(
+            [str(script)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        pgid_at_launch = proc.pid   # stable: pgid == leader pid
+
+        # Wait for the leader to exit naturally
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if ready_file.exists() and proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        self.assertIsNotNone(proc.poll(),
+                             "leader did not exit in time")
+        # Reap it so getpgid would fail on the pid
+        proc.wait()
+
+        gc_pid = int(gc_pid_file.read_text().strip())
+        try:
+            os.kill(gc_pid, 0)
+        except ProcessLookupError:
+            self.skipTest(f"grandchild {gc_pid} already gone")
+
+        with mock.patch("tier_a.engine_cli._TERM_GRACE_S", self._FAST_GRACE):
+            _terminate_owned_pgroup(proc)
+
+        time.sleep(0.1)
+        try:
+            os.kill(gc_pid, 0)
+            alive = True
+        except (ProcessLookupError, PermissionError):
+            alive = False
+
+        self.assertFalse(
+            alive,
+            f"Gap 2 regression: descendant {gc_pid} survived after leader was "
+            f"already reaped (getpgid fallback didn't kill the group)",
+        )
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX-only")
+    def test_child_closes_pipes_grandchild_continues(self):
+        """Gap 3: the direct child closes its stdout/stderr but a grandchild
+        stays alive in the same pgroup.  Old code used communicate() for reap,
+        which can block waiting for the grandchild to close its inherited
+        write-end of the pipe.  Fixed: reap uses proc.wait(), not communicate().
+        """
+        import unittest.mock as mock
+
+        gc_pid_file = Path(self._tmp) / "gc_gap3.txt"
+        ready_file  = Path(self._tmp) / "gc_gap3_ready.txt"
+        script = Path(self._tmp) / "gap3.sh"
+        # Child closes its own stdout/stderr and exits; grandchild keeps
+        # inherited file-descriptors open and sleeps.
+        script.write_text(
+            f"#!/bin/sh\n"
+            f"(sleep 60 >/dev/null 2>&1) &\n"
+            f"echo $! > {gc_pid_file}\n"
+            f"touch {ready_file}\n"
+            f"exec 1>/dev/null 2>/dev/null\n"
+            f"sleep 60\n",
+            encoding="utf-8",
+        )
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        proc = subprocess.Popen(
+            [str(script)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if ready_file.exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue(ready_file.exists(), "setup script not ready in time")
+        gc_pid = int(gc_pid_file.read_text().strip())
+
+        try:
+            os.kill(gc_pid, 0)
+        except ProcessLookupError:
+            self.skipTest(f"grandchild {gc_pid} already gone")
+
+        # Key assertion: _terminate_owned_pgroup must complete in bounded time
+        # (wait() based, not communicate() based).
+        t0 = time.monotonic()
+        with mock.patch("tier_a.engine_cli._TERM_GRACE_S", self._FAST_GRACE):
+            _terminate_owned_pgroup(proc)
+        elapsed = time.monotonic() - t0
+
+        # Must complete well within 2 grace windows
+        self.assertLess(
+            elapsed, self._FAST_GRACE * 2 + 1.0,
+            f"Gap 3 regression: _terminate_owned_pgroup blocked for {elapsed:.1f}s "
+            f"(communicate() on open pipe suspected)",
+        )
+
+        time.sleep(0.1)
+        try:
+            os.kill(gc_pid, 0)
+            alive = True
+        except (ProcessLookupError, PermissionError):
+            alive = False
+
+        self.assertFalse(
+            alive,
+            f"Gap 3 regression: grandchild {gc_pid} still alive after "
+            f"_terminate_owned_pgroup (pipe-blocking reap suspected)",
+        )
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_retained_cancellation_closes_owned_pipes(self):
+        """Retaining the original traceback must not retain open pipe handles."""
+        import unittest.mock as mock
+
+        interrupt = KeyboardInterrupt("retained cancellation")
+        children = []
+        retained = None
+        script = Path(self._tmp) / "retained_pipes.sh"
+        script.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        def cancel(proc, *args, **kwargs):
+            children.append(proc)
+            raise interrupt
+
+        try:
+            with mock.patch.object(subprocess.Popen, "communicate", cancel):
+                with mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.05):
+                    try:
+                        run_arm(str(script), [], [1], 1, {}, (),
+                                tmp_dir=self._tmp)
+                    except KeyboardInterrupt as exc:
+                        retained = exc
+            self.assertIs(retained, interrupt)
+            self.assertIsNotNone(retained.__traceback__)
+            proc = children[0]
+            self.assertIsNotNone(proc.returncode)
+            self.assertTrue(proc.stdout.closed, "retained stdout handle is open")
+            self.assertTrue(proc.stderr.closed, "retained stderr handle is open")
+            self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+        finally:
+            for proc in children:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=2)
+                proc.stdout.close()
+                proc.stderr.close()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_group_signals_precede_reap_and_pipe_close(self):
+        """Do not release the leader PID by polling/reaping before escalation."""
+        import signal
+        import unittest.mock as mock
+
+        proc = mock.Mock(pid=12345)
+        events = []
+        proc.wait.side_effect = lambda **kw: events.append("wait")
+        proc.stdout.close.side_effect = lambda: events.append("stdout.close")
+        proc.stderr.close.side_effect = lambda: events.append("stderr.close")
+        with mock.patch("tier_a.engine_cli.os.killpg",
+                        side_effect=lambda pgid, sig: events.append(sig)):
+            with mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0):
+                _terminate_owned_pgroup(proc)
+        self.assertEqual(events, [signal.SIGTERM, signal.SIGKILL, "wait",
+                                  "stdout.close", "stderr.close"])
+        proc.poll.assert_not_called()
+        proc.communicate.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_absent_group_is_not_signalled_again(self):
+        """ESRCH on TERM ends group ownership; never retry a stale PGID."""
+        import signal
+        import unittest.mock as mock
+
+        proc = mock.Mock(pid=12345)
+        with mock.patch("tier_a.engine_cli.os.killpg",
+                        side_effect=ProcessLookupError) as killpg:
+            with mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0):
+                _terminate_owned_pgroup(proc)
+        killpg.assert_called_once_with(proc.pid, signal.SIGTERM)
+        proc.wait.assert_called_once()
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_pipe_close_is_best_effort_even_if_wait_fails(self):
+        """Wait errors and one close error must not prevent the other close."""
+        import unittest.mock as mock
+
+        for failure in (OSError("wait failure"),
+                        subprocess.TimeoutExpired("dummy", 0),
+                        KeyboardInterrupt("cleanup interrupted")):
+            with self.subTest(failure=type(failure).__name__):
+                proc = mock.Mock(pid=12345)
+                proc.wait.side_effect = failure
+                proc.stdout.close.side_effect = OSError("close failure")
+                with mock.patch("tier_a.engine_cli.os.killpg"):
+                    with mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0):
+                        _terminate_owned_pgroup(proc)
+                proc.stdout.close.assert_called_once()
+                proc.stderr.close.assert_called_once()
+
+    def test_cleanup_error_does_not_mask_original_exception(self):
+        """Gap 4: if _terminate_owned_pgroup itself raises, the original
+        caller exception (here: KeyboardInterrupt) must still propagate;
+        the cleanup error must be silently discarded.
+        """
+        import unittest.mock as mock
+
+        def _raising_cleanup(proc):
+            raise RuntimeError("simulated cleanup failure")
+
+        proc = mock.Mock()
+        proc.communicate.side_effect = KeyboardInterrupt
+        with mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc):
+            with mock.patch(
+                "tier_a.engine_cli._terminate_owned_pgroup",
+                side_effect=_raising_cleanup,
+            ):
+                with self.assertRaises(KeyboardInterrupt,
+                                       msg="original KI must propagate even when "
+                                           "_terminate_owned_pgroup raises"):
+                    run_arm(
+                        "/bin/true", [], [1, 2, 3], 8,
+                        {}, (), 10.0, tmp_dir=self._tmp,
+                    )
 
 
 if __name__ == "__main__":
