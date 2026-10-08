@@ -26,12 +26,36 @@
 //   * records are bounded by kMaxRecords; the first overflow emits a single trunc=1 marker and all
 //     further emits are dropped (explicit truncation, no unbounded logging).
 //
+// RECORDER ERRORS vs ORDINARY TRUNCATION.  Three different conditions are represented distinctly,
+// and the consuming validator (tools/tier_b/run_pairs.py) treats them differently on purpose:
+//
+//   * path=truncated (trunc=1) - ORDINARY record-budget truncation: the kMaxRecords cap was hit.
+//     Everything emitted before the cap is still trustworthy, so this only RESTRICTS COVERAGE; the
+//     validator keeps the prefix as dispatch evidence and merely marks the verdict incomplete.
+//   * path=format_error (trunc=1) - a RECORDER ERROR: snprintf failed or the record did not fit
+//     buf, so a dispatch decision could NOT be written at all and the record stream has an
+//     unaccounted-for hole of unknown content.  This is NOT ordinary truncation, and the validator
+//     REJECTS the whole trace as evidence rather than downgrading it to a coverage limit.
+//   * capture=-1 on a normal record - a CAPTURE-QUERY ERROR or otherwise unknown capture state: a
+//     nullptr stream, cudaStreamCaptureStatusInvalidated, or a failed cudaStreamIsCapturing (see
+//     capture_state below).  Such a record cannot establish WHERE it was dispatched, so the
+//     validator REJECTS it as evidence; only capture=0 (direct) or capture=1 (capturing) is
+//     admissible.  The budget marker itself is exempt: it reports capture=-1 because it describes
+//     the recorder, not a dispatch.
+//
+// The validator additionally requires every geometry/capacity field relevant to a record's family
+// to be present and STRICTLY POSITIVE before counting it as evidence: a record that claims a
+// studied dispatch while reporting a zero or -1 ("not measured") geometry, or zero/-1 nominal
+// capacities for the grouped-expert family, proves nothing about that dispatch and is rejected.
+//
 // Machine-readable schema, one record per line (tokens are `key=value`, values have no whitespace):
 //   TIER_B_TRACE v=1 family=<id> caller=<id> path=<id> gu=<i> d=<i> n_embd=<i> n_ff=<i> rows=<i>
 //                 head_dim=<i> n_rot=<i> ncols=<i> cap_groups=<i> cap_entries=<i>
 //                 grid_groups=<i> table=<i> capture=<i> trunc=<0|1>
 // All integer fields are decimal; unused/unknown are -1.  family/caller/path are identifiers
-// (letters, digits, '_').  capture: 0=direct submission, 1=stream capture active, -1=unknown.
+// (letters, digits, '_').  capture: 0=direct submission, 1=stream capture active, -1=unknown
+// (nullptr stream / Invalidated capture / capture-query error) and therefore inadmissible as
+// evidence on a normal record.
 // Field meaning by family: rope/rope_norm use rows/head_dim/n_rot (+table); iq_mmvq uses
 // n_embd=in_dim, rows=out_rows, ncols; iq_grouped uses gu/d/n_embd/n_ff and the capacity fields.
 #pragma once
@@ -67,6 +91,11 @@ inline bool enabled() {
 // A nullptr stream, a CUDA error, or an Invalidated/unknown status is -1 (unmeasured/unknown) - an
 // unknown is never silently reported as direct submission.  The CUDA error is NOT cleared here
 // (no cudaGetLastError), so the caller's own subsequent check still sees it.
+//
+// -1 is an explicit CAPTURE-QUERY ERROR / unknown-state signal, not a benign default: the Tier B
+// validator refuses a normal record carrying capture=-1 as dispatch evidence (see the header
+// comment above), so a failed query degrades the trace's admissibility instead of silently
+// producing a record that looks positive.
 inline int capture_state(void* stream) {
     if (stream == nullptr) return -1;
     cudaStreamCaptureStatus st = cudaStreamCaptureStatusNone;

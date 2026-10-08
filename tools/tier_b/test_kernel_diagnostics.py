@@ -82,6 +82,35 @@ class TestHeaderSource(unittest.TestCase):
         self.assertIn("trunc=1", marker.group(1))
         self.assertIn("\\n", marker.group(1))
 
+    def test_header_distinguishes_recorder_errors_from_truncation(self):
+        """Audit M9 (sta-osh.24): the header must state explicitly that a
+        capture-query error / unknown capture state and a format_error are
+        recorder FAILURES the validator REJECTS, distinct from ordinary
+        record-budget truncation, which only restricts coverage."""
+        for needle in (
+            "RECORDER ERRORS vs ORDINARY TRUNCATION",
+            "ORDINARY record-budget truncation",
+            "RESTRICTS COVERAGE",
+            "a RECORDER ERROR",
+            "NOT ordinary truncation",
+            "CAPTURE-QUERY ERROR",
+            "STRICTLY POSITIVE",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, self.text)
+        # The rejection is attributed to the consuming validator, and the budget
+        # marker's own capture=-1 is called out as exempt.
+        self.assertIn("tools/tier_b/run_pairs.py", self.text)
+        self.assertRegex(self.text, r"REJECTS the whole trace as evidence")
+        self.assertRegex(self.text, r"budget marker itself is exempt")
+        # capture=-1 is documented as a capture-query error signal in
+        # capture_state(), not a benign default.
+        m = re.search(r"// Capture state of `stream`\.(.*?)inline int capture_state",
+                      self.text, re.S)
+        self.assertIsNotNone(m, "capture_state doc comment not found")
+        self.assertIn("CAPTURE-QUERY ERROR", m.group(1))
+        self.assertIn("refuses a normal record carrying capture=-1", m.group(1))
+
 
 class TestIqKernelsCallSites(unittest.TestCase):
     """Static checks that positive dispatch records cannot be false positives."""

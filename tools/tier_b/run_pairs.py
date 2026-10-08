@@ -90,6 +90,44 @@ _SUB16_REF_PATHS = ("split", "reference", "reference_old")
 # Records that are never positive evidence for either arm.
 _NONPOSITIVE_PATHS = ("skipped", "unsupported", "zero", "truncated", "format_error")
 
+# RECORDER-ERROR EVIDENCE  (audit M9 / sta-osh.24)
+#
+# The recorder's bounded budget marker (path=truncated) and its recorder-ERROR
+# markers both carry trunc=1, but they mean different things and must not be
+# conflated:
+#
+#   * path=truncated     -> ORDINARY record-budget truncation.  Records written
+#     before the cap are still trustworthy, so this only restricts COVERAGE
+#     (it clears `complete`) and never rejects present evidence.
+#   * path=format_error  -> the recorder could not format a record at all, so
+#     the dispatch stream has an unaccounted-for hole of unknown content.  That
+#     is a recorder FAILURE, not a coverage limit.
+#   * capture not 0 or 1 -> the capture state of the record is unknown: a
+#     nullptr stream, an Invalidated graph capture, or a cudaStreamIsCapturing
+#     error (all are capture=-1 per the header).  Such a record cannot
+#     establish where it was dispatched.
+#
+# Records in the latter two classes are REJECTED as evidence, not downgraded to
+# ordinary truncation.
+_RECORDER_ERROR_PATHS = ("format_error",)
+
+# capture: 0=direct submission, 1=stream capture active.  Anything else - and
+# notably -1, meaning unknown/unmeasured/query-error - is inadmissible.
+_VALID_CAPTURE_STATES = ("0", "1")
+
+# Geometry/capacity fields that must be present and strictly POSITIVE for a
+# record of each family to be admissible evidence.  A record claiming a studied
+# dispatch while reporting a missing, non-numeric, zero or -1 (not measured)
+# geometry is not evidence of that dispatch.  Capacity fields are required only
+# for the grouped-expert family, which is the one that reports them.
+_REQUIRED_POSITIVE_FIELDS: dict[str, tuple[str, ...]] = {
+    "rope":       ("rows", "head_dim", "n_rot"),
+    "rope_norm":  ("rows", "head_dim", "n_rot"),
+    "iq_mmvq":    ("n_embd", "rows", "ncols"),
+    "iq_grouped": ("gu", "d", "n_embd", "n_ff",
+                   "cap_groups", "cap_entries", "grid_groups"),
+}
+
 # Studied geometry (plan: n_embd=2560 GU rows, n_ff=640 down rows).
 SUB16_N_EMBD = 2560
 SUB16_N_FF = 640
@@ -138,6 +176,42 @@ EXPECTED_PROMPT_HASH: dict[str, str] = {"short_code": "563cf85e6f7c1247",
 # refuse (exit non-zero, incomplete) rather than launch something that would
 # overrun the predeclared session cap.
 MIN_REMAINING_S: float = 60.0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VERSIONED TIMING-ADMISSION PROTOCOL  (audit H4 / sta-osh.17)
+# ─────────────────────────────────────────────────────────────────────────────
+# A diagnostic summary is not admissible for timing just because some
+# `proof: true` key exists in it.  The diagnostic run stamps this exact string
+# into BOTH provenance.json and summary.json, and the timing side admits a
+# summary only when both copies equal the version it was built with, and only
+# when every constituent verdict, declared contract, common setting and bound
+# in that summary still matches the timing run.
+#
+# There is deliberately NO backward compatibility: a summary without the stamp
+# (any pre-protocol/legacy run) is refused with an explicit "requires
+# revalidation" message rather than silently trusted, and bumping the string
+# invalidates every older summary on purpose.
+PROOF_ADMISSION_VERSION = "tier-b-proof-admission/1"
+
+# Bound fields that must be identical on both sides: the compiled export budget
+# the binary enforces, the minimum matched-window overlap the pair gate
+# actually applied, the recorded-pair count and the token budgets.
+ADMISSION_BOUND_KEYS: tuple[str, ...] = (
+    "max_windows", "max_export_bytes", "min_matched_windows", "recorded_pairs",
+    "max_new_short", "max_new_long",
+)
+
+# Every nested verdict that must be literally True in an admissible cell.  A
+# cell whose top-level proof is true while any of these is false is a malformed
+# (or edited) summary and is refused, never averaged over.
+ADMISSION_NESTED_VERDICTS: tuple[tuple[str, ...], ...] = (
+    ("arms_clean",),
+    ("whole_run_ids_match",),
+    ("trace", "A", "ok"), ("trace", "A", "complete"),
+    ("trace", "B", "ok"), ("trace", "B", "complete"),
+    ("export", "A", "ok"), ("export", "B", "ok"),
+    ("pair", "ok"),
+)
 
 
 @dataclass(frozen=True)
@@ -308,7 +382,69 @@ def parse_trace(stderr_text: str) -> list[dict[str, str]]:
 
 
 def trace_truncated(records: list[dict[str, str]]) -> bool:
-    return any(r.get("trunc") == "1" or r.get("path") == "truncated" for r in records)
+    """True for ORDINARY record-budget truncation only (M9).
+
+    Recorder-error markers also carry trunc=1, but they are handled by
+    `recorder_errors()` as outright failures, so they are deliberately not
+    reported here as mere coverage truncation."""
+    return any(r.get("path") == "truncated"
+               or (r.get("trunc") == "1" and r.get("path") not in _RECORDER_ERROR_PATHS)
+               for r in records)
+
+
+def recorder_errors(records: list[dict[str, str]]) -> list[str]:
+    """Recorder FAILURES that invalidate the trace as evidence (M9).
+
+    A format_error marker means a record could not be written at all, so the
+    dispatch stream has a hole of unknown content; an out-of-range capture
+    state (notably -1 from a nullptr stream, an Invalidated capture, or a
+    cudaStreamIsCapturing error) means the record cannot say where it was
+    dispatched.  Neither is ordinary budget truncation, so neither may be
+    downgraded to a coverage limit."""
+    problems: list[str] = []
+    n_fmt = sum(1 for r in records if r.get("path") in _RECORDER_ERROR_PATHS)
+    if n_fmt:
+        problems.append(f"recorder emitted {n_fmt} format_error marker(s): record stream has an "
+                        f"unaccounted-for hole (not ordinary truncation)")
+    bad_capture: dict[str, int] = {}
+    for r in records:
+        if r.get("path") == "truncated":
+            continue   # the budget marker legitimately reports capture=-1
+        cap = r.get("capture")
+        if cap not in _VALID_CAPTURE_STATES:
+            bad_capture[str(cap)] = bad_capture.get(str(cap), 0) + 1
+    for cap, n in sorted(bad_capture.items()):
+        problems.append(f"{n} record(s) with unknown capture state capture={cap} "
+                        f"(expected 0=direct or 1=capturing)")
+    return problems
+
+
+def _positive_geometry(rec: dict[str, str]) -> bool:
+    """True when every geometry/capacity field required for this record's family
+    is present and strictly positive (M9).  Unknown families have no declared
+    requirement and are not admitted by the validators anyway."""
+    required = _REQUIRED_POSITIVE_FIELDS.get(rec.get("family", ""))
+    if not required:
+        return False
+    for key in required:
+        raw = rec.get(key)
+        if raw is None:
+            return False
+        try:
+            if int(raw) <= 0:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def admissible_records(records: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Keep only records usable as positive dispatch evidence (M9): a known
+    positive path, a known capture state, and complete positive geometry."""
+    return [r for r in records
+            if r.get("path") not in _NONPOSITIVE_PATHS
+            and r.get("capture") in _VALID_CAPTURE_STATES
+            and _positive_geometry(r)]
 
 
 class TraceVerdict(NamedTuple):
@@ -330,11 +466,19 @@ def validate_normrope_trace(records: list[dict[str, str]], is_default_arm: bool)
     """A (default) must dispatch the fused norm+rope kernel; B (opt-out) must
     fall back to the plain rope path and emit NO fused record.  Truncation marks
     the verdict incomplete but, if positive evidence is already present and no
-    forbidden record appears in the prefix, does not reject it."""
+    forbidden record appears in the prefix, does not reject it.
+
+    M9: a recorder format_error or an unknown capture state REJECTS the trace
+    outright (it is a recorder failure, not a coverage limit), and only records
+    with complete positive geometry count as evidence."""
+    errs = recorder_errors(records)
+    if errs:
+        return TraceVerdict(False, False, "recorder evidence rejected: " + "; ".join(errs))
     trunc = trace_truncated(records)
     complete = not trunc
-    fused = [r for r in records if r.get("family") == "rope_norm" and r.get("path") == "norm_rope_fused"]
-    plain = [r for r in records if r.get("family") == "rope" and r.get("path") in _ROPE_PLAIN_PATHS]
+    usable = admissible_records(records)
+    fused = [r for r in usable if r.get("family") == "rope_norm" and r.get("path") == "norm_rope_fused"]
+    plain = [r for r in usable if r.get("family") == "rope" and r.get("path") in _ROPE_PLAIN_PATHS]
     if is_default_arm:
         if not fused:
             return TraceVerdict(False, complete, "default arm emitted no norm_rope_fused record in prefix"
@@ -372,13 +516,19 @@ def validate_sub16_trace(records: list[dict[str, str]], is_default_arm: bool) ->
     Only positive, supported records at the studied geometry count;
     skipped/unsupported/zero/truncated/format_error never count.  Truncation of
     the recorder marks the verdict incomplete without rejecting present
-    evidence."""
+    evidence.
+
+    M9: a recorder format_error or an unknown capture state REJECTS the trace
+    outright, and a record must carry complete positive geometry AND positive
+    capacity fields (cap_groups/cap_entries/grid_groups) to count."""
+    errs = recorder_errors(records)
+    if errs:
+        return TraceVerdict(False, False, "recorder evidence rejected: " + "; ".join(errs))
     trunc = trace_truncated(records)
     complete = not trunc
-    gu = _sub16_records(records, "native_expert_grouped.gu", "n_embd", SUB16_N_EMBD)
-    dn = _sub16_records(records, "native_expert_grouped.down", "n_ff", SUB16_N_FF)
-    gu = [r for r in gu if r.get("path") not in _NONPOSITIVE_PATHS]
-    dn = [r for r in dn if r.get("path") not in _NONPOSITIVE_PATHS]
+    usable = admissible_records(records)
+    gu = _sub16_records(usable, "native_expert_grouped.gu", "n_embd", SUB16_N_EMBD)
+    dn = _sub16_records(usable, "native_expert_grouped.down", "n_ff", SUB16_N_FF)
     gu_sub = [r for r in gu if r.get("path") == _SUB16_PATH]
     dn_sub = [r for r in dn if r.get("path") == _SUB16_PATH]
     if is_default_arm:
@@ -845,6 +995,12 @@ def evaluate_diagnostic_pair(family: Family, workload: str,
                        + ("" if full_proof else " (coverage incomplete: truncated prefix/windows)"))
     return {
         "family": family.name, "workload": workload,
+        # Admission protocol (H4): the contract/tolerance actually applied and
+        # the bounds actually enforced are recorded IN the cell, so the timing
+        # side can require them to match its own declarations instead of
+        # trusting a bare proof=True.
+        "contract": family.contract, "rel_tol": family.rel_tol,
+        "bounds": {k: getattr(bounds, k) for k in ADMISSION_BOUND_KEYS},
         "proof": proof, "full_proof": full_proof, "n_windows": n_windows,
         "arms_clean": clean, "arm_errors": arm_errors,
         "trace": {"A": {"ok": tv_a.ok, "complete": tv_a.complete, "reason": tv_a.reason},
@@ -1134,6 +1290,10 @@ def write_provenance(out_dir: Path | None, args, bounds: Bounds,
     prov = {
         "mode": args.mode,
         "dry_run": bool(args.dry_run),
+        # Versioned admission protocol stamp (H4): written here AND into
+        # summary.json; the timing side requires both copies to equal its own
+        # PROOF_ADMISSION_VERSION, so an unstamped legacy summary is refused.
+        "proof_admission_version": PROOF_ADMISSION_VERSION,
         "exe": args.exe,
         "exe_sha256": _file_hash(args.exe),
         "model_inputs": model_inputs,
@@ -1223,20 +1383,157 @@ def format_variant_line(name: str, decode: list[float], prefill: list[float]) ->
     return f"{name}  decode={d}tok/s(n={len(decode)})  prefill={p}tok/s(n={len(prefill)})"
 
 
+def _dig(obj, path: tuple[str, ...]):
+    """Walk a nested-dict path, returning None when any level is missing or is
+    not a mapping.  Used so a hand-edited summary with a pruned subtree reads as
+    'absent' (and is refused) rather than raising."""
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict) or key not in cur:
+            return None
+        cur = cur[key]
+    return cur
+
+
+def _check_admission_version(summary: dict, prov_in_summary: dict) -> list[str]:
+    """The versioned admission stamp must be present and identical in BOTH the
+    summary and its embedded provenance.  A legacy summary (no stamp anywhere)
+    is refused with an explicit revalidation instruction - never silently
+    accepted, because the old summaries were produced before any of the
+    constituent checks below existed."""
+    top = summary.get("proof_admission_version")
+    emb = prov_in_summary.get("proof_admission_version")
+    if top is None and emb is None:
+        return [f"proof summary has no proof_admission_version: legacy pre-"
+                f"{PROOF_ADMISSION_VERSION} summary requires revalidation "
+                f"(re-run --mode diagnostic with this harness); refusing to "
+                f"admit it for timing"]
+    probs: list[str] = []
+    if top is None:
+        probs.append("proof summary provenance is versioned but summary.json is not: "
+                     "requires revalidation")
+    if emb is None:
+        probs.append("proof summary.json is versioned but its provenance is not: "
+                     "requires revalidation")
+    if top is not None and emb is not None and top != emb:
+        probs.append(f"proof admission version disagrees between summary ({top!r}) and "
+                     f"provenance ({emb!r}): requires revalidation")
+    for where, got in (("summary", top), ("provenance", emb)):
+        if got is not None and got != PROOF_ADMISSION_VERSION:
+            probs.append(f"proof admission version mismatch in {where}: {got!r} != "
+                         f"{PROOF_ADMISSION_VERSION!r}; requires revalidation")
+    return probs
+
+
+def _check_admission_cell(key: tuple[str, str], v: dict, fam: Family,
+                          bounds: Bounds) -> list[str]:
+    """Every per-cell admission requirement for one family/workload verdict."""
+    fam_name, wl = key
+    at = f"{fam_name}/{wl}"
+    probs: list[str] = []
+    if v.get("family") != fam_name or v.get("workload") != wl:
+        probs.append(f"proof cell {at} self-labels as "
+                     f"{v.get('family')!r}/{v.get('workload')!r}")
+    if v.get("proof") is not True:
+        probs.append(f"proof failed for {at}")
+    # Identity contract: the summary must record the SAME contract name and
+    # rel_tol the timing-side family declares.  A summary whose tolerance was
+    # edited (e.g. 0.0 -> 0.5) no longer proves the identity arms.
+    contract = v.get("contract")
+    rel_tol = v.get("rel_tol")
+    if contract != fam.contract:
+        probs.append(f"proof contract for {at} is {contract!r}, declared {fam.contract!r}")
+    if not isinstance(rel_tol, (int, float)) or isinstance(rel_tol, bool) \
+            or float(rel_tol) != fam.rel_tol:
+        probs.append(f"proof rel_tol for {at} is {rel_tol!r}, declared {fam.rel_tol!r}")
+    # Bounds actually applied by the pair gate must match this timing run's.
+    cell_bounds = v.get("bounds")
+    if not isinstance(cell_bounds, dict):
+        probs.append(f"proof cell {at} records no applied bounds")
+    else:
+        for bk in ADMISSION_BOUND_KEYS:
+            want = getattr(bounds, bk)
+            got = cell_bounds.get(bk)
+            if got != want:
+                probs.append(f"proof bound {bk} for {at} is {got!r}, declared {want!r}")
+    # Matched-window count must independently meet the required minimum, and the
+    # summary's own n_windows must agree with the nested pair count.
+    n_matched = _dig(v, ("pair", "n_matched"))
+    if not isinstance(n_matched, int) or isinstance(n_matched, bool):
+        probs.append(f"proof cell {at} has no integer pair.n_matched")
+    elif n_matched < bounds.min_matched_windows:
+        probs.append(f"proof matched windows for {at} is {n_matched} < required "
+                     f"{bounds.min_matched_windows}")
+    n_windows = v.get("n_windows")
+    if n_windows != n_matched:
+        probs.append(f"proof cell {at} n_windows={n_windows!r} disagrees with "
+                     f"pair.n_matched={n_matched!r}")
+    if not isinstance(n_windows, int) or isinstance(n_windows, bool) or n_windows <= 0:
+        probs.append(f"proof cell {at} has non-positive n_windows {n_windows!r}")
+    # Every constituent verdict must be literally true: a false nested verdict
+    # under proof=True is a malformed/edited summary, not a pass.
+    for vpath in ADMISSION_NESTED_VERDICTS:
+        got = _dig(v, vpath)
+        if got is not True:
+            probs.append(f"proof cell {at} nested verdict {'.'.join(vpath)} is "
+                         f"{got!r}, required True")
+    errs = v.get("arm_errors")
+    if not isinstance(errs, dict) or sorted(errs) != ["A", "B"] \
+            or any(errs[a] is not None for a in ("A", "B")):
+        probs.append(f"proof cell {at} arm_errors {errs!r} are not both null")
+    for arm in ("A", "B"):
+        ew = _dig(v, ("export", arm, "n_windows"))
+        if not isinstance(ew, int) or isinstance(ew, bool) or ew <= 0:
+            probs.append(f"proof cell {at} export {arm} n_windows {ew!r} is not positive")
+        oh = _dig(v, ("output_hash", arm))
+        if not isinstance(oh, str) or not oh:
+            probs.append(f"proof cell {at} output_hash {arm} is empty")
+        no = _dig(v, ("n_output", arm))
+        if not isinstance(no, int) or isinstance(no, bool) or no <= 0:
+            probs.append(f"proof cell {at} n_output {arm} {no!r} is not positive")
+    if _dig(v, ("output_hash", "A")) != _dig(v, ("output_hash", "B")):
+        probs.append(f"proof cell {at} output hashes differ between arms")
+    return probs
+
+
 def check_proof_gate(proof_path: str, prov: dict, families: list[Family],
-                     workloads: list[str]) -> list[str]:
-    """Timing is refused unless a LIVE diagnostic summary for the SAME exe sha256
-    and the SAME model inputs proved every requested family/workload."""
+                     workloads: list[str], bounds: Bounds) -> list[str]:
+    """Admit a diagnostic summary for timing only under the VERSIONED protocol.
+
+    Beyond identity of exe/model inputs/prompts, this validates, per requested
+    family/workload cell: the admission version stamp (summary AND provenance),
+    the declared identity contract name and rel_tol, the recorded common STRATA
+    flags and controlled variables, the applied export/overlap bounds, the
+    matched-window count against the required minimum, every constituent nested
+    verdict (arms_clean, arm_errors null, trace ok+complete, export ok, pair ok,
+    whole_run_ids_match) with nonzero window counts and nonempty output
+    metadata, and the cell set itself (no duplicate/conflicting cells, no
+    unknown extra cells, no missing cells, no unknown family names).
+
+    Returns a list of problems; empty means admissible."""
     probs: list[str] = []
     try:
         s = json.loads(Path(proof_path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         return [f"cannot read proof summary {proof_path!r}: {exc}"]
+    if not isinstance(s, dict):
+        return [f"proof summary {proof_path!r} is not a JSON object"]
+    pp = s.get("provenance")
+    pp = pp if isinstance(pp, dict) else {}
+
+    # (0) Versioned protocol first: an unversioned legacy summary is refused
+    # outright, with no fallback to the old weaker checks.
+    version_probs = _check_admission_version(s, pp)
+    if version_probs:
+        return version_probs
+
+    # (1) Run shape and identity of the compared binary/inputs/prompts.
     if s.get("mode") != "diagnostic" or s.get("dry_run") is not False:
         probs.append("proof summary is not a live diagnostic run")
-    if not s.get("complete"):
+    if s.get("complete") is not True:
         probs.append("proof run did not complete")
-    pp = s.get("provenance", {})
+    if s.get("failures"):
+        probs.append(f"proof run recorded failures: {s.get('failures')}")
     if not prov.get("exe_sha256") or pp.get("exe_sha256") != prov.get("exe_sha256"):
         probs.append("proof exe sha256 differs from timing exe")
     if pp.get("model_inputs") != prov.get("model_inputs"):
@@ -1245,14 +1542,91 @@ def check_proof_gate(proof_path: str, prov: dict, families: list[Family],
         probs.append("proof model input identity (size/mtime) differs")
     if pp.get("prompts") != prov.get("prompts"):
         probs.append("proof prompts differ")
-    verdicts = {(v.get("family"), v.get("workload")): v for v in s.get("pairs", [])}
+
+    # (2) Recorded common flags/settings: the allowlisted STRATA additions every
+    # arm carried and the ambient variables that were stripped must be the same
+    # on both sides, or the two runs did not share a controlled environment.
+    if pp.get("common_strata") != prov.get("common_strata"):
+        probs.append(f"proof common_strata {pp.get('common_strata')!r} differs from timing "
+                     f"{prov.get('common_strata')!r}")
+    if pp.get("controlled_strata_vars") != prov.get("controlled_strata_vars"):
+        probs.append("proof controlled STRATA variable list differs from timing run")
+
+    # (3) Run-level bounds: the compiled export budget, the overlap minimum and
+    # the token/pair budgets recorded by the proof run must match this run's,
+    # and the per-arm timeout must not exceed the session cap.
+    pb = pp.get("bounds")
+    if not isinstance(pb, dict):
+        probs.append("proof provenance records no bounds")
+    else:
+        for bk in ADMISSION_BOUND_KEYS:
+            want = getattr(bounds, bk)
+            if pb.get(bk) != want:
+                probs.append(f"proof bound {bk}={pb.get(bk)!r} differs from timing {want!r}")
+        timeout = pb.get("per_arm_timeout_s")
+        cap = pb.get("session_cap_s")
+        if not isinstance(timeout, (int, float)) or not isinstance(cap, (int, float)):
+            probs.append("proof bounds omit per_arm_timeout_s / session_cap_s")
+        elif not (0 < timeout <= cap):
+            probs.append(f"proof per_arm_timeout_s={timeout!r} not within session_cap_s={cap!r}")
+        mm = pb.get("min_matched_windows")
+        mw = pb.get("max_windows")
+        if isinstance(mm, int) and isinstance(mw, int) and not (1 <= mm <= mw):
+            probs.append(f"proof min_matched_windows={mm} outside 1..max_windows={mw}")
+
+    # (4) Declared families must match: same names, override vars, contracts and
+    # tolerances.  An unknown or renamed family is never admissible.
+    pf = pp.get("families")
+    pf = pf if isinstance(pf, dict) else {}
+    for fam in families:
+        d = pf.get(fam.name)
+        if not isinstance(d, dict):
+            probs.append(f"proof provenance declares no family {fam.name}")
+            continue
+        if d.get("override_env") != fam.override_env:
+            probs.append(f"proof family {fam.name} override_env {d.get('override_env')!r} "
+                         f"differs from declared {fam.override_env!r}")
+        if d.get("contract") != fam.contract:
+            probs.append(f"proof family {fam.name} contract {d.get('contract')!r} differs "
+                         f"from declared {fam.contract!r}")
+        if d.get("rel_tol") != fam.rel_tol:
+            probs.append(f"proof family {fam.name} rel_tol {d.get('rel_tol')!r} differs "
+                         f"from declared {fam.rel_tol!r}")
+    unknown_fams = sorted(set(pf) - set(FAMILIES))
+    if unknown_fams:
+        probs.append(f"proof provenance declares unknown families {unknown_fams}")
+
+    # (5) The cell set itself: exactly the required cells, each exactly once,
+    # with no unknown extras and no duplicate/conflicting repeats.
+    pairs = s.get("pairs")
+    if not isinstance(pairs, list):
+        return probs + ["proof summary has no pairs list"]
+    required = {(fam.name, wl) for fam in families for wl in workloads}
+    seen: dict[tuple, dict] = {}
+    for v in pairs:
+        if not isinstance(v, dict):
+            probs.append(f"proof summary pair entry is not an object: {v!r}")
+            continue
+        k = (v.get("family"), v.get("workload"))
+        if k in seen:
+            kind = "duplicate" if seen[k] == v else "duplicate conflicting"
+            probs.append(f"proof summary has {kind} cell for {k[0]}/{k[1]}")
+            continue
+        seen[k] = v
+        if k[0] not in FAMILIES:
+            probs.append(f"proof summary cell names unknown family {k[0]!r}")
+        elif k[1] not in WORKLOADS:
+            probs.append(f"proof summary cell names unknown workload {k[1]!r}")
+        elif k not in required:
+            probs.append(f"proof summary has unknown extra cell {k[0]}/{k[1]} "
+                         f"(not requested for timing)")
     for fam in families:
         for wl in workloads:
-            v = verdicts.get((fam.name, wl))
+            v = seen.get((fam.name, wl))
             if v is None:
                 probs.append(f"no proof for {fam.name}/{wl}")
-            elif v.get("proof") is not True:
-                probs.append(f"proof failed for {fam.name}/{wl}")
+                continue
+            probs.extend(_check_admission_cell((fam.name, wl), v, fam, bounds))
     return probs
 
 
@@ -1328,7 +1702,7 @@ def run(argv: list[str] | None = None) -> int:
         if args.dry_run and not args.proof:
             print("proof gate: SKIPPED (dry-run; a live timing run requires --proof)", flush=True)
         else:
-            probs = check_proof_gate(args.proof, prov, families, workloads)
+            probs = check_proof_gate(args.proof, prov, families, workloads, bounds)
             if probs:
                 for p in probs:
                     print(f"REFUSED (proof gate): {p}", flush=True)
@@ -1420,8 +1794,20 @@ def run(argv: list[str] | None = None) -> int:
                     complete = False
                     break
                 if not same:
+                    # Audit H5: an A/B output mismatch means the two arms did not
+                    # decode the same thing, so their speeds are not comparable.
+                    # Persist the rejected pair (already appended above), mark the
+                    # session INCOMPLETE and stop launching: the mismatched pair
+                    # must never reach `samples`, and no later pair may run and
+                    # imply the matrix was otherwise fine.  This mirrors the
+                    # invalid-timing fail-fast directly above it.
+                    print(f"FAIL-FAST {pair.family.name}/{pair.workload} "
+                          f"r{pair.round_idx}: A/B output IDs differ in a timing pair "
+                          f"(run INCOMPLETE; pair rejected, not sampled)", flush=True)
                     failures.append(f"{pair.family.name}/{pair.workload} r{pair.round_idx}: "
                                     "A/B output IDs differ in a timing pair")
+                    complete = False
+                    break
                 if pair.recorded:
                     for arm, ts in (("A", ta), ("B", tb)):
                         s = samples.setdefault((pair.family.name, pair.workload, arm),
@@ -1435,7 +1821,9 @@ def run(argv: list[str] | None = None) -> int:
               f"in {len(pairs)} pairs, launched {launches} engines", flush=True)
         return 0
 
-    summary: dict = {"mode": args.mode, "dry_run": False, "complete": complete and not failures,
+    summary: dict = {"mode": args.mode, "dry_run": False,
+                     "proof_admission_version": PROOF_ADMISSION_VERSION,
+                     "complete": complete and not failures,
                      "elapsed_s": clock.elapsed(), "launches": launches,
                      "provenance": prov, "pairs": pair_records, "failures": failures}
     if args.mode == "timing":

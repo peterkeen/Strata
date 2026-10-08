@@ -28,10 +28,13 @@ import tier_b.run_pairs as rp  # noqa: E402
 # ── fixture builders ─────────────────────────────────────────────────────────
 
 def trace_line(**kw) -> str:
+    # M9: capture defaults to 1 (stream capture active) and not -1, matching the
+    # retained r2 traces - a record with an unknown capture state is now
+    # inadmissible evidence, so it must be requested explicitly by a fixture.
     fields = dict(v="1", family="-", caller="-", path="-", gu="-1", d="-1",
                   n_embd="-1", n_ff="-1", rows="-1", head_dim="-1", n_rot="-1",
                   ncols="-1", cap_groups="-1", cap_entries="-1", grid_groups="-1",
-                  table="-1", capture="-1", trunc="0")
+                  table="-1", capture="1", trunc="0")
     fields.update({k: str(v) for k, v in kw.items()})
     order = ["v", "family", "caller", "path", "gu", "d", "n_embd", "n_ff", "rows",
              "head_dim", "n_rot", "ncols", "cap_groups", "cap_entries",
@@ -55,21 +58,31 @@ def rope_plain_trace() -> str:
     ])
 
 
-def sub16_default_trace() -> str:
+# M9: the grouped-expert family reports capacity fields, and they must be
+# positive for the record to be admissible.  These match the shape of the
+# retained r2 traces (cap_groups=cap_entries=20, grid_groups=4).
+_CAPS = dict(cap_groups=20, cap_entries=20, grid_groups=4)
+
+
+def sub16_default_trace(**over) -> str:
+    kw = dict(gu=20, d=20, n_embd=2560, n_ff=640, **_CAPS)
+    kw.update(over)
     return "\n".join([
         trace_line(family="iq_grouped", caller="native_expert_grouped.gu",
-                   path="split_sub16", gu=20, d=20, n_embd=2560, n_ff=640),
+                   path="split_sub16", **kw),
         trace_line(family="iq_grouped", caller="native_expert_grouped.down",
-                   path="split_sub16", gu=20, d=20, n_embd=2560, n_ff=640),
+                   path="split_sub16", **kw),
     ])
 
 
-def sub16_optout_trace() -> str:
+def sub16_optout_trace(**over) -> str:
+    kw = dict(gu=20, d=20, n_embd=2560, n_ff=640, **_CAPS)
+    kw.update(over)
     return "\n".join([
         trace_line(family="iq_grouped", caller="native_expert_grouped.gu",
-                   path="split", gu=20, d=20, n_embd=2560, n_ff=640),
+                   path="split", **kw),
         trace_line(family="iq_grouped", caller="native_expert_grouped.down",
-                   path="split", gu=20, d=20, n_embd=2560, n_ff=640),
+                   path="split", **kw),
     ])
 
 
@@ -1138,11 +1151,15 @@ class FakeEngine:
     real export directory (manifest.txt + rows.bin) exactly where the flag
     points, and emits the family's trace on stderr."""
 
-    def __init__(self, *, diverge_b=False, b_trace_override=None, decode=None):
+    def __init__(self, *, diverge_b=False, b_trace_override=None, decode=None,
+                 output_divergence_at=None):
         self.calls: list[dict] = []
         self.diverge_b = diverge_b
         self.b_trace_override = b_trace_override
         self.decode = decode or {"A": 50.0, "B": 49.0}
+        # Audit H5: 0-based launch index at which this engine returns DIFFERENT
+        # decoded output ids, simulating an A/B divergence inside a timing pair.
+        self.output_divergence_at = output_divergence_at
 
     def __call__(self, *, exe, flags, token_ids, max_new, env_overrides, controlled_vars,
                  timeout_s, dry_run, tmp_dir):
@@ -1175,7 +1192,12 @@ class FakeEngine:
             if is_b and self.b_trace_override is not None:
                 stderr = self.b_trace_override
             del nr
-        return ok_result(prompt_ids=list(token_ids), output_ids=[3, 2], n_output=2,
+        output_ids = [3, 2]
+        if self.output_divergence_at is not None \
+                and len(self.calls) - 1 == self.output_divergence_at:
+            output_ids = [3, 7]
+        return ok_result(prompt_ids=list(token_ids), output_ids=output_ids,
+                         n_output=len(output_ids),
                          decode_tok_s=self.decode[arm], prefill_tok_s=300.0,
                          stderr_raw=stderr, argv=[str(exe), *flags])
 
@@ -1368,6 +1390,594 @@ class TestDriverTiming(DriverHarness):
         st = s["paired_stats"]["normrope/long_doc"]["decode"]
         self.assertEqual(st["n_pairs"], 3)
         self.assertEqual(st["paired_deltas"], [-5.0, -5.0, -5.0])
+
+
+# ── M9: recorder errors are not ordinary truncation ────────────────────────
+
+FORMAT_ERROR_MARKER = trace_line(family="recorder", caller="emit", path="format_error", trunc=1)
+TRUNCATED_MARKER = trace_line(family="recorder", caller="emit", path="truncated",
+                              trunc=1, capture=-1)
+
+
+class TestRecorderErrorEvidence(unittest.TestCase):
+    """Audit M9 (sta-osh.24): a recorder format_error and an unknown capture
+    state are recorder FAILURES that reject the trace as evidence, while
+    ordinary record-budget truncation only restricts coverage.  Records must
+    also carry complete, strictly positive geometry (and, for grouped experts,
+    positive nominal capacities) to count."""
+
+    # ---- ordinary truncation still only restricts coverage ----------------
+    def test_budget_truncation_restricts_coverage_only(self):
+        for name, trace, default in (
+            ("normrope-A", rope_fused_trace(), True),
+            ("normrope-B", rope_plain_trace(), False),
+            ("sub16-A", sub16_default_trace(), True),
+            ("sub16-B", sub16_optout_trace(), False),
+        ):
+            with self.subTest(case=name):
+                fam = rp.FAMILIES["normrope" if name.startswith("normrope") else "sub16"]
+                recs = rp.parse_trace(trace + "\n" + TRUNCATED_MARKER)
+                v = rp.validate_trace(recs, fam, default)
+                self.assertTrue(v.ok, v.reason)
+                self.assertFalse(v.complete, "budget truncation must clear complete")
+                self.assertIn("truncated", v.reason)
+                self.assertTrue(rp.trace_truncated(recs))
+                self.assertEqual(rp.recorder_errors(recs), [],
+                                 "the budget marker is not a recorder error")
+
+    # ---- format_error is a failure, not truncation -------------------------
+    def test_format_error_rejects_trace(self):
+        for name, trace, default in (
+            ("normrope-A", rope_fused_trace(), True),
+            ("normrope-B", rope_plain_trace(), False),
+            ("sub16-A", sub16_default_trace(), True),
+            ("sub16-B", sub16_optout_trace(), False),
+        ):
+            with self.subTest(case=name):
+                fam = rp.FAMILIES["normrope" if name.startswith("normrope") else "sub16"]
+                recs = rp.parse_trace(trace + "\n" + FORMAT_ERROR_MARKER)
+                v = rp.validate_trace(recs, fam, default)
+                self.assertFalse(v.ok, "format_error must reject, not downgrade")
+                self.assertFalse(v.complete)
+                self.assertIn("recorder evidence rejected", v.reason)
+                self.assertIn("format_error", v.reason)
+                self.assertIn("not ordinary truncation", v.reason)
+                # It is explicitly NOT reported as ordinary coverage truncation.
+                self.assertFalse(rp.trace_truncated(recs))
+                self.assertTrue(rp.recorder_errors(recs))
+
+    def test_format_error_rejects_even_with_budget_truncation_present(self):
+        recs = rp.parse_trace("\n".join([sub16_default_trace(), TRUNCATED_MARKER,
+                                         FORMAT_ERROR_MARKER]))
+        v = rp.validate_trace(recs, rp.FAMILIES["sub16"], True)
+        self.assertFalse(v.ok, v.reason)
+        self.assertIn("format_error", v.reason)
+
+    # ---- unknown capture state is a failure -------------------------------
+    def test_capture_minus_one_rejects_trace(self):
+        for name, trace, default in (
+            ("normrope-A", rope_fused_trace(), True),
+            ("sub16-A", sub16_default_trace(capture=-1), True),
+            ("sub16-B", sub16_optout_trace(capture=-1), False),
+        ):
+            with self.subTest(case=name):
+                fam = rp.FAMILIES["normrope" if name.startswith("normrope") else "sub16"]
+                text = trace.replace("capture=1", "capture=-1")
+                recs = rp.parse_trace(text)
+                v = rp.validate_trace(recs, fam, default)
+                self.assertFalse(v.ok, "capture=-1 must not be admissible evidence")
+                self.assertIn("unknown capture state capture=-1", v.reason)
+                self.assertFalse(rp.trace_truncated(recs),
+                                 "an unknown capture state is not truncation")
+
+    def test_out_of_range_and_missing_capture_rejected(self):
+        for name, cap in (("two", "2"), ("negative", "-7"), ("word", "unknown")):
+            with self.subTest(case=name):
+                recs = rp.parse_trace(sub16_default_trace().replace("capture=1", f"capture={cap}"))
+                v = rp.validate_trace(recs, rp.FAMILIES["sub16"], True)
+                self.assertFalse(v.ok, v.reason)
+                self.assertIn(f"unknown capture state capture={cap}", v.reason)
+
+    def test_valid_capture_states_are_admissible(self):
+        for cap in ("0", "1"):
+            with self.subTest(capture=cap):
+                recs = rp.parse_trace(sub16_default_trace().replace("capture=1", f"capture={cap}"))
+                self.assertEqual(rp.recorder_errors(recs), [])
+                v = rp.validate_trace(recs, rp.FAMILIES["sub16"], True)
+                self.assertTrue(v.ok, v.reason)
+                self.assertTrue(v.complete)
+
+    # ---- geometry / capacity must be positive ------------------------------
+    def test_invalid_sub16_capacities_rejected(self):
+        for field in ("cap_groups", "cap_entries", "grid_groups"):
+            for bad in (0, -1):
+                with self.subTest(field=field, value=bad):
+                    recs = rp.parse_trace(sub16_default_trace(**{field: bad}))
+                    v = rp.validate_trace(recs, rp.FAMILIES["sub16"], True)
+                    self.assertFalse(v.ok, f"{field}={bad} must not count as evidence")
+                    self.assertIn("missing split_sub16", v.reason)
+
+    def test_invalid_sub16_geometry_rejected(self):
+        # gu/d are the quantization types; 0/-1 means unknown, not a dispatch.
+        for field in ("gu", "d"):
+            for bad in (0, -1):
+                with self.subTest(field=field, value=bad):
+                    recs = rp.parse_trace(sub16_default_trace(**{field: bad}))
+                    v = rp.validate_trace(recs, rp.FAMILIES["sub16"], True)
+                    self.assertFalse(v.ok, f"{field}={bad} must not count as evidence")
+
+    def test_invalid_rope_geometry_rejected(self):
+        for field in ("rows", "head_dim", "n_rot"):
+            for bad in (0, -1):
+                with self.subTest(field=field, value=bad):
+                    base = dict(rows=12, head_dim=128, n_rot=64, table=1)
+                    base[field] = bad
+                    text = trace_line(family="rope_norm", caller="native_qsa_rms_norm_rope",
+                                      path="norm_rope_fused", **base)
+                    v = rp.validate_trace(rp.parse_trace(text), rp.FAMILIES["normrope"], True)
+                    self.assertFalse(v.ok, f"{field}={bad} must not count as evidence")
+                    self.assertIn("no norm_rope_fused record", v.reason)
+
+    def test_non_numeric_geometry_rejected(self):
+        recs = rp.parse_trace(sub16_default_trace(n_embd="many"))
+        v = rp.validate_trace(recs, rp.FAMILIES["sub16"], True)
+        self.assertFalse(v.ok, v.reason)
+
+    def test_forbidden_path_still_rejected_despite_valid_geometry(self):
+        """M9 narrows what counts as evidence; it must not weaken the existing
+        forbidden-record checks."""
+        recs = rp.parse_trace(sub16_default_trace())
+        v = rp.validate_trace(recs, rp.FAMILIES["sub16"], False)
+        self.assertFalse(v.ok)
+        self.assertIn("still dispatched split_sub16", v.reason)
+
+    # ---- retained real traces stay valid ----------------------------------
+    def test_retained_r2_traces_still_accepted(self):
+        """The real r2 measurement traces (capture=0/1, positive geometry and
+        capacities) must remain admissible under the tightened rules."""
+        root = Path("/tmp/strata-tier-b-artifacts/measure-20261008-r2")
+        if not root.is_dir():
+            self.skipTest("retained r2 artifacts not present on this host")
+        texts = []
+        for p in sorted(root.rglob("*")):
+            if not p.is_file():
+                continue
+            try:
+                t = p.read_text(errors="replace")
+            except OSError:
+                continue
+            if rp._TRACE_PREFIX in t:
+                texts.append((p, t))
+        self.assertTrue(texts, "no retained r2 trace files found")
+        checked = 0
+        for p, t in texts:
+            recs = rp.parse_trace(t)
+            if not recs:
+                continue
+            with self.subTest(path=str(p)):
+                # Real traces contain no recorder errors, and every record is
+                # admissible evidence: nothing was lost to the new rules.
+                self.assertEqual(rp.recorder_errors(recs), [])
+                usable = rp.admissible_records(recs)
+                positives = [r for r in recs if r.get("path") not in rp._NONPOSITIVE_PATHS]
+                self.assertEqual(len(usable), len(positives),
+                                 "a real positive record was rejected by the new rules")
+                for r in usable:
+                    self.assertIn(r["capture"], ("0", "1"))
+                checked += 1
+        self.assertTrue(checked, "no retained r2 records parsed")
+
+
+# ── H5: output-mismatched timing pair is rejected and stops the run ──────────
+
+class TestTimingOutputMismatchRejected(DriverHarness):
+    """Audit H5 (sta-osh.18): when the A and B arms of a timing pair decode
+    different output ids, the two arms did not do the same work and their
+    speeds are not comparable.  The driver must persist the rejected pair, mark
+    the session INCOMPLETE, stop launching further arms, and never let the
+    mismatched pair contribute a timing sample."""
+
+    FAMILY = "sub16"
+    WORKLOAD = "short_code"
+
+    def _proof(self):
+        import contextlib
+        import io
+        out = self.tmp / "diag"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = self.run_live(FakeEngine(), "--mode", "diagnostic",
+                               "--family", self.FAMILY, "--workload", self.WORKLOAD,
+                               "--out", str(out))
+        self.assertEqual(rc, 0)
+        return str(out / "summary.json")
+
+    def _timing(self, fake, tag):
+        import contextlib
+        import io
+        import json
+        out = self.tmp / f"timing-{tag}"
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self.run_live(fake, "--mode", "timing", "--proof", self._proof(),
+                               "--family", self.FAMILY, "--workload", self.WORKLOAD,
+                               "--out", str(out))
+        summary = json.loads((out / "summary.json").read_text())
+        return rc, summary, buf.getvalue()
+
+    def test_clean_timing_run_is_the_baseline(self):
+        """With matching outputs: 1 prep pair + 3 recorded pairs all launch and
+        all 3 recorded pairs are sampled per arm."""
+        fake = FakeEngine()
+        rc, summary, txt = self._timing(fake, "clean")
+        self.assertEqual(rc, 0, txt)
+        self.assertEqual(len(fake.calls), 8)            # (1 + 3) pairs x 2 arms
+        self.assertEqual(summary["complete"], True)
+        self.assertEqual(summary["failures"], [])
+        self.assertEqual(len(summary["pairs"]), 4)
+        self.assertTrue(all(p["outputs_match"] for p in summary["pairs"]))
+        cell = summary["paired_stats"][f"{self.FAMILY}/{self.WORKLOAD}"]
+        self.assertEqual(cell["decode"]["n_pairs"], 3)
+        self.assertEqual(cell["decode"]["arm_a"]["n"], 3)
+
+    def test_mismatch_in_preparatory_pair_stops_after_first_pair(self):
+        """The EXCLUDED preparatory pair counts too: a mismatch there must stop
+        the run after exactly that one pair (2 arms), with no recorded pair
+        ever launched and no statistics collected."""
+        fake = FakeEngine(output_divergence_at=1)       # B arm of the prep pair
+        rc, summary, txt = self._timing(fake, "prep")
+        self.assertEqual(rc, 1, txt)
+        self.assertEqual(len(fake.calls), 2, "launched past the rejected prep pair")
+        self.assertIn("FAIL-FAST", txt)
+        self.assertIn("A/B output IDs differ in a timing pair", txt)
+        self.assertIn("run INCOMPLETE", txt)
+        self.assertEqual(summary["complete"], False)
+        self.assertEqual(summary["launches"], 2)
+        # The rejected pair IS persisted, flagged, and is the only pair present.
+        self.assertEqual(len(summary["pairs"]), 1)
+        rejected = summary["pairs"][0]
+        self.assertIs(rejected["outputs_match"], False)
+        self.assertEqual(rejected["recorded"], False)
+        self.assertEqual(rejected["round_idx"], -1)
+        self.assertEqual(summary["failures"],
+                         [f"{self.FAMILY}/{self.WORKLOAD} r-1: "
+                          "A/B output IDs differ in a timing pair"])
+        # No invalid samples entered the statistics.
+        cell = summary["paired_stats"][f"{self.FAMILY}/{self.WORKLOAD}"]
+        self.assertEqual(cell["decode"]["n_pairs"], 0)
+        self.assertEqual(cell["decode"]["raw_a"], [])
+        self.assertEqual(cell["decode"]["raw_b"], [])
+        self.assertEqual(cell["prefill"]["n_pairs"], 0)
+
+    def test_mismatch_in_first_recorded_pair_discards_that_pair(self):
+        """A mismatch in recorded round 0 stops the run with zero samples: the
+        mismatched pair is persisted but contributes nothing."""
+        fake = FakeEngine(output_divergence_at=2)       # A arm of recorded r0
+        rc, summary, txt = self._timing(fake, "r0")
+        self.assertEqual(rc, 1, txt)
+        self.assertEqual(len(fake.calls), 4)            # prep pair + rejected pair
+        self.assertEqual(len(summary["pairs"]), 2)
+        self.assertIs(summary["pairs"][0]["outputs_match"], True)
+        self.assertIs(summary["pairs"][1]["outputs_match"], False)
+        self.assertEqual(summary["pairs"][1]["round_idx"], 0)
+        self.assertEqual(summary["complete"], False)
+        cell = summary["paired_stats"][f"{self.FAMILY}/{self.WORKLOAD}"]
+        self.assertEqual(cell["decode"]["n_pairs"], 0)
+        self.assertEqual(cell["decode"]["raw_a"], [])
+
+    def test_mismatch_in_later_recorded_pair_keeps_only_earlier_samples(self):
+        """A mismatch in recorded round 1 stops the run: round 0's valid sample
+        is kept, the mismatched round-1 pair is NOT sampled, and round 2 never
+        launches."""
+        fake = FakeEngine(output_divergence_at=5)       # B arm of recorded r1
+        rc, summary, txt = self._timing(fake, "r1")
+        self.assertEqual(rc, 1, txt)
+        self.assertEqual(len(fake.calls), 6, "round 2 must never launch")
+        self.assertEqual(len(summary["pairs"]), 3)
+        self.assertEqual([p["outputs_match"] for p in summary["pairs"]],
+                         [True, True, False])
+        self.assertEqual(summary["complete"], False)
+        self.assertEqual(summary["failures"],
+                         [f"{self.FAMILY}/{self.WORKLOAD} r1: "
+                          "A/B output IDs differ in a timing pair"])
+        # Exactly the one valid recorded pair was sampled - not the rejected one.
+        cell = summary["paired_stats"][f"{self.FAMILY}/{self.WORKLOAD}"]
+        self.assertEqual(cell["decode"]["n_pairs"], 1)
+        self.assertEqual(len(cell["decode"]["raw_a"]), 1)
+        self.assertEqual(len(cell["decode"]["raw_b"]), 1)
+
+
+# ── H4: versioned timing-admission protocol ──────────────────────────────────
+
+class TestProofAdmissionProtocol(DriverHarness):
+    """Audit H4 (sta-osh.17): a diagnostic summary is admissible for timing only
+    under the explicit versioned protocol, with every constituent verdict,
+    declared contract/tolerance, recorded common setting, bound and cell-set
+    requirement still matching the timing run.  Each fixture below edits exactly
+    one thing in an otherwise-valid modern summary and must be REJECTED before a
+    single timing engine is launched."""
+
+    FAMILY = "sub16"
+    WORKLOAD = "short_code"
+
+    _seq = 0
+
+    def _next_tag(self):
+        type(self)._seq += 1
+        return f"{type(self)._seq:03d}"
+
+    def _make_proof(self):
+        """Produce a genuine, versioned, passing diagnostic summary.json.
+
+        Each call uses a fresh output directory so repeated use inside subTests
+        never trips the driver's refusal to reuse an existing --out."""
+        import contextlib
+        import io
+        out = self.tmp / f"diag-{self._next_tag()}"
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = self.run_live(FakeEngine(), "--mode", "diagnostic",
+                               "--family", self.FAMILY, "--workload", self.WORKLOAD,
+                               "--out", str(out))
+        self.assertEqual(rc, 0)
+        return out / "summary.json"
+
+    def _timing(self, proof_path, *extra):
+        """Attempt a timing run against `proof_path`; returns (rc, fake, stdout)."""
+        import contextlib
+        import io
+        fake = FakeEngine()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self.run_live(fake, "--mode", "timing", "--proof", str(proof_path),
+                               "--family", self.FAMILY, "--workload", self.WORKLOAD,
+                               "--out", str(self.tmp / f"timing-{self._next_tag()}"), *extra)
+        return rc, fake, buf.getvalue()
+
+    def _mutate(self, fn, name="mutated"):
+        """Apply `fn` to a valid summary dict, save it, and try to admit it."""
+        import json
+        src = self._make_proof()
+        s = json.loads(src.read_text())
+        fn(s)
+        dst = self.tmp / f"proof-{name}-{self._next_tag()}.json"
+        dst.write_text(json.dumps(s, indent=2))
+        return self._timing(dst)
+
+    def _reject(self, fn, expected, name="mutated"):
+        rc, fake, txt = self._mutate(fn, name)
+        self.assertEqual(rc, 2, txt)
+        self.assertEqual(fake.calls, [], "timing launched engines on a rejected proof")
+        self.assertIn(expected, txt)
+        return txt
+
+    # (a) A genuinely valid modern summary still passes end-to-end.
+    def test_valid_modern_summary_admitted(self):
+        import json
+        proof = self._make_proof()
+        s = json.loads(proof.read_text())
+        self.assertEqual(s["proof_admission_version"], rp.PROOF_ADMISSION_VERSION)
+        self.assertEqual(s["provenance"]["proof_admission_version"],
+                         rp.PROOF_ADMISSION_VERSION)
+        cell = s["pairs"][0]
+        self.assertEqual(cell["contract"], "bitwise")
+        self.assertEqual(cell["rel_tol"], 0.0)
+        self.assertEqual(cell["bounds"]["min_matched_windows"], 12)
+        rc, fake, txt = self._timing(proof)
+        self.assertEqual(rc, 0, txt)
+        self.assertIn("proof gate: PASS", txt)
+        self.assertEqual(len(fake.calls), (1 + 3) * 2)   # prep pair + 3 recorded pairs
+
+    # (b) A legacy summary WITHOUT the version stamp requires revalidation.
+    def test_legacy_unversioned_summary_requires_revalidation(self):
+        def drop_version(s):
+            s.pop("proof_admission_version", None)
+            s["provenance"].pop("proof_admission_version", None)
+        txt = self._reject(drop_version, "requires revalidation", "legacy")
+        self.assertIn("no proof_admission_version", txt)
+        self.assertIn(rp.PROOF_ADMISSION_VERSION, txt)
+        # No silent backward compatibility: the legacy refusal is the ONLY
+        # problem printed, so none of the weaker checks were consulted.
+        self.assertEqual(txt.count("REFUSED (proof gate):"), 1)
+
+    def test_partially_versioned_and_stale_versions_rejected(self):
+        for name, fn in (
+            ("summary-only", lambda s: s["provenance"].pop("proof_admission_version")),
+            ("prov-only", lambda s: s.pop("proof_admission_version")),
+            ("disagree", lambda s: s.__setitem__("proof_admission_version", "other/9")),
+            ("stale-both", lambda s: (s.__setitem__("proof_admission_version", "old/0"),
+                                      s["provenance"].__setitem__(
+                                          "proof_admission_version", "old/0"))),
+        ):
+            with self.subTest(case=name):
+                self._reject(fn, "requires revalidation", name)
+
+    # (c) Tolerance edited 0.0 -> 0.5 no longer proves the identity arms.
+    def test_edited_tolerance_rejected(self):
+        def loosen(s):
+            s["pairs"][0]["rel_tol"] = 0.5
+        self._reject(loosen, "proof rel_tol for sub16/short_code is 0.5, declared 0.0",
+                     "tol05")
+
+    def test_edited_contract_name_rejected(self):
+        def retitle(s):
+            s["pairs"][0]["contract"] = "tolerance"
+        self._reject(retitle, "proof contract for sub16/short_code is 'tolerance'",
+                     "contract")
+
+    # (d) min_matched_windows lowered to 1 in the proof summary.
+    def test_lowered_min_matched_windows_rejected(self):
+        def lower(s):
+            s["provenance"]["bounds"]["min_matched_windows"] = 1
+            s["pairs"][0]["bounds"]["min_matched_windows"] = 1
+        txt = self._reject(lower, "proof bound min_matched_windows=1 differs from timing 12",
+                           "minmatch1")
+        self.assertIn("proof bound min_matched_windows for sub16/short_code is 1, declared 12",
+                      txt)
+
+    # (e) Only one matched window in the cell.
+    def test_single_matched_window_rejected(self):
+        def shrink(s):
+            s["pairs"][0]["pair"]["n_matched"] = 1
+            s["pairs"][0]["n_windows"] = 1
+        self._reject(shrink, "proof matched windows for sub16/short_code is 1 < required 12",
+                     "one-window")
+
+    def test_window_count_disagreement_rejected(self):
+        def desync(s):
+            s["pairs"][0]["n_windows"] = 16
+            s["pairs"][0]["pair"]["n_matched"] = 12
+        self._reject(desync, "disagrees with pair.n_matched", "desync")
+
+    # (f) A nested verdict flipped false while proof stays True.
+    def test_nested_verdict_false_under_proof_true_rejected(self):
+        for path in rp.ADMISSION_NESTED_VERDICTS:
+            with self.subTest(verdict=".".join(path)):
+                def flip(s, path=path):
+                    node = s["pairs"][0]
+                    for k in path[:-1]:
+                        node = node[k]
+                    node[path[-1]] = False
+                    self.assertIs(s["pairs"][0]["proof"], True)
+                self._reject(flip, f"nested verdict {'.'.join(path)} is False, required True",
+                             "nested-" + "-".join(path))
+
+    def test_arm_error_recorded_under_proof_true_rejected(self):
+        def poison(s):
+            s["pairs"][0]["arm_errors"]["B"] = "timeout"
+        self._reject(poison, "arm_errors", "armerr")
+
+    def test_empty_output_metadata_rejected(self):
+        for name, fn in (
+            ("hash", lambda s: s["pairs"][0]["output_hash"].__setitem__("A", "")),
+            ("n_output", lambda s: s["pairs"][0]["n_output"].__setitem__("B", 0)),
+            ("export-n", lambda s: s["pairs"][0]["export"]["A"].__setitem__("n_windows", 0)),
+        ):
+            with self.subTest(field=name):
+                self._reject(fn, "proof cell sub16/short_code", "empty-" + name)
+
+    # (g) Changed common flags / controlled settings.
+    def test_changed_common_flags_rejected(self):
+        def retune(s):
+            s["provenance"]["common_strata"] = {"STRATA_PF_FUSED": "0",
+                                                "STRATA_IQ_MT_MIN": "1"}
+        self._reject(retune, "proof common_strata", "commonflags")
+
+    def test_changed_controlled_vars_rejected(self):
+        def retune(s):
+            s["provenance"]["controlled_strata_vars"] = ["STRATA_SOMETHING_ELSE"]
+        self._reject(retune, "proof controlled STRATA variable list differs", "ctrlvars")
+
+    # (h) Changed export/session bounds.
+    def test_changed_bounds_rejected(self):
+        for key, value, expected in (
+            ("max_windows", 8, "proof bound max_windows=8 differs from timing 16"),
+            ("max_export_bytes", 1024, "proof bound max_export_bytes=1024 differs"),
+            ("recorded_pairs", 1, "proof bound recorded_pairs=1 differs from timing 3"),
+            ("max_new_short", 8, "proof bound max_new_short=8 differs from timing 256"),
+            ("max_new_long", 8, "proof bound max_new_long=8 differs from timing 512"),
+        ):
+            with self.subTest(bound=key):
+                def change(s, key=key, value=value):
+                    s["provenance"]["bounds"][key] = value
+                    if key in s["pairs"][0]["bounds"]:
+                        s["pairs"][0]["bounds"][key] = value
+                self._reject(change, expected, "bound-" + key)
+
+    def test_timeout_exceeding_session_cap_rejected(self):
+        def overrun(s):
+            s["provenance"]["bounds"]["session_cap_s"] = 100.0
+            s["provenance"]["bounds"]["per_arm_timeout_s"] = 600.0
+        self._reject(overrun, "not within session_cap_s", "timeout-cap")
+
+    def test_missing_cell_bounds_rejected(self):
+        def strip(s):
+            s["pairs"][0].pop("bounds")
+        self._reject(strip, "records no applied bounds", "nobounds")
+
+    # (i) Duplicate / conflicting / unknown / missing cells.
+    def test_duplicated_conflicting_cell_rejected(self):
+        import copy
+
+        def dup(s):
+            clone = copy.deepcopy(s["pairs"][0])
+            clone["pair"]["n_matched"] = 1
+            clone["n_windows"] = 1
+            s["pairs"].append(clone)
+        self._reject(dup, "duplicate conflicting cell for sub16/short_code", "dupconflict")
+
+    def test_duplicated_identical_cell_rejected(self):
+        import copy
+
+        def dup(s):
+            s["pairs"].append(copy.deepcopy(s["pairs"][0]))
+        self._reject(dup, "duplicate cell for sub16/short_code", "dupsame")
+
+    def test_unknown_extra_cell_and_wrong_family_names_rejected(self):
+        import copy
+        for name, mangle, expected in (
+            ("unknown-family", lambda c: c.__setitem__("family", "not_a_family"),
+             "unknown family 'not_a_family'"),
+            ("unknown-workload", lambda c: c.__setitem__("workload", "not_a_workload"),
+             "unknown workload 'not_a_workload'"),
+            ("extra-cell", lambda c: c.__setitem__("workload", "long_doc"),
+             "unknown extra cell sub16/long_doc"),
+        ):
+            with self.subTest(case=name):
+                def add(s, mangle=mangle):
+                    clone = copy.deepcopy(s["pairs"][0])
+                    mangle(clone)
+                    s["pairs"].append(clone)
+                self._reject(add, expected, name)
+
+    def test_mislabelled_family_inside_required_cell_rejected(self):
+        def relabel(s):
+            s["pairs"] = []
+        self._reject(relabel, "no proof for sub16/short_code", "nocells")
+
+    def test_unknown_declared_family_in_provenance_rejected(self):
+        def inject(s):
+            s["provenance"]["families"]["bogus"] = {"override_env": "STRATA_BOGUS",
+                                                    "contract": "bitwise", "rel_tol": 0.0}
+        self._reject(inject, "declares unknown families ['bogus']", "bogusfam")
+
+    def test_changed_declared_family_contract_rejected(self):
+        for key, value in (("override_env", "STRATA_OTHER"), ("contract", "tolerance"),
+                           ("rel_tol", 0.5)):
+            with self.subTest(field=key):
+                def change(s, key=key, value=value):
+                    s["provenance"]["families"][self.FAMILY][key] = value
+                self._reject(change, f"proof family sub16 {key}", "fam-" + key)
+
+    # (j) H1/H2/H3 behaviour is unchanged: a run that recorded failures, or one
+    # that did not complete, is still inadmissible.
+    def test_recorded_failures_still_rejected(self):
+        def fail(s):
+            s["failures"] = ["sub16/short_code: proof failed"]
+        self._reject(fail, "proof run recorded failures", "failures")
+
+    def test_incomplete_or_dry_run_summary_still_rejected(self):
+        for name, fn, expected in (
+            ("incomplete", lambda s: s.__setitem__("complete", False),
+             "proof run did not complete"),
+            ("dry", lambda s: s.__setitem__("dry_run", True),
+             "not a live diagnostic run"),
+            ("timing-mode", lambda s: s.__setitem__("mode", "timing"),
+             "not a live diagnostic run"),
+        ):
+            with self.subTest(case=name):
+                self._reject(fn, expected, name)
+
+    def test_unreadable_and_non_object_summaries_rejected(self):
+        for name, text, expected in (("missing", None, "cannot read proof summary"),
+                                     ("garbage", "{not json", "cannot read proof summary"),
+                                     ("list", "[]", "is not a JSON object")):
+            with self.subTest(case=name):
+                p = self.tmp / f"bad-{name}.json"
+                if text is not None:
+                    p.write_text(text)
+                rc, fake, txt = self._timing(p)
+                self.assertEqual(rc, 2)
+                self.assertEqual(fake.calls, [])
+                self.assertIn(expected, txt)
 
 
 # ── dry-run launches ZERO engines ────────────────────────────────────────────
