@@ -32,6 +32,7 @@
 #include <cstring>
 #include <numeric>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,21 +42,94 @@ namespace k = strata::kernels;
 namespace {
 
 int g_fail = 0;
+int g_cleanup_fail = 0;
 
 void ck(cudaError_t e, const char* w) {
+    if (e != cudaSuccess)
+        throw std::runtime_error(std::string("CUDA error in ") + w + ": " + cudaGetErrorString(e));
+}
+
+// Cleanup must attempt every resource, even with a sticky CUDA error during unwind.  Do not throw from a
+// destructor or hide cleanup errors on the success path: main checks this flag AFTER all owners are destroyed.
+void cleanup(cudaError_t e, const char* w) noexcept {
     if (e != cudaSuccess) {
-        std::fprintf(stderr, "CUDA error in %s: %s\n", w, cudaGetErrorString(e));
-        std::exit(2);
+        std::fprintf(stderr, "CUDA cleanup error in %s: %s\n", w, cudaGetErrorString(e));
+        ++g_cleanup_fail;
     }
 }
 
-template<typename T>
-T* dalloc(size_t n) {
-    T* p = nullptr;
-    ck(cudaMalloc(&p, n * sizeof(T) + 256), "malloc");
-    ck(cudaMemset(p, 0, n * sizeof(T) + 256), "memset");
-    return p;
-}
+struct DeviceAllocations {
+    std::vector<void*> owned;
+    DeviceAllocations() = default;
+    DeviceAllocations(const DeviceAllocations&) = delete;
+    DeviceAllocations& operator=(const DeviceAllocations&) = delete;
+    ~DeviceAllocations() noexcept {
+        for (auto i = owned.rbegin(); i != owned.rend(); ++i)
+            if (*i) cleanup(cudaFree(*i), "free allocation");
+    }
+    template<typename T>
+    T* alloc(size_t n) {
+        // Register storage BEFORE CUDA can acquire anything (or vector growth can throw).  The member owner
+        // also unwinds if Grouped's constructor fails; its raw pointers below are only non-owning aliases.
+        owned.push_back(nullptr);
+        ck(cudaMalloc(&owned.back(), n * sizeof(T) + 256), "malloc");
+        ck(cudaMemset(owned.back(), 0, n * sizeof(T) + 256), "memset");
+        return static_cast<T*>(owned.back());
+    }
+};
+
+template<typename T, auto Destroy>
+struct CudaHandle {
+    T value = nullptr;
+    const char* what;
+    explicit CudaHandle(const char* w) : what(w) {}
+    CudaHandle(const CudaHandle&) = delete;
+    CudaHandle& operator=(const CudaHandle&) = delete;
+    CudaHandle(CudaHandle&& other) noexcept : value(std::exchange(other.value, nullptr)), what(other.what) {}
+    CudaHandle& operator=(CudaHandle&& other) noexcept {
+        if (this != &other) {
+            if (value) cleanup(Destroy(value), what);
+            value = std::exchange(other.value, nullptr);
+            what = other.what;
+        }
+        return *this;
+    }
+    ~CudaHandle() noexcept { if (value) cleanup(Destroy(value), what); }
+    operator T() const noexcept { return value; }
+    void close() { if (value) ck(Destroy(std::exchange(value, nullptr)), what); }
+};
+using Stream = CudaHandle<cudaStream_t, cudaStreamDestroy>;
+using Event = CudaHandle<cudaEvent_t, cudaEventDestroy>;
+using Graph = CudaHandle<cudaGraph_t, cudaGraphDestroy>;
+using GraphExec = CudaHandle<cudaGraphExec_t, cudaGraphExecDestroy>;
+
+struct SelectorGuard {
+    const bool layout = k::native_grouped_no_sub16_gu(), old = k::iq_old_kernels();
+    ~SelectorGuard() noexcept {
+        k::native_grouped_set_no_sub16_gu(layout);
+        k::iq_set_old_kernels(old);
+    }
+};
+
+struct CaptureGuard {
+    cudaStream_t stream;
+    bool active = false;
+    explicit CaptureGuard(cudaStream_t s) : stream(s) {
+        ck(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal), "layout capture begin");
+        active = true;
+    }
+    ~CaptureGuard() noexcept {
+        if (active) {
+            Graph abandoned("abandoned layout graph free");
+            cleanup(cudaStreamEndCapture(stream, &abandoned.value), "layout capture unwind");
+        }
+    }
+    void end(Graph& graph) {
+        const auto e = cudaStreamEndCapture(stream, &graph.value);
+        active = false; // EndCapture also ends an invalidated capture; graph is owned even if it reports failure.
+        ck(e, "layout capture end");
+    }
+};
 
 const char* name_of(int t) {
     switch (t) {
@@ -114,26 +188,28 @@ std::vector<double> dequant_q8_1(const std::vector<uint8_t>& q, size_t n) {
 
 // ------------------------------------------------------------------------------------------------ (1) iq_mmvq
 void check_mmvq(int t, int n_in, int n_out, cudaStream_t s, std::mt19937& rng) {
+    SelectorGuard mode;
+    DeviceAllocations memory;
     const auto w = random_rows(t, n_out, n_in, rng);
-    uint8_t* dw = dalloc<uint8_t>(w.size());
+    uint8_t* dw = memory.alloc<uint8_t>(w.size());
     ck(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
     // the double reference's weights: the GPU dequantizer (iq_parity checks it against gguf-py)
-    float* dwf = dalloc<float>((size_t) n_out * n_in);
+    float* dwf = memory.alloc<float>((size_t) n_out * n_in);
     k::iq_dequant_f32(t, dw, (int64_t) n_out * n_in, dwf, s);
     std::vector<float> wf((size_t) n_out * n_in);
     ck(cudaMemcpy(wf.data(), dwf, wf.size() * 4, cudaMemcpyDeviceToHost), "wf");
     const int max_cols = 11;
     const auto x = random_x((size_t) max_cols * n_in, rng);
-    float* dx = dalloc<float>(x.size());
+    float* dx = memory.alloc<float>(x.size());
     ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
     const size_t xq_bytes = (size_t) max_cols * (n_in / 32) * 36;
-    uint8_t* dxq = dalloc<uint8_t>(xq_bytes);
+    uint8_t* dxq = memory.alloc<uint8_t>(xq_bytes);
     k::quantize_q8_1_rows(dx, max_cols, n_in, dxq, s);
     std::vector<uint8_t> xq(xq_bytes);
     ck(cudaMemcpy(xq.data(), dxq, xq_bytes, cudaMemcpyDeviceToHost), "xq");
     const auto xd = dequant_q8_1(xq, (size_t) max_cols * n_in);
-    float* dy_old = dalloc<float>((size_t) max_cols * n_out);
-    float* dy_new = dalloc<float>((size_t) max_cols * n_out);
+    float* dy_old = memory.alloc<float>((size_t) max_cols * n_out);
+    float* dy_new = memory.alloc<float>((size_t) max_cols * n_out);
     std::vector<float> y_old((size_t) max_cols * n_out), y_new(y_old.size());
     const int cols[] = {1, 2, 3, 4, 5, 6, 7, 8, 11};
     int bad = 0;
@@ -172,11 +248,11 @@ void check_mmvq(int t, int n_in, int n_out, cudaStream_t s, std::mt19937& rng) {
     std::printf("%-8s type %2d  %5d x %5d  iq_mmvq ncols 1..8, 11: %s (ref rel <= %.2e)\n", name_of(t), t, n_out, n_in,
                 bad ? "FAIL" : "bitwise equal to the old kernel", worst);
     g_fail += bad;
-    cudaFree(dw); cudaFree(dwf); cudaFree(dx); cudaFree(dxq); cudaFree(dy_old); cudaFree(dy_new);
 }
 
 // ---------------------------------------------------------------------------------- (2) native_expert_grouped
 struct Grouped {
+    DeviceAllocations memory;
     k::NativeExpertLayout L;
     int n_groups = 0, n_ent = 0, cap_groups = 0, cap_ent = 0, n_tok = 0;
     std::vector<uint8_t*> blobs;
@@ -213,17 +289,18 @@ struct Grouped {
             auto b = random_rows(gu, 2 * FF, H, rng);
             const auto d = random_rows(dt, H, FF, rng);
             b.insert(b.end(), d.begin(), d.end());
-            if (b.size() != L.bytes) { std::fprintf(stderr, "blob size %zu != %zu\n", b.size(), L.bytes); std::exit(2); }
-            uint8_t* db = dalloc<uint8_t>(b.size());
+            if (b.size() != L.bytes)
+                throw std::runtime_error("blob size " + std::to_string(b.size()) + " != " + std::to_string(L.bytes));
+            uint8_t* db = memory.alloc<uint8_t>(b.size());
             ck(cudaMemcpy(db, b.data(), b.size(), cudaMemcpyHostToDevice), "blob");
             blobs.push_back(db);
             ptr.push_back((unsigned long long) db);
         }
-        dptr = dalloc<unsigned long long>(cap_groups);
-        dstart = dalloc<int32_t>(cap_groups + 1);
-        dn = dalloc<int32_t>(1);
-        ddst = dalloc<int32_t>(cap_ent);
-        dtok = dalloc<int32_t>(cap_ent);
+        dptr = memory.alloc<unsigned long long>(cap_groups);
+        dstart = memory.alloc<int32_t>(cap_groups + 1);
+        dn = memory.alloc<int32_t>(1);
+        ddst = memory.alloc<int32_t>(cap_ent);
+        dtok = memory.alloc<int32_t>(cap_ent);
         ck(cudaMemcpy(dptr, ptr.data(), ptr.size() * 8, cudaMemcpyHostToDevice), "ptr");
         ck(cudaMemcpy(dstart, start.data(), start.size() * 4, cudaMemcpyHostToDevice), "start");
         ck(cudaMemcpy(dn, &n_groups, 4, cudaMemcpyHostToDevice), "n");
@@ -232,20 +309,15 @@ struct Grouped {
             ck(cudaMemcpy(dtok, tok.data(), tok.size() * 4, cudaMemcpyHostToDevice), "tok");
         }
         const auto x = random_x((size_t) tokens * H, rng);
-        dx = dalloc<float>(x.size());
+        dx = memory.alloc<float>(x.size());
         ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
-        dxq = dalloc<uint8_t>((size_t) tokens * (H / 32) * 36);
-        dscr = dalloc<uint8_t>(k::native_expert_scratch_bytes(cap_ent, FF));
+        dxq = memory.alloc<uint8_t>((size_t) tokens * (H / 32) * 36);
+        dscr = memory.alloc<uint8_t>(k::native_expert_scratch_bytes(cap_ent, FF));
         out_floats = (size_t) cap_ent * H;
-        dout = dalloc<float>(out_floats);
-    }
-    ~Grouped() {
-        for (auto* b : blobs) ck(cudaFree(b), "free blob");
-        ck(cudaFree(dptr), "free ptr"); ck(cudaFree(dstart), "free start"); ck(cudaFree(dn), "free count");
-        ck(cudaFree(ddst), "free dst"); ck(cudaFree(dtok), "free tok"); ck(cudaFree(dx), "free x");
-        ck(cudaFree(dxq), "free xq"); ck(cudaFree(dscr), "free scratch"); ck(cudaFree(dout), "free out");
+        dout = memory.alloc<float>(out_floats);
     }
     void run(bool old, cudaStream_t s) {
+        SelectorGuard mode;
         k::iq_set_old_kernels(old);
         k::quantize_q8_1_rows(dx, n_tok, L.n_embd, dxq, s);
         k::native_expert_grouped(L, dptr, dstart, dn, ddst, dtok, cap_groups, cap_ent, dxq, dscr, dout, s);
@@ -284,34 +356,36 @@ void check_grouped(int gu, int dt, int64_t H, int64_t FF, cudaStream_t s, std::m
 
 // ------------------------------------------------------------------------------------------------ --bench
 float time_ms(cudaStream_t s, int it, const auto& fn) {
-    cudaEvent_t e0, e1;
-    cudaEventCreate(&e0);
-    cudaEventCreate(&e1);
+    Event e0("bench event0 free"), e1("bench event1 free");
+    ck(cudaEventCreate(&e0.value), "bench event0");
+    ck(cudaEventCreate(&e1.value), "bench event1");
     fn();
-    cudaEventRecord(e0, s);
+    ck(cudaEventRecord(e0, s), "bench record0");
     for (int i = 0; i < it; ++i) fn();
-    cudaEventRecord(e1, s);
+    ck(cudaEventRecord(e1, s), "bench record1");
     ck(cudaEventSynchronize(e1), "bench");
     float ms = 0;
-    cudaEventElapsedTime(&ms, e0, e1);
-    cudaEventDestroy(e0);
-    cudaEventDestroy(e1);
+    ck(cudaEventElapsedTime(&ms, e0, e1), "bench elapsed");
+    e0.close();
+    e1.close();
     return ms / it;
 }
 
 void bench(cudaStream_t s, std::mt19937& rng) {
+    SelectorGuard mode;
     std::printf("\n--bench: microseconds per call, old (per-column decode) / new (decode once), idle GPU assumed\n");
     const int n_in = 2560, n_out = 8192, it = 200;
     for (int t : {16, 17, 18, 21, 22, 29}) {
+        DeviceAllocations memory;
         const auto w = random_rows(t, n_out, n_in, rng);
-        uint8_t* dw = dalloc<uint8_t>(w.size());
+        uint8_t* dw = memory.alloc<uint8_t>(w.size());
         ck(cudaMemcpy(dw, w.data(), w.size(), cudaMemcpyHostToDevice), "w");
         const auto x = random_x((size_t) 8 * n_in, rng);
-        float* dx = dalloc<float>(x.size());
+        float* dx = memory.alloc<float>(x.size());
         ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
-        uint8_t* dxq = dalloc<uint8_t>((size_t) 8 * (n_in / 32) * 36);
+        uint8_t* dxq = memory.alloc<uint8_t>((size_t) 8 * (n_in / 32) * 36);
         k::quantize_q8_1_rows(dx, 8, n_in, dxq, s);
-        float* dy = dalloc<float>((size_t) 8 * n_out);
+        float* dy = memory.alloc<float>((size_t) 8 * n_out);
         std::printf("%-8s iq_mmvq %d x %d:", name_of(t), n_out, n_in);
         for (int nc = 1; nc <= 8; ++nc) {
             float us[2];
@@ -323,7 +397,6 @@ void bench(cudaStream_t s, std::mt19937& rng) {
         }
         std::printf("\n");
         k::iq_set_old_kernels(false);
-        cudaFree(dw); cudaFree(dx); cudaFree(dxq); cudaFree(dy);
     }
     // the verify window's shape: 2560 x 640 experts, 16 groups of m entries each
     for (int gu : {16, 17, 18, 21, 22, 29}) {
@@ -344,21 +417,22 @@ void bench(cudaStream_t s, std::mt19937& rng) {
 // block whose sum (or scale) overflowed fp16 is now stored finite (the largest half, its sign), with its values in the
 // int8 range.  The fused one gets gate = 32 and up = x / 32: silu(32) is 32 in float, so its activations are x exactly.
 void check_q8_1_finite(cudaStream_t s, std::mt19937& rng) {
+    DeviceAllocations memory;
     const int n = 2560, rows = 3, nb = n / 32;
     std::vector<float> x = random_x((size_t) rows * n, rng);
     for (int i = 0; i < 32; ++i) x[(size_t) 5 * 32 + i] = 3000.0f;                  // sum 96,000: overflowed
     for (int i = 0; i < 32; ++i) x[(size_t) 9 * 32 + i] = i == 3 ? -70000.0f : 0.5f;   // sum -69,984.5
     for (int i = 0; i < 32; ++i) x[(size_t) 13 * 32 + i] = 2000.0f + i;            // sum 64,496: finite, kept
     x[(size_t) n + 40] = 2.0e7f;                                                    // amax / 127 overflowed too
-    float* dx = dalloc<float>(x.size());
+    float* dx = memory.alloc<float>(x.size());
     ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
     std::vector<float> gate(x.size(), 32.0f), up(x.size());
     for (size_t i = 0; i < x.size(); ++i) up[i] = x[i] / 32.0f;
-    float* dg = dalloc<float>(x.size());
-    float* du = dalloc<float>(x.size());
+    float* dg = memory.alloc<float>(x.size());
+    float* du = memory.alloc<float>(x.size());
     ck(cudaMemcpy(dg, gate.data(), x.size() * 4, cudaMemcpyHostToDevice), "gate");
     ck(cudaMemcpy(du, up.data(), x.size() * 4, cudaMemcpyHostToDevice), "up");
-    uint8_t* dq = dalloc<uint8_t>((size_t) rows * nb * 36);
+    uint8_t* dq = memory.alloc<uint8_t>((size_t) rows * nb * 36);
     for (int path = 0; path < 3; ++path) {
         if (path == 0) k::quantize_q8_1_rows(dx, rows, n, dq, s);
         else if (path == 1) k::native_quantize_q8_1(dx, dq, n, rows, s);
@@ -409,10 +483,6 @@ void check_q8_1_finite(cudaStream_t s, std::mt19937& rng) {
                     same, clamped, bad ? "  FAIL" : "");
         g_fail += bad + (clamped != 3);
     }
-    cudaFree(dx);
-    cudaFree(dg);
-    cudaFree(du);
-    cudaFree(dq);
 }
 
 // -------------------------------- (3) paired layout family, NOT the entire PR-h2715a752 delta:
@@ -436,19 +506,19 @@ void layout_call(Grouped& G, cudaStream_t s) {
                              G.dxq, G.dscr, G.dout, s, 3); // also exercise the group stride
 }
 
-cudaGraphExec_t layout_graph(Grouped& G, bool no_sub16, cudaStream_t s) {
+GraphExec layout_graph(Grouped& G, bool no_sub16, cudaStream_t s) {
     k::native_grouped_set_no_sub16_gu(no_sub16); // only before capture, never during it
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t exec = nullptr;
-    ck(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal), "layout capture begin");
+    Graph graph("layout graph free");
+    GraphExec exec("layout exec free");
+    CaptureGuard capture(s);
     layout_call(G, s);
-    ck(cudaStreamEndCapture(s, &graph), "layout capture end");
-    ck(cudaGraphInstantiate(&exec, graph, 0), "layout instantiate");
-    ck(cudaGraphDestroy(graph), "layout graph free");
+    capture.end(graph);
+    ck(cudaGraphInstantiate(&exec.value, graph, 0), "layout instantiate");
+    graph.close();
     return exec;
 }
 
-// Includes dalloc's 256-byte tail guards.  Scratch is deliberately stale before each call.
+// Includes the allocations' 256-byte tail guards.  Scratch is deliberately stale before each call.
 struct LayoutResult {
     std::vector<uint32_t> out;
     std::vector<uint8_t> scratch;
@@ -525,7 +595,7 @@ void check_sub16_layout(cudaStream_t s) {
         const int before = g_fail;
         Grouped G(gu, dt, 2560, 640, {1, 0, 2, 3, 0, 4, 5, 8, 11}, 16, rng, true);
         const size_t qb = (size_t) G.n_tok * (G.L.n_embd / 32) * 36;
-        cudaGraphExec_t graphs[2] = {nullptr, nullptr};
+        GraphExec graphs[2] = {GraphExec("layout exec0 free"), GraphExec("layout exec1 free")};
         std::vector<uint8_t> previous_input;
         std::vector<uint32_t> previous_output;
         for (int input_id = 0; input_id < 3; ++input_id) {
@@ -561,7 +631,7 @@ void check_sub16_layout(cudaStream_t s) {
                 std::printf("  layout pair %d/%d input=%s FAIL\n", gu, dt,
                             input_id == 0 ? "A" : empty ? "empty" : "changed B");
         }
-        for (auto graph : graphs) ck(cudaGraphExecDestroy(graph), "layout exec free");
+        for (auto& graph : graphs) graph.close();
         std::printf("sub16 layout %-8s/%-7s 2560x640 tails 1/2/3/4/5/8/11, empty, scattered: %s\n",
                     name_of(gu), name_of(dt), g_fail == before ? "bitwise direct + A/B/empty graph replay" : "FAIL");
     }
@@ -569,10 +639,11 @@ void check_sub16_layout(cudaStream_t s) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int parity_main(int argc, char** argv) {
+    SelectorGuard mode;
     const bool do_bench = argc > 1 && std::string(argv[1]) == "--bench";
-    cudaStream_t s;
-    ck(cudaStreamCreate(&s), "stream");
+    Stream s("stream free");
+    ck(cudaStreamCreate(&s.value), "stream");
     std::mt19937 rng(18);
     const bool prior_layout = k::native_grouped_no_sub16_gu(), prior_old = k::iq_old_kernels();
     check_sub16_layout(s); // isolated paired gate runs before the historical old/per-column checks
@@ -590,6 +661,18 @@ int main(int argc, char** argv) {
     check_q8_1_finite(s, rng);
     if (do_bench) bench(s, rng);
     std::printf("iq_multi_parity: %d failures\n", g_fail);
-    ck(cudaStreamDestroy(s), "stream free");
+    s.close();
     return g_fail ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        const int result = parity_main(argc, argv);
+        return g_cleanup_fail ? 2 : result;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "iq_multi_parity FAIL: %s\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "iq_multi_parity FAIL: unknown exception\n");
+    }
+    return 2; // All scoped resources and selectors have unwound before the failure exit.
 }
