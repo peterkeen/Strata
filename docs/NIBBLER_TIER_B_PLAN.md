@@ -388,12 +388,45 @@ Clean timing disables these readbacks/synchronizations/logging. Preserve normal
 raw stdout/stderr/stats/IDs and require parser-valid prompt echo, decode count,
 positive finite metrics and primary prefill diagnostics. Diagnostic runs are
 **never timing samples**. Use separately established proof/capture signatures
-and any nonintrusive existing clean-run window metadata; if obtaining full
-clean-run T sequences requires instrumentation, record that limitation rather
-than enable it and call the result clean. Output mismatches are not a
-controlled comparison.
+and any nonintrusive existing clean-run window metadata. The native CLI's
+normal stdout includes `window sizes` (whole-run T histogram) and `speculation`
+(accepted/offered counts and rounded rate). Recompute these for each clean arm,
+including the excluded preparatory pairs; matching output IDs does not imply
+matching rates or distributions. A histogram is not an ordered sequence of
+`(pos, T, input_hash)` windows. If obtaining full clean-run sequences requires
+instrumentation, record that limitation rather than enable it and call the
+result clean. Output mismatches are not a controlled comparison.
+
+**Measured-time feedback:** [DraftPolicy](../include/strata/spec/draft_policy.hpp)
+is not frozen by greedy sampling, fixed speculation flags or `--adapt-every 0`
+(which disables expert-placement adaptation). In
+[draft_policy.cpp](../src/spec/draft_policy.cpp), `observe`/`observe_chain` learn
+cost per T from measured `round_ms` (first sample, then EMA weight 0.1);
+`cost_ms` uses those costs or scales from measured sizes for unseen T, and
+`choose` compares expected MTP/lookup tokens per millisecond with a 3% default
+margin and probing/staleness rules. The native CLI loop in
+[generate.cpp](../src/program/generate.cpp) starts its round clock before
+proposal selection, calls `policy.choose(T, k, sfx_match)`, then after verify,
+commit, optional Tier-B readback/hash/export and MTP drafting measures elapsed
+round milliseconds and calls `policy.observe` (or `observe_chain`), except
+for the initial native window. Diagnostic overhead, cold capture and kernel
+or other round-time differences can therefore change later draft choices even
+when output IDs match. Default suffix drafting permits T up to 6 with
+`--spec 4` (MTP remains capped at 4). Proof-prefix shapes need not describe
+clean-run work. This is a source mechanism, not attribution of a particular
+observed drift to one timing component.
+
+The [r2 report's clean-run recomputation](NIBBLER_TIER_B.md#73-clean-run-draft-statistics-and-timing-feedback)
+accounts for all 32 clean arms: recorded long_doc A/B rates and histograms differ
+in 5/6 pairs; all short_code pairs match in aggregate. Ordered clean-run window
+sequences are absent. Preserve measured cold-model throughput, but do not
+assign its small paired deltas or the native/model gap to kernel cost alone.
 
 **Window matching (amended after host session 1, before any model timing).**
+Both the `(pos, T, input_hash)` window key and the minimum **12** matched-window
+criterion were chosen after seeing session 1's proof rejection; neither was
+originally predeclared. The original comparison used ordinal alignment. The
+amendment changes matching/admission coverage, not the bitwise row contract.
 Speculative draft lengths are not deterministic run to run: two identical
 default configs on `long_doc` windowed pos 8919 as T=4 vs T=3, with identical
 whole-run output. Ordinal alignment is therefore not a valid contract. Windows
@@ -415,8 +448,9 @@ fresh-process model decode **includes cold graph costs**: report it as cold CLI
 throughput, not warmed-native or steady-state model throughput. Identical IDs
 alone do not establish equal T distribution. Capture topology differences
 intrinsic to fusion are recorded, not subtracted into an invented steady-state
-speedup; if attribution is unresolved, report the limitation and withhold the
-controlled model claim.
+speedup; timing feedback in DraftPolicy can also change future draft work.
+If attribution is unresolved, report the limitation and withhold the controlled
+model claim.
 
 Save all raw paired samples/order. Report paired deltas/ratios, per-arm medians,
 spread (range and the declared spread statistic), n and exclusions; do not

@@ -9,9 +9,10 @@ already present in engine `e8ca9af`. This is not a port, a merge, a production
 change or a quality certification. It covers one GPU and the single-session CLI
 with fresh processes. It does not cover Tier-C serving/KV work.
 
-Protocol, contracts and bounds were declared beforehand in the
-[Tier-B plan](NIBBLER_TIER_B_PLAN.md). Only one contract changed after host data
-was seen: window matching, which changed before any model timing ran. See
+The original protocol, contracts and bounds were declared beforehand in the
+[Tier-B plan](NIBBLER_TIER_B_PLAN.md). Window-key matching and its minimum of
+12 matched windows were chosen **after session 1's proof rejection**, before
+any model timing ran; they were not originally predeclared. See
 [deviations](#8-deviations-from-the-plan).
 
 ## Contents
@@ -282,7 +283,9 @@ long_doc was 8887 IDs (`0157820299822d1b`, 512 new tokens).
 - All 32 arms exited 0 with no errors.
 - Within each workload, every arm produced the same output hash and length.
 - Draft acceptance was 0.931 on short_code in all arms and 0.668–0.673 on
-  long_doc.
+  long_doc. Within-pair rates and T histograms were **unequal in 5/6 recorded
+  long_doc pairs**; output identity does not establish identical draft work
+  ([§7.3](#73-clean-run-draft-statistics-and-timing-feedback)).
 
 **Cold-process caveat:** these figures include first-use CUDA graph capture and
 compilation. They are **cold fresh-process CLI** numbers, not steady-state
@@ -342,7 +345,78 @@ Reading, with no significance claimed:
 - **Native vs model:** the 19–28% native sub16 latency reduction
   ([§5.2](#52-native-sub16-expert-layout))
   does **not** carry through to cold-process decode in this probe. The cause is
-  unresolved, and this report does not attribute it.
+  unresolved, and this report does not attribute it. The differing draft work
+  and timing-dependent policy below further limit kernel-only attribution.
+
+### 7.3 Clean-run draft statistics and timing feedback
+
+Recomputed from the immutable local r2 copies under
+`/tmp/strata-tier-b-artifacts/measure-20261008-r2/timing/arms/*/stdout.txt`,
+not inferred from output hashes or diagnostic windows. Each `speculation`
+line gives accepted/offered draft counts and a rate rounded to three decimals;
+`window sizes` gives the **whole-run** histogram. Fractions below retain the
+exact counts; displayed rates use the same rounding as stdout. A is default,
+B is opt-out; `rec0`–`rec2` are the recorded pairs in §7.2, while `prep` is
+excluded from timing statistics.
+
+**short_code:** all 16 clean arms (both families, prep and rec0/rec1/rec2,
+A and B) have accepted/offered **188/202 = 0.931**, 71 rounds, and
+`(T1,T2,T3,T4,T5,T6) = (4,0,1,65,0,1)`. Thus rates and distributions match in
+all six recorded short_code pairs (and both excluded prep pairs). This does
+not establish equal window order.
+
+**long_doc:** T1=27 and T2=33 in every clean arm; the remaining histogram
+counts and acceptance statistics are:
+
+| Family | Pair | Accepted/offered A | Rate A | Accepted/offered B | Rate B | T3/T4/T5/T6 A | T3/T4/T5/T6 B | Rounds A/B |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| f | prep (excluded) | 304/453 | 0.671 | 304/454 | 0.670 | 30/120/0/0 | 29/121/0/0 | 210/210 |
+| f | rec0 | 304/455 | 0.668 | 304/452 | 0.673 | 28/122/0/0 | 31/119/0/0 | 210/210 |
+| f | rec1 | 304/455 | 0.668 | 304/454 | 0.670 | 28/122/0/0 | 29/121/0/0 | 210/210 |
+| f | rec2 | 305/453 | 0.673 | 304/454 | 0.670 | 27/122/0/0 | 29/121/0/0 | 209/210 |
+| h | prep (excluded) | 304/455 | 0.668 | 305/453 | 0.673 | 29/120/1/0 | 27/122/0/0 | 210/209 |
+| h | rec0 | 305/453 | 0.673 | 304/454 | 0.670 | 27/122/0/0 | 29/121/0/0 | 209/210 |
+| h | rec1 | 304/455 | 0.668 | 304/455 | 0.668 | 28/122/0/0 | 28/122/0/0 | 210/210 |
+| h | rec2 | 304/454 | 0.670 | 305/453 | 0.673 | 29/121/0/0 | 27/122/0/0 | 210/209 |
+
+Five of six **recorded** long_doc pairs differ in both rate and distribution;
+only h/rec1 matches. Both excluded long_doc prep pairs also differ. These
+histograms count windows, not an ordered sequence of `(pos, T, input_hash)`.
+Clean runs did not export that sequence, so they cannot establish window-by-window
+alignment, inputs or capture order even when aggregate histograms match.
+Diagnostic prefix sequences in §6 are a separate dataset, not substitutes.
+This stdout-statistics correction does not revalidate retained logit bytes.
+
+**Why timing can feed back into draft work:** in the measured source
+(`222d39ea`; the following source files are unchanged from that pin),
+[DraftPolicy](../include/strata/spec/draft_policy.hpp) learns expected committed
+tokens per millisecond. In [draft_policy.cpp](../src/spec/draft_policy.cpp),
+`observe` (and `observe_chain` for chained lookup) updates the cost for T from
+`round_ms`: the first sample sets it, later samples use an EMA with weight 0.1.
+`cost_ms` uses that measured cost, or scales from measured sizes for an unseen
+T. `choose` compares MTP and candidate lookup windows by expected tokens/cost,
+with a default 3% margin and probing/staleness rules. It is not a policy based
+only on acceptance or fixed `--spec` settings.
+
+The relevant **native CLI** caller is in
+[generate.cpp](../src/program/generate.cpp): it constructs `policy(o.spec)`,
+starts `t0` at the top of the round, obtains a suffix proposal and calls
+`policy.choose(T, k, sfx_match)` when eligible. After verification, commit,
+optional Tier-B wait/readback/hash/export, emitted-token bookkeeping and MTP
+drafting, it computes `round_ms = Clock::now() - t0` in milliseconds and calls
+`policy.observe(from_sfx, T, a, sfx_match, round_ms)` (or `observe_chain`),
+excluding the initial native window from policy observations. Thus diagnostic
+overhead within the interval, cold capture costs, kernel latency or other round
+time variation **can change later draft choices**, even with identical output
+IDs. `--adapt-every 0` disables expert-placement adaptation, not this feedback.
+The default suffix drafter remains enabled: the CLI preserves an MTP cap of 4
+for `--spec 4` but permits lookup windows up to T=6, explaining the T5/T6 bins.
+
+This source mechanism makes drift plausible; the aggregate artifacts do **not**
+identify which timing component caused any particular differing window. The
+cold-model timing tables remain valid observed throughput, but neither their
+small deltas nor the native/model gap can be assigned to an isolated kernel
+cost from these runs. No steady-state gain or regression is established.
 
 ## 8. Deviations from the plan
 
@@ -353,12 +427,17 @@ Reading, with no significance claimed:
      was windowed as T=4 in one arm and T=3 in the other.
    - **What still matched:** whole-run IDs matched, and the other three cells
      passed.
-   - **Cause:** speculative draft lengths are not deterministic run to run.
+   - **Mechanism and uncertainty:** fixed flags and identical output IDs do
+     not freeze draft lengths. The measured-round-time feedback in DraftPolicy
+     can change subsequent choices ([§7.3](#73-clean-run-draft-statistics-and-timing-feedback));
+     the retained data does not identify the cause of this particular drift.
    - **Response:** per the no-retry rule, timing did not start. The contract
      changed to matching by `(pos, T, input_hash)` with at least 12 matched
      windows, bitwise on matched rows, and whole-run IDs still required (commit
-     `222d39ea`, 9 regression tests). Replaying the session-1 exports under the
-     new rule gave 16/16/16/14 matched, all bitwise.
+     `222d39ea`, 9 regression tests). **Both the window key and minimum 12 were
+     chosen after seeing session 1's rejection, not originally predeclared.**
+     Replaying the session-1 exports under the new rule gave 16/16/16/14 matched,
+     all bitwise.
    - **Rerun:** session r2 then passed. This is the only contract changed after
      seeing host data, and it relaxes window alignment only, not the bitwise
      identity requirement.
@@ -394,9 +473,12 @@ Open gaps for the first wave:
 
 - **Logit proof coverage:** limited to the first 16 windows per arm. Later
   windows rely on output-ID identity.
-- **Timing in clean runs:** clean runs do not record per-window T sequences, so
-  equal draft-length distributions between timed A and B arms are not
-  established. Draft acceptance rates and output hashes were equal.
+- **Timing in clean runs:** whole-run T histograms and accepted/offered counts
+  are available in raw stdout ([§7.3](#73-clean-run-draft-statistics-and-timing-feedback)).
+  Rates and distributions differ in 5/6 recorded long_doc pairs; output hashes
+  still match. Ordered per-window sequences are absent, so window alignment
+  and equal capture order are not established even for matching histograms.
+  Timing feedback in DraftPolicy limits kernel-only attribution.
 - **No warm or steady-state model timing:** no profiler (nsys) or kernel-share
   breakdown of model decode was taken, so the gap between native and model
   results is unexplained.
@@ -499,8 +581,9 @@ Key files in r2:
 - `rope-bench.log` and `expert-bench.log`: raw native samples.
 - `diag/summary.json` and `diag/arms/*/{stderr.txt,export/manifest.txt}`: proof
   verdicts, traces and exported window manifests.
-- `timing/arms/*/{arm.json,argv.txt,env.json,output_ids.txt}` and `timing.log`:
-  raw model arms and run order.
+- `timing/arms/*/{arm.json,argv.txt,env.json,stdout.txt,output_ids.txt}` and
+  `timing.log`: raw model arms and run order; stdout retains whole-run T
+  histograms and accepted/offered draft counts.
 - `binaries.expected.sha256` and `harness.sha256`: binary and harness hashes.
 - `production.expected.sha256` and `post-state.txt`: production baseline and
   post-run state.
