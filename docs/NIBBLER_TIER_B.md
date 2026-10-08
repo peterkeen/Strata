@@ -56,17 +56,17 @@ any model timing ran; they were not originally predeclared. See
 | Item | Value |
 | --- | --- |
 | Engine base | upstream `e8ca9afd03d8` (0.1.40.2), already compiled in Tier A |
-| Original fork (historical only) | `9921eecae9d4` (0.1.39); production source HEAD unchanged throughout |
+| Original fork (historical only) | `9921eecae9d4` (0.1.39); recorded production HEAD in gate toolchain and session post-state snapshots, not continuous source-tree monitoring |
 | Final native build source | `3af1e4c8` (all `src`/`include`/`CMakeLists.txt`/`cmake` changes) |
-| Measurement harness source | `222d39ea`, clean tree; `git diff 3af1e4c8 222d39ea -- src include CMakeLists.txt cmake` was empty (checked in-session) |
-| Build dir | `/data/llm/Strata-tier-b/build-tier-b` (isolated clone, branch `perf/nibbler-tier-b-kernels`) |
+| Measurement harness source | `222d39ea`; r2 provenance records `source_dirty=false` at capture; `git diff 3af1e4c8 222d39ea -- src include CMakeLists.txt cmake` was empty (checked in-session) |
+| Build dir | `/data/llm/Strata-tier-b/build-tier-b` (isolated clone; r2 script checked out detached `222d39ea`, following the earlier `perf/nibbler-tier-b-kernels` work) |
 | `strata` sha256 | `59f0d53627773b3dac02fac861421441ee11848d27a0508216e905e984c9a7f7` |
 | `tier_b_rope_bench` sha256 | `82467382094a5120b95de98632e7758e6d19a79f6211c8ccf6d08f496eafa42f` |
 | `tier_b_expert_bench` sha256 | `6d1bcd3a463674564d6201625a40304242d240a7e8b8332e85ae1f886ad841a2` |
 | Compilers | CUDA 13.3 (V13.3.73), g++-15 15.3.0, Release, `CMAKE_CUDA_ARCHITECTURES=120` |
 | ggml source | read-only reuse via `STRATA_GGML_DIR=/data/llm/Strata/third_party/llama.cpp` (no fetch); configure reports `ggml version: 0.24.0`. The tree has no embedded `.git`, so the configure-time "ggml commit 9921eeca" is the enclosing production checkout's HEAD, **not** a ggml ref. No separate content hash of that tree was captured. |
-| GPU (fresh, 2026-10-08) | NVIDIA GeForce RTX 5060 Ti, UUID `GPU-a29bb3c9-…`, driver 610.57.04, 16311 MiB, 36 SMs, L2 32 MiB (33554432 B) |
-| GPU state before / after (r2) | 2 MiB used, 0 %, SM 180 MHz, mem 405 MHz, 31 °C, 3.95 W / 2 MiB used, SM 2842 MHz, 47 °C, no compute processes |
+| GPU (historical pre-run snapshot, 2026-10-08) | NVIDIA GeForce RTX 5060 Ti, UUID `GPU-a29bb3c9-…`, driver 610.57.04, 16311 MiB, 36 SMs, L2 32 MiB (33554432 B) |
+| Recorded GPU state before / after (r2) | 2 MiB used, 0 %, SM 180 MHz, mem 405 MHz, 31 °C, 3.95 W / 2 MiB used, SM 2842 MHz, 47 °C; final compute-process query lists no entries. These are snapshots, not enforced final GPU postconditions ([§11](#historical-safeguards-enforced-vs-observed)). |
 | CPU / RAM / OS | Ryzen 9 9900X (AVX-512), about 123 GiB RAM: from the [Tier-A record](NIBBLER_TIER_A.md#2-hardware-and-software-state); not re-captured |
 
 All benchmark/measurement binaries were verified against the hashes recorded in
@@ -75,7 +75,9 @@ the final gate run (`sha256sum -c` in-session) before use.
 ## 3. Families under test
 
 Both families are already upstream and **on by default**. Each pair runs the
-same executable, inputs and settings, and exactly one opt-out variable differs:
+same executable, recorded input paths and requested settings, and exactly one
+opt-out variable differs. Input content identity has the limits in
+[deviation 2](#8-deviations-from-the-plan):
 
 | Family | Arm A (default) | Arm B (opt-out) | What differs |
 | --- | --- | --- | --- |
@@ -259,8 +261,8 @@ launches in 832 s.
   full order is in `timing.log`.
 - Diagnostics and readbacks were off.
 
-**Fixed settings:** argv was identical across arms apart from the temporary
-token-file path.
+**Requested settings:** argv was identical across arms apart from the temporary
+token-file path. Requested cache slots are not the resolved resident count.
 
 ```
 --max-new 256|512 --pack /data/llm/Strata-data/packs/iq3_s
@@ -274,6 +276,26 @@ token-file path.
 **Environment:** every ambient `STRATA_*` variable was stripped, then only
 `STRATA_PF_FUSED=1` and `STRATA_IQ_MT_MIN=1` were set, plus the one opt-out on
 B arms. Sampling was greedy.
+
+**Observed runtime settings:** all 40 r2 model arms (8 diagnostic and 32 clean,
+including preparatory arms) report the following in `diag/arms/*/stderr.txt`
+and `timing/arms/*/stderr.txt`. These are engine startup/prefill observations,
+not newly measured settings or content-identity checks. Concrete examples are
+`timing/arms/normrope.{short_code,long_doc}.rec0.A/stderr.txt` under the r2
+artifact root in §12.
+
+| Setting | Resolved value in r2 logs |
+| --- | --- |
+| Expert cache | **2582 slots**, 4.96 GiB VRAM, pre-filled 2582/2582 from the profile; argv requested **2000**. PROFILE policy, ranked by routing frequency, no eviction; R4 GPU hit path on; token graph reports 2582 resident experts, decided on-device. |
+| CPU pool | 36 tasks/phase (automatic), 12 participating threads: 11 workers on logical processors 1–11, host thread on 0 (also draining). |
+| KV placement | 32768/262144 cells per QSA layer in VRAM, remaining K/V in 3.09 GiB pinned RAM. `--kv int8` is the recorded argv format. |
+| Prompt chunk and cache loan | short_code: auto chunk 256, borrows/refills 311 slots (0.59 GiB), 41 prefill tokens in 1 chunk; long_doc: auto chunk 8192, borrows/refills 2075 slots (3.97 GiB), 8886 prefill tokens in 2 chunks. |
+| Draft/verify | Draft head over 106299 tokens (212.9 MiB); verify cap T=6, 75.8 MiB device buffers. The MTP/lookup distinction remains as described in §7.3. |
+| Expert arena and sampling | Buffered file-cache reads; `cudaHostRegister PORTABLE ok`; explicit huge pages unavailable (`vm.nr_hugepages=0`), THP reported always on; greedy sampling. |
+
+No separate full non-STRATA environment/CUDA-cache-state manifest was retained.
+The script records its PATH setup and the logs record CPU-pool placement, but
+neither proves every ambient runtime setting was identical between arms.
 
 **Prompts:** short_code was 42 IDs (hash `563cf85e6f7c1247`, 256 new tokens) and
 long_doc was 8887 IDs (`0157820299822d1b`, 512 new tokens).
@@ -441,10 +463,20 @@ cost from these runs. No steady-state gain or regression is established.
    - **Rerun:** session r2 then passed. This is the only contract changed after
      seeing host data, and it relaxes window alignment only, not the bitwise
      identity requirement.
-2. **Model input identity:** model inputs were identified by path, size and
-   mtime (`timing/provenance.json`), not by content sha256. The 54.8 GB and
-   28.8 GB shards were not re-hashed. The pack is identified by its directory
-   only.
+2. **Input and dependency content identity:** r2 `diag/provenance.json` and
+   `timing/provenance.json` record equal paths and `size`/`mtime_ns` for the
+   GGUF shards, expert profile, pack and MTP directory at those two run-level
+   captures, not content sha256. The 54.8 GB and 28.8 GB shards (54817524224
+   and 28800138432 B) and the 196632 B expert profile were not content-hashed
+   in these records. Pack and MTP each have directory stat size 4096 B:
+   **directory stat identity does not establish unchanged child contents**;
+   modifying an existing child can leave the directory's stat unchanged.
+   No child-file/tree content hashes were captured for the pack or MTP, and
+   there is no per-arm or continuous input-content verification. The reused
+   ggml dependency has a recorded path/version but no tree content hash
+   ([§2](#2-pins-hardware-and-toolchain)); production HEAD is not its content
+   identity. Fixed paths and matching metadata cannot certify unchanged model
+   or dependency bytes.
 3. **Representative expert groups:** the plan asked for "proved representative
    groups". The bench used a declared G8/T2 shape, and the model traces carry
    only nominal capacities ([§5.2](#52-native-sub16-expert-layout)).
@@ -484,6 +516,10 @@ Open gaps for the first wave:
   results is unexplained.
 - **Thin statistics:** n=3 pairs per cell, with a single session and a single
   day.
+- **Provenance and host-state coverage:** missing model/pack/MTP/profile/ggml
+  content hashes and snapshot-only state evidence limit identity claims.
+  Final GPU/router state was recorded but not exit-gated in r2; post-run audio
+  health is absent ([§11](#historical-safeguards-enforced-vs-observed)).
 
 ## 10. Disposition
 
@@ -501,11 +537,16 @@ Open gaps for the first wave:
   a decode kernel-time breakdown, *before* touching the default.
 - **Out of scope:** nothing here certifies output quality, serving parity,
   production readiness or the historical all-PR gain.
-- **Production state:** production source HEAD `9921eec`, the
-  binary/config/server/launcher hashes, the launcher guard (mode 644) and the
-  audio process (PID 1436043) were unchanged before and after every host
-  session. No qwen3.8 model was loaded in the router, and the GPU was back to
-  2 MiB with no compute processes.
+- **Recorded production state:** all four saved session post-state files
+  report the four baseline production hashes OK, launcher mode 644, production
+  HEAD `9921eec` and PID 1436043 with command name `audiocpp_server`. The two
+  measurement pre-check logs also record the four hashes OK. These snapshots
+  do not prove the whole source tree, services or files stayed unchanged
+  between checks. Measurement router snapshots list only pocket-tts, and the
+  r2 final GPU snapshot is 2 MiB with no listed compute processes; those final
+  observations were not enforced exit conditions. Audio health was checked
+  only before the sessions, not after. See the exact
+  [enforced-versus-observed mapping](#historical-safeguards-enforced-vs-observed).
 
 ## 11. Reproduction recipes
 
@@ -513,19 +554,64 @@ Every host step ran as root on nibbler inside a transient
 `systemd-run --collect` unit with `KillMode=control-group`. The units used
 `RuntimeMaxSec=900s` (build and gates) or `RuntimeMaxSec=3600s` (measurement).
 
-Each unit pre-checked the following and aborted on any failure:
+### Historical safeguards: enforced vs observed
 
-- production hashes and the launcher mode;
-- production source HEAD `9921eec` and the audio PID;
-- that no unexpected users were logged in;
-- llama-swap active, audio health ok, and no qwen3.8 loaded;
-- RAM and disk headroom;
-- GPU below 2 GiB used, with no compute processes.
+The available r2 script `/tmp/tier-b-measure.sh` (hash in §8) is the source for
+**enforcement**, rather than an assumption that every item in `post-state.txt`
+was asserted. Its pre-checks run under `set -euo pipefail`; `finish()` preserves
+the incoming exit status and runs under `set +e`, then changes that status only
+for four explicit postcondition groups (91–94). Merely printing a query result
+in that function does not make it a fail-closed postcondition.
 
-A matching post-state check ran on exit. Every ambient `STRATA_*` was unset and
-`PATH=/usr/local/cuda-13.3/bin:/usr/bin:/bin`. The homelab
-`scripts/agent-preflight.sh` was run from paseo-nibbler before launching host
-sessions.
+| Check | r2 precondition / intermediate enforcement | r2 exit handling and saved evidence |
+| --- | --- | --- |
+| Production binary/config/server/launcher contents | `sha256sum -c production.expected.sha256` must pass | Rechecked, failure sets exit 91. All four paths show OK in `session.log` and `post-state.txt`. This is four-file coverage, not a full production tree hash. |
+| Offline launcher guard | Mode must be 644 | Rechecked, failure sets exit 92; `post-state.txt` prints 644. |
+| Production source HEAD | Must equal `9921eecae9d442878de5bfe2b2cd25a71fbdb4ed` | Rechecked, failure sets exit 93; post snapshot prints that HEAD. No full working-tree/dirty-content check. |
+| Audio process identity | PID 1436043 must have command name `audiocpp_server` | Rechecked, failure sets exit 94. PID/start time/name are also printed; start time is not an asserted condition, and PID/name is not an audio-health test. |
+| Audio HTTP health | `/health` must return JSON `status=ok`, `backend=cpu` | **No post-run health request or assertion.** Only `audio-before.json` is retained. |
+| Router / service | llama-swap must be active; `/running` must parse with no `qwen3.8*` model | Final `/running` response is logged but neither curl success, JSON validity, service-active state nor model absence changes the exit status. `post-state.txt` lists only pocket-tts; this is an observation, not an enforced postcondition. |
+| GPU / compute processes | Used memory <2048 MiB and empty compute PID list; empty-PID assertions also follow the rope bench, expert bench and diagnostic pairs | Final memory/process queries are logged, with no final predicate or query-status assertion. `gpu-after.csv` records 2 MiB / SM 2842 MHz / 47 °C; `post-state.txt` records 2 MiB and no compute entries. Exit 0 does not enforce final GPU baseline or process absence. |
+| Users / headroom | Only root/pete sessions; MemAvailable ≥33554432 KiB; ≥10737418240 B available on /data | No matching exit checks; not continuous resource monitoring. |
+
+Exact historical local evidence roots are `/tmp/strata-tier-b-artifacts/`:
+
+- `measure-20261008-r2/session.log`: pre-check at
+  **2026-10-08T06:48:27-04:00**, four production hashes OK; script admission
+  checks above. `post-state.txt`: **2026-10-08T07:05:59-04:00**; `result.txt`:
+  `measure_exit=0 elapsed_s=1052`. Pre audio/router responses are in
+  `audio-before.json` / `router-before.json`; the post router response is inside
+  `post-state.txt`, not a separate asserted health artifact.
+- `measure-20261008/session.log`: pre-check at
+  **2026-10-08T06:21:52-04:00**, four hashes OK; `post-state.txt` at
+  **2026-10-08T06:25:58-04:00** has hashes/mode/HEAD/PID, 2 MiB and a router
+  response listing pocket-tts. `result.txt` records exit 1 from the rejected
+  proof gate. The original session-1 script is not present in the inspected
+  artifact copies, so the r2 script's exact assertion set is not retroactively
+  certified for that run.
+- `foundation/post-state.txt` at **2026-10-07T19:10:41-04:00** and
+  `final-gates-20261008/post-state.txt` at **2026-10-07T21:33:12-04:00** each
+  show four hashes OK, mode 644, HEAD `9921eec`, PID/name/start time and 2 MiB.
+  Their `toolchain.txt` / `toolchain-source.txt` record production HEAD at
+  **19:10:00** / **21:33:00** respectively; `result.txt` records gate exit 0.
+  Both have pre audio/router snapshots, but neither post-state file contains a
+  router response or audio-health response. The original gate heredocs are
+  not present in the inspected artifact copies; gate exit 0 and query output
+  alone do not establish
+  the full pre/post enforcement set or a successful empty-process query.
+
+All four post files print the audio start time as Tue Oct 6 07:28:15 2026.
+That is snapshot evidence, not continuous health/liveness monitoring. No
+post-run audio-health artifact is present in any of the four saved roots.
+Historical session notes report supervised units and homelab preflight;
+this correction performs no fresh preflight, service or host-state checks.
+New enforced before/after checks and retained-logit byte revalidation belong
+to the later parent-owned sta-osh.28 stage and are **not claimed here**.
+
+The r2 script strips every ambient `STRATA_*` and sets
+`PATH=/usr/local/cuda-13.3/bin:/usr/bin:/bin`; it does not retain a full
+non-STRATA environment manifest. The commands below reproduce build and
+measurement steps, not a claim that all plan safeguards were enforced.
 
 **Build and native gates** (source `3af1e4c8`, isolated clone `B=/data/llm/Strata-tier-b`):
 
@@ -562,11 +648,18 @@ $PY tools/tier_b/run_pairs.py --mode timing --proof "$D/diag/summary.json" \
 `run_pairs.py` defaults to both families, both workloads, 3 recorded pairs and a
 600 s per-arm timeout ([source](../tools/tier_b/run_pairs.py)). Its offline tests
 are in [test_pairs.py](../tools/tier_b/test_pairs.py). Timing refuses to start
-without a passing proof summary for the same executable hash, inputs and prompts.
+without a passing diagnostic summary and matching executable hash, recorded
+input paths/size/mtime and prompt identity. That metadata gate is not a
+content-hash comparison of model, pack or MTP children.
 
 ## 12. Artifacts and provenance
 
-All artifacts are on nibbler. The local copies omit the large logit row files.
+The historical host locations and original local snapshot roots are below;
+they are not fresh host availability checks. The original compact copies in
+`/tmp/strata-tier-b-artifacts` omit the large logit row files. Full session-1/r2
+exports are now retained separately under
+`/tmp/tier-b-retained/{measure-20261008,measure-20261008-r2}`; they were not
+revalidated by this documentation correction.
 
 | Session | Host path | Local copy | Result |
 | --- | --- | --- | --- |
@@ -585,9 +678,15 @@ Key files in r2:
   `timing.log`: raw model arms and run order; stdout retains whole-run T
   histograms and accepted/offered draft counts.
 - `binaries.expected.sha256` and `harness.sha256`: binary and harness hashes.
-- `production.expected.sha256` and `post-state.txt`: production baseline and
-  post-run state.
-- `gpu-before.csv` and `gpu-after.csv`: GPU state before and after.
+- `diag/provenance.json` and `timing/provenance.json`: executable hash, prompt
+  identity and run-level input path/stat metadata, not model/tree content hashes.
+- `production.expected.sha256` and `post-state.txt`: four-file production
+  baseline and timestamped post-run observations; assertion coverage is in §11.
+- `audio-before.json` and `router-before.json`: pre-run service responses;
+  there is no post audio-health file. The measurement post router response is
+  embedded in `post-state.txt`.
+- `gpu-before.csv` and `gpu-after.csv`: recorded GPU snapshots, not evidence of
+  an asserted final baseline.
 
 Final-gate files: `binaries.sha256`, `checkout.sha256`, `toolchain-source.txt`,
 `CMakeCache.txt`, `configure.log`, `build.log`, `gates.log`, `rope-trace.log` and

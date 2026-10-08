@@ -249,7 +249,7 @@ Planned new paths are shown as code, not links to nonexistent files.
 | --- | --- | --- |
 | sta-osh.1 | Committed `5ad25255` in `src/kernels/rope_parity.cpp`: section 6 T1..8, heads128/256, rotary64, contiguous/in-place/strided q|gate, table/fallback, direct and changed-input/position graph replay, tails/padding, checked CUDA errors and cleanup; preserve other sections and appropriate tolerances. | → .13/.6/.10; foundation GPU PASS: 192 cases, 576 graph launches, 384 changed-input/pos replays bit-identical, 0 errors. |
 | sta-osh.2 | Committed `8b375cc7` in IQ header/CUDA/multi-parity: narrow selector initialized from existing env/default, chosen before capture and restored; identical Q8_1 bytes; mixed pairs2560x640; tails1/2/3/4/5/8/11, empty groups/scattered destinations/guards, direct and changed-input graph comparisons, fail-closed CUDA and cleanup. | → .13/.7/.10; foundation GPU PASS: all 7 manifest pairs 2560x640, tails/empty/scatter, direct+graphs bitwise, 0 failures. |
-| sta-osh.13 | Primary-only foundation build of ONLY committed `rope_parity`/`iq_multi_parity`/`native_grouped_parity` at foundation SHA `8b375cc7`: cmake 61 actions CUDA 13.3.73/GCC 15.3/sm120; ctest 3/3 PASS, 0 skip, 2.92 s; unit service 40.919 s peak 1.3 G success; post state 4 prod hashes OK, source `9921eec`, guard 644, audio 1436043, GPU 2 MiB, no compute process. No benchmark/model timing. | .1+.2 + sta-d76 + sta-0a7 → .13 → .4. **PASSED at foundation SHA**; final .10 must rebuild/rerun after later code changes and .8 registration. |
+| sta-osh.13 | Primary-only foundation build of ONLY committed `rope_parity`/`iq_multi_parity`/`native_grouped_parity` at foundation SHA `8b375cc7`: cmake 61 actions CUDA 13.3.73/GCC 15.3/sm120; ctest 3/3 PASS, 0 skip, 2.92 s; unit service 40.919 s peak 1.3 G success; saved post-state snapshot: 4 prod hashes OK, source HEAD `9921eec`, guard 644, audio PID/name 1436043/audiocpp_server and GPU 2 MiB; no retained post audio-health/router response or gate heredoc certifying the assertion set. No benchmark/model timing. | .1+.2 + sta-d76 + sta-0a7 → .13 → .4. **PASSED at foundation SHA**; final .10 must rebuild/rerun after later code changes and .8 registration. |
 | sta-osh.3 | This plan: pins/history, f/h and exclusions, source/reference links, eligibility limits, contracts, complete acceptance map, bounds, mandatory host/harness gates. | Blocks .11. Document checks only; no code/Beads/GPU authority. |
 | sta-osh.4 | Opt-in bounded machine-readable diagnostics in native RoPE/IQ plus small helper; disabled mode has no readback/allocation/sync/logs. Record actual family/shape/formats/path/submission state, distinguish capacity from actual groups and unsupported/empty work, no selector switch inside capture. | .1+.2 → .4 → .5/.11. Submission record is not execution proof. |
 | sta-osh.5 | Bounded completed-window export in `src/program/generate.cpp`, minimal verifier accessor only if needed; offline `tools/tier_b/test_diagnostics.py`. Window ordinal/position/T/accepted/emitted/input hashes/status; checked full native logit rows with vocab/shape/offset metadata and explicit truncation; readback/I/O errors reject. | .4 → .5 → .9/.11. Use `Verifier::copy_logits`; ordinary `--dump-logits` bypasses this native path. No change to acceptance/commit or serving ownership. |
@@ -298,8 +298,13 @@ placement, KV and speculation settings. In particular: `--expert-cache 2000`,
 `--pcie-frac 0`, `--adapt-every 0`, `--prefill auto`, `--spec 4`,
 `--spec-min-p 0.5`, `--max-context 262144`, `--kv-resident 32768`,
 `--kv int8`, `--vram-reserve-mib 2048`, `--stats`, `--stop-eos`.
-Record actual resident slots separately from requested cache slots. No
-adaptation, migrated placement, new expert profile or per-arm cache tuning.
+Record actual resident slots separately from requested cache slots. The
+[historical r2 runtime logs](NIBBLER_TIER_B.md#7-cold-process-model-timings)
+resolve **2582** pre-filled/resident slots (4.96 GiB) despite argv requesting
+**2000**; they also record CPU-pool placement, KV residency, prompt chunk sizes
+and cache loans. Report resolved values from retained logs, not inferred from
+requested flags. No expert-placement adaptation, migrated placement, new
+expert profile or per-arm cache tuning.
 Freeze greedy sampling (no `--seed` enabling sampling), penalties and defaults
 in the argv manifest; any future sampling experiment needs a separate plan.
 
@@ -319,6 +324,19 @@ library/tool paths, CPU thread/affinity settings and relevant CUDA cache state).
 Do not record secrets or unrelated environment contents. Primitive table modes
 are a separate explicit gate/bench configuration, identical within a pair;
 they do not silently enable `STRATA_ROPE_TABLE` in the model matrix.
+
+**Content identity is separate from path/stat identity.** The original r2
+provenance captured equal input paths/size/mtime at diagnostic and timing
+startup, not content hashes. Directory stat for pack or MTP does not establish
+unchanged child contents; an existing child can change without changing its
+parent directory stat. Record per-file/tree content hashes where identity is
+required, including reused dependency sources such as ggml; a configure-time
+version or enclosing production HEAD is not a dependency content hash. The
+historical model shards, expert profile, pack/MTP child trees and ggml tree
+lack those hashes ([report deviation 2](NIBBLER_TIER_B.md#8-deviations-from-the-plan)).
+Do not describe matching metadata as unchanged input bytes, or backfill new
+hashes into a claim about historical contents. The historical r2 artifacts
+also lack a full non-STRATA environment/CUDA-cache-state manifest.
 
 ### Predeclare bounds before the first host launch
 
@@ -460,6 +478,17 @@ quality improvement or historical all-PR gain is inferred from this probe.
 
 ## Host rejection gates
 
+These are requirements for an authorized host stage, not assertions that every
+historical run enforced them. The report's
+[historical enforced-versus-observed mapping](NIBBLER_TIER_B.md#historical-safeguards-enforced-vs-observed)
+uses the retained r2 script and timestamped gate/session artifacts: r2 final
+GPU/process/router queries were logging only, and post audio HTTP health was
+absent. A successful historical exit is not proof that those postconditions
+were enforced; the gate heredocs are not present in the inspected artifact
+copies. Later parent-owned sta-osh.28 checks and retained-byte revalidation
+are pending, not retroactive
+evidence or completion claimed by this document.
+
 Only the primary may later perform the authorized host stage. This document
 task performs **no SSH, GPU, live, setup or model-download operation**.
 Before any such later action, primary must read the homelab repository's
@@ -493,9 +522,16 @@ No edits to `/data/llm/Strata` production source, binary, config, server or
 launcher; no fork replacement/reapply, deployment or promotion. Preserve the
 **Qwen offline launcher guard; no timers**. Audio and router remain untouched;
 verify their recorded baseline health before/after without changing them.
+For new authorized checks, enforce and record command success and predicates
+on both sides: production hashes/HEAD/launcher mode, audio PID identity **and
+HTTP health**, router/service state and no unexpected Qwen, GPU baseline and
+empty compute processes. Missing, malformed or failed checks must reject the
+stage; printing snapshots in a `set +e` exit trap does not enforce them.
 At exit verify owned units/process groups inactive and GPU returned to the
-observed baseline, not forcibly cleared. No Tier-C KV/storage/serving/unified
-KV/handoff/admission work, setup/update scripts, model downloads, GitHub
+observed baseline, not forcibly cleared. Such before/after checks establish
+states at those times, not continuous unchanged state between them.
+No Tier-C KV/storage/serving/unified KV/handoff/admission work, setup/update
+scripts, model downloads, GitHub
 fetch/push/PR, commits/amends, branches/worktrees or extra agents are in scope.
 
 ## Artifact manifest and disposition
@@ -515,6 +551,10 @@ and post-change rebuild remain future.
   placement/cache/residency/PCIe settings, sampling/speculation/KV settings.
 - Fresh preflight/GPU/process/service/guard/resource snapshots and production
   content checksums, before/after; bounds/schedule/rotation/L2/allocation bytes.
+  Label each check as enforced, observed-only or absent, with query status,
+  predicate result, timestamp and effect on the stage exit. Distinguish process
+  identity from audio HTTP health and router `/running` from service health;
+  never infer an enforced postcondition from a saved query response alone.
 - Configure/build/CTest commands, logs, exit codes, required case counts,
   skips/failures/tolerances; direct versus changed-input graph evidence.
 - Separate diagnostic records/completed-window metadata/full-logit rows and
