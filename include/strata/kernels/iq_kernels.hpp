@@ -12,6 +12,27 @@
 
 namespace strata::kernels {
 
+/// Host launch/argument failures default to contextual stderr + exit(1), as before.  Only audited
+/// standalone callers may opt into standard exceptions.  This policy is thread-local, starts false
+/// in every thread, and is not inherited by worker threads or recorded in CUDA graphs.  It affects
+/// neither successful launches nor asynchronous execution errors (the caller still checks those).
+/// Prefer IqHostErrorScope over manual changes; never opt an unaudited engine/serving path in.
+bool iq_host_errors_throw() noexcept;
+void iq_set_host_errors_throw(bool enabled) noexcept;
+
+/// Enable checked IQ host failures for this calling thread and restore its prior policy on all exits.
+/// Nestable, with no allocation or CUDA call.  Keep the scope on its original thread; it cannot move.
+class IqHostErrorScope {
+    const bool prior_;
+public:
+    IqHostErrorScope() noexcept : prior_(iq_host_errors_throw()) { iq_set_host_errors_throw(true); }
+    ~IqHostErrorScope() noexcept { iq_set_host_errors_throw(prior_); }
+    IqHostErrorScope(const IqHostErrorScope&) = delete;
+    IqHostErrorScope& operator=(const IqHostErrorScope&) = delete;
+    IqHostErrorScope(IqHostErrorScope&&) = delete;
+    IqHostErrorScope& operator=(IqHostErrorScope&&) = delete;
+};
+
 /// ggml type ids handled here.
 bool iq_supported(int ggml_type) noexcept;
 /// The token-embedding types iq_embed_rows and iq_dequant_f32 read: the i-quants above and BF16 (30).

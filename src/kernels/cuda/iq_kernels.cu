@@ -21,13 +21,41 @@
 #include <utility>
 #include <cstdlib>
 #include <type_traits>
+#include <stdexcept>
+#include <string>
 
 namespace strata::kernels {
 namespace {
 
+// Unaudited engine callers retain their original fail-closed behavior.  Only a caller-local scope
+// opts into unwinding; neither another thread nor a captured graph inherits this host policy.
+thread_local bool g_iq_host_errors_throw = false;
+
 void check(const char* what) {
     const cudaError_t e = cudaGetLastError();
-    if (e != cudaSuccess) { std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e)); std::exit(1); }
+    if (e != cudaSuccess) {
+        const char* message = cudaGetErrorString(e);
+        if (g_iq_host_errors_throw) throw std::runtime_error(std::string(what) + ": " + message);
+        std::fprintf(stderr, "%s: %s\n", what, message);
+        std::exit(1);
+    }
+}
+
+template<typename... Args>
+[[noreturn]] void host_argument_error(const char* format, Args... args) {
+    if (!g_iq_host_errors_throw) {
+        // No string allocation/exception on the default path; preserve the original text and exit.
+        std::fprintf(stderr, format, args...);
+        std::exit(1);
+    }
+    // Every call below has a fixed short format (including int64 extrema).  Check rather than
+    // silently truncate if a future call exceeds this bound.  Formatting is failure-only, never hot.
+    char message[256];
+    const int written = std::snprintf(message, sizeof(message), format, args...);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(message))
+        throw std::runtime_error("IQ host argument error formatting failed");
+    if (written > 0 && message[written - 1] == '\n') message[written - 1] = '\0';
+    throw std::invalid_argument(message);
 }
 
 // ---------------------------------------------------------------- llama.cpp helpers (vecdotq.cuh)
@@ -2727,6 +2755,9 @@ void launch_down(dim3 grid, cudaStream_t s, const unsigned long long* grp_ptr, c
 
 }  // namespace
 
+bool iq_host_errors_throw() noexcept { return g_iq_host_errors_throw; }
+void iq_set_host_errors_throw(bool enabled) noexcept { g_iq_host_errors_throw = enabled; }
+
 void iq_set_old_kernels(bool old) { g_old_kernels = old; }
 bool iq_old_kernels() { return g_old_kernels; }
 void native_grouped_set_no_sub16_gu(bool no_sub16) { g_no_sub16_gu = no_sub16; }
@@ -2784,13 +2815,14 @@ void iq_mmvq(int t, const void* w, const void* x_q8_1, float* y, int n_in, int n
             if (tier_b::enabled())
                 tier_b::emit("iq_mmvq", "iq_mmvq", "unsupported",
                              t, -1, n_in, -1, n_out, -1, -1, ncols, -1, -1, -1, -1, stream);
-            std::fprintf(stderr, "iq_mmvq: type %d is not supported\n", t); std::exit(1);
+            host_argument_error("iq_mmvq: type %d is not supported\n", t);
     }
     check("iq_mmvq");
 }
 
 void iq_dequant_f16(int t, const void* src, int64_t n, uint16_t* dst, void* stream) {
-    if (n % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_f16: bad arguments\n"); std::exit(1); }
+    if (n % 256 != 0 || !is_iq(t))
+        host_argument_error("iq_dequant_f16: bad arguments\n");
     dequant_flat_kernel<__half><<<(unsigned) (n / 256), 32, 0, (cudaStream_t) stream>>>(t, src, (__half*) dst);
     check("iq_dequant_f16");
 }
@@ -2808,21 +2840,24 @@ __global__ void embed_rows_kernel(int ty, const uint8_t* __restrict__ table, siz
 void iq_embed_rows(int t, const void* table, size_t row_bytes, const int32_t* tokens, int64_t n_tok, int64_t n_embd,
                    float* out, void* stream) {
     if (n_tok <= 0) return;
-    if (n_embd % 256 != 0 || !embed_type_supported(t)) { std::fprintf(stderr, "iq_embed_rows: bad arguments\n"); std::exit(1); }
+    if (n_embd % 256 != 0 || !embed_type_supported(t))
+        host_argument_error("iq_embed_rows: bad arguments\n");
     embed_rows_kernel<<<dim3((unsigned) (n_embd / 256), (unsigned) n_tok), 32, 0, (cudaStream_t) stream>>>(
         t, (const uint8_t*) table, row_bytes, tokens, n_embd, out);
     check("iq_embed_rows");
 }
 
 void iq_dequant_f32(int t, const void* src, int64_t n, float* dst, void* stream) {
-    if (n % 256 != 0 || !embed_type_supported(t)) { std::fprintf(stderr, "iq_dequant_f32: bad arguments\n"); std::exit(1); }
+    if (n % 256 != 0 || !embed_type_supported(t))
+        host_argument_error("iq_dequant_f32: bad arguments\n");
     dequant_flat_kernel<float><<<(unsigned) (n / 256), 32, 0, (cudaStream_t) stream>>>(t, src, dst);
     check("iq_dequant_f32");
 }
 
 void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst, void* stream) {
     // checked like the other entry points: an unknown type used to leave `dst` unwritten, a wrong prompt and no error
-    if (n_embd % 256 != 0 || !is_iq(t)) { std::fprintf(stderr, "iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd); std::exit(1); }
+    if (n_embd % 256 != 0 || !is_iq(t))
+        host_argument_error("iq_dequant_gu_f16: type %d / %lld\n", t, (long long) n_embd);
     const int64_t per_row = n_embd / 256;
     dequant_gu_kernel<<<dim3((unsigned) (n_ff * per_row), 2), 32, 0, (cudaStream_t) stream>>>(t, gate, up, per_row,
                                                                                            (__half*) dst);
@@ -3425,7 +3460,8 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                          cap_groups, cap_entries, grid_groups, -1, stream);
         return;
     }
-    if (L.n_ff % 32 != 0) { std::fprintf(stderr, "native_expert_grouped: n_ff %lld\n", (long long) L.n_ff); std::exit(1); }
+    if (L.n_ff % 32 != 0)
+        host_argument_error("native_expert_grouped: n_ff %lld\n", (long long) L.n_ff);
     cudaStream_t s = (cudaStream_t) stream;
     const size_t f = (size_t) cap_entries * (size_t) L.n_ff * sizeof(float), fa = (f + 255) & ~(size_t) 255;
     float* gate = (float*) scratch;
@@ -3552,7 +3588,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                 tier_b::emit("iq_grouped", "native_expert_grouped.gu", "unsupported",
                              L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
                              cap_groups, cap_entries, gy, -1, stream);
-            std::fprintf(stderr, "native_expert_grouped: gate/up type %d\n", L.gu_type); std::exit(1);
+            host_argument_error("native_expert_grouped: gate/up type %d\n", L.gu_type);
     }
 #if defined(STRATA_HIP_GFX906)
     }
@@ -3625,7 +3661,7 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
                 tier_b::emit("iq_grouped", "native_expert_grouped.down", "unsupported",
                              L.gu_type, L.d_type, L.n_embd, L.n_ff, -1, -1, -1, -1,
                              cap_groups, cap_entries, gy, -1, stream);
-            std::fprintf(stderr, "native_expert_grouped: down type %d\n", L.d_type); std::exit(1);
+            host_argument_error("native_expert_grouped: down type %d\n", L.d_type);
     }
     check("native_expert_grouped/down");
 }

@@ -3,7 +3,8 @@
 Compiles with g++, real Strata API headers, and an in-memory fake CUDA runtime.
 No CUDA SDK, driver, GPU, model, downloads, or source rewriting. The kernels below
 are deliberately synthetic: this proves lifecycle/error handling, NOT GPU parity.
-It cannot intercept std::exit inside the separately linked iq_kernels.cu.
+The submit stub requires the caller's checked-error policy before injecting a
+kernel exception; actual IQ host policy/default exits are tested separately.
 """
 from __future__ import annotations
 
@@ -54,7 +55,12 @@ inline bool hit(const char* name) {
 }
 inline int release_error(bool hit) { return hit || (cleanup_errors && injected) ? 999 : 0; }
 inline void submit(void* stream, const std::function<void()>& call) {
-    if (hit("kernel")) throw std::runtime_error("injected kernel exception");
+    if (hit("kernel")) {
+        if (!strata::kernels::iq_host_errors_throw()) {
+            std::fprintf(stderr, "injected kernel error without caller opt-in\n"); std::exit(1);
+        }
+        throw std::runtime_error("injected kernel exception");
+    }
     auto* s = static_cast<cudaStream_t>(stream);
     if (s->capture) s->calls.push_back(call); else call();
 }
@@ -166,6 +172,9 @@ void operator delete(void* p, size_t) noexcept { std::free(p); }
 
 namespace strata::kernels {
 bool fake_layout = true, fake_old = true;
+thread_local bool fake_throw = false;
+bool iq_host_errors_throw() noexcept { return fake_throw; }
+void iq_set_host_errors_throw(bool enabled) noexcept { fake_throw = enabled; }
 bool native_grouped_no_sub16_gu() { return fake_layout; }
 void native_grouped_set_no_sub16_gu(bool v) { fake_layout = v; }
 bool iq_old_kernels() { return fake_old; }
@@ -237,12 +246,13 @@ void native_expert_grouped(const NativeExpertLayout& L, const unsigned long long
 }
 
 int main(int argc, char** argv) {
-    if (argc != 7) return 90;
+    if (argc != 8) return 90;
     const std::string action = argv[1];
     iq_fake::operation = argv[2]; iq_fake::occurrence = std::atoi(argv[3]);
     iq_fake::after_acquire = std::atoi(argv[4]); iq_fake::cleanup_errors = std::atoi(argv[5]);
     k::fake_layout = std::atoi(argv[6]); k::fake_old = !k::fake_layout;
-    const bool prior_layout = k::fake_layout, prior_old = k::fake_old;
+    k::iq_set_host_errors_throw(std::atoi(argv[7]));
+    const bool prior_layout = k::fake_layout, prior_old = k::fake_old, prior_policy = k::iq_host_errors_throw();
     int result = 0;
     try {
         if (action == "main") {
@@ -270,11 +280,13 @@ int main(int argc, char** argv) {
     if (g_cleanup_fail) result = 2;
     const bool clean = iq_fake::allocations.empty() && iq_fake::streams == 0 && iq_fake::graphs == 0 &&
         iq_fake::execs == 0 && iq_fake::events == 0 && iq_fake::captures == 0;
-    const bool restored = k::fake_layout == prior_layout && k::fake_old == prior_old;
+    const bool policy_restored = k::iq_host_errors_throw() == prior_policy;
+    const bool restored = k::fake_layout == prior_layout && k::fake_old == prior_old && policy_restored;
     std::printf("IQ_CLEANUP result=%d injected=%d host_failure=%d allocations=%zu streams=%d graphs=%d execs=%d "
-                "events=%d captures=%d restored=%d cleanup_errors=%d parity_failures=%d\n", result, iq_fake::injected,
-                iq_fake::host_failure, iq_fake::allocations.size(), iq_fake::streams, iq_fake::graphs, iq_fake::execs,
-                iq_fake::events, iq_fake::captures, restored, g_cleanup_fail, g_fail);
+                "events=%d captures=%d restored=%d cleanup_errors=%d parity_failures=%d policy_restored=%d policy=%d\n",
+                result, iq_fake::injected, iq_fake::host_failure, iq_fake::allocations.size(), iq_fake::streams,
+                iq_fake::graphs, iq_fake::execs, iq_fake::events, iq_fake::captures, restored, g_cleanup_fail, g_fail,
+                policy_restored, k::iq_host_errors_throw());
     if (!clean || !restored) return 92;
     if (iq_fake::operation != "none" && (!iq_fake::injected || result != 2)) return 93;
     if (iq_fake::operation == "none" && (result != 0 || g_fail != 0)) return 94;
@@ -299,12 +311,14 @@ class TestIqCudaCleanup(unittest.TestCase):
         if run.returncode:
             raise AssertionError(f"{cmd}\n{run.stdout}\n{run.stderr}")
 
-    def probe(self, action, operation, occurrence=1, after=False, cleanup=False, prior=True):
+    def probe(self, action, operation, occurrence=1, after=False, cleanup=False, prior=True, policy=False):
         env = {k: v for k, v in os.environ.items() if not k.startswith("STRATA_")}
         run = subprocess.run([str(self.exe), action, operation, str(occurrence), str(int(after)),
-                              str(int(cleanup)), str(int(prior))], env=env, capture_output=True, text=True, timeout=30)
+                              str(int(cleanup)), str(int(prior)), str(int(policy))],
+                             env=env, capture_output=True, text=True, timeout=30)
         self.assertEqual(run.returncode, 0, f"{action}/{operation}/{occurrence}/{after}:\n{run.stdout}\n{run.stderr}")
         self.assertIn("allocations=0 streams=0 graphs=0 execs=0 events=0 captures=0 restored=1", run.stdout)
+        self.assertIn(f"policy_restored=1 policy={int(policy)}", run.stdout)
         return run
 
     def test_layout_success_both_initial_selectors(self):
@@ -395,6 +409,13 @@ class TestIqCudaCleanup(unittest.TestCase):
                                   ("grouped", "kernel", 2), ("bench", "event_create", 2)):
                 with self.subTest(prior=prior, action=action, op=op):
                     self.probe(action, op, n, prior=prior)
+
+    def test_checked_policy_restored_for_both_prior_states(self):
+        for policy in (False, True):
+            for action, op, n in (("main", "none", 1), ("main", "kernel", 1), ("main", "stream_create", 1),
+                                  ("layout", "kernel", 4), ("mmvq", "kernel", 1), ("grouped", "kernel", 2)):
+                with self.subTest(policy=policy, action=action, op=op):
+                    self.probe(action, op, n, policy=policy)
 
     def test_full_program_synthetic_success(self):
         run = self.probe("main", "none")

@@ -104,6 +104,8 @@ using Graph = CudaHandle<cudaGraph_t, cudaGraphDestroy>;
 using GraphExec = CudaHandle<cudaGraphExec_t, cudaGraphExecDestroy>;
 
 struct SelectorGuard {
+    // This standalone caller owns/unwinds its CUDA resources; unaudited engine callers stay fail-closed.
+    k::IqHostErrorScope errors;
     const bool layout = k::native_grouped_no_sub16_gu(), old = k::iq_old_kernels();
     ~SelectorGuard() noexcept {
         k::native_grouped_set_no_sub16_gu(layout);
