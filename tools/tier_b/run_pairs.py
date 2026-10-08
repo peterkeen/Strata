@@ -416,6 +416,9 @@ def validate_trace(records: list[dict[str, str]], family: Family, is_default_arm
 _ROWS_MAGIC = b"TBE1"
 _ROWS_HEADER = struct.Struct("<4sIqqq")  # magic, version, vocab, row_floats, reserved
 _ROWS_HEADER_BYTES = 32
+# Verifier::run accepts 1..max_t; init caps max_t at kVerifyMaxT and cpu::MAXT,
+# both 8 (include/strata/kernels/verify_kernels.hpp and cpu/expert.hpp).
+VERIFY_MAX_T = 8
 
 _W_RE = re.compile(
     r"^W (\d+) (\d+) (\d+) (\d+) (\d+) "
@@ -555,22 +558,48 @@ def validate_export(manifest: ExportManifest, rows: RowsFile,
                                  f"window count {len(manifest.windows)} exceeds bound"
                                  f" {bounds.max_windows}")
     ok_windows = 0
+    spans: list[tuple[int, int]] = []
+    last_ordinal = max((w.ordinal for w in manifest.windows), default=-1)
+    row_bytes = manifest.vocab * 4
     for w in manifest.windows:
         if w.status != "ok":
             return ExportVerdict(False, False, ok_windows,
                                  f"window {w.ordinal} non-ok status {w.status!r}")
+        if not (1 <= w.T <= VERIFY_MAX_T):
+            return ExportVerdict(False, False, ok_windows,
+                                 f"window {w.ordinal} unsupported T={w.T} (required 1..{VERIFY_MAX_T})")
+        # generate.cpp commits a+1 inputs, then emits outv[0..a] subject to
+        # max_new/EOS. The loop starts with budget remaining, so emitted is
+        # positive, but need NOT equal accepted+1 (nor the T verifier picks).
+        if not (0 <= w.accepted < w.T and 1 <= w.emitted <= w.accepted + 1):
+            return ExportVerdict(False, False, ok_windows,
+                                 f"window {w.ordinal} bad accepted/emitted counts "
+                                 f"accepted={w.accepted} emitted={w.emitted} T={w.T}")
+        if w.emitted < w.accepted + 1 and w.ordinal != last_ordinal:
+            return ExportVerdict(False, False, ok_windows,
+                                 f"window {w.ordinal} clipped emitted prefix before later window")
         if len(w.picks) != w.T:
             return ExportVerdict(False, False, ok_windows,
                                  f"window {w.ordinal} picks/T mismatch")
-        want = w.T * manifest.vocab * 4
-        if w.rows_bytes != want or w.rows_offset < _ROWS_HEADER_BYTES:
+        if any(p < 0 or p >= manifest.vocab for p in w.picks):
+            return ExportVerdict(False, False, ok_windows,
+                                 f"window {w.ordinal} verifier pick outside vocab")
+        want = w.T * row_bytes
+        if w.rows_bytes <= 0 or w.rows_bytes != want or w.rows_offset < _ROWS_HEADER_BYTES:
             return ExportVerdict(False, False, ok_windows,
                                  f"window {w.ordinal} bad row span")
         start = w.rows_offset - _ROWS_HEADER_BYTES
         end = start + w.rows_bytes
+        if start % row_bytes != 0:
+            return ExportVerdict(False, False, ok_windows,
+                                 f"window {w.ordinal} row span not row-aligned")
         if end > len(rows.data):
             return ExportVerdict(False, False, ok_windows,
                                  f"window {w.ordinal} rows beyond file (short export)")
+        if any(start < prev_end and prev_start < end for prev_start, prev_end in spans):
+            return ExportVerdict(False, False, ok_windows,
+                                 f"window {w.ordinal} overlapping row span")
+        spans.append((start, end))
         floats = struct.unpack(f"<{w.T * manifest.vocab}f", rows.data[start:end])
         if not all(math.isfinite(x) for x in floats):
             return ExportVerdict(False, False, ok_windows,
@@ -628,8 +657,8 @@ def compare_pair(family: Family,
     Speculative draft lengths are not deterministic run to run, so the two arms
     may window the same committed tokens differently; ordinal alignment is not
     a valid contract.  Both arms must export valid windows with unique keys.
-    For every key present in BOTH arms the emitted token IDs must be equal and
-    the predeclared contract (bitwise for both first-wave identity families;
+    For every key present in BOTH arms accepted/emitted counts, the emitted
+    prefix IDs and all T verifier picks must be equal, and the predeclared contract (bitwise for both first-wave identity families;
     the tolerance branch exists only for future declared families) is applied
     to the logit rows.  At least `min_matched_windows` (bounds; 1 without
     bounds) keys must match.  Unmatched windows are counted, never compared and
@@ -660,8 +689,15 @@ def compare_pair(family: Family,
                                          f"(unmatched A={n_ua} B={n_ub})", len(common), n_ua, n_ub)
     for k in common:
         wa, wb = ka[k], kb[k]
+        where = f"window pos={k[0]} T={k[1]}"
+        if (wa.accepted, wa.emitted) != (wb.accepted, wb.emitted):
+            return PairVerdict(False, False, f"accepted/emitted counts mismatch at {where}",
+                               len(common), n_ua, n_ub)
+        if wa.picks[:wa.emitted] != wb.picks[:wb.emitted]:
+            return PairVerdict(False, False, f"emitted token IDs mismatch at {where}",
+                               len(common), n_ua, n_ub)
         if wa.picks != wb.picks:
-            return PairVerdict(False, False, f"emitted token IDs mismatch at window pos={k[0]} T={k[1]}",
+            return PairVerdict(False, False, f"verifier picks mismatch at {where}",
                                len(common), n_ua, n_ub)
     # Contract on the logit rows themselves.  Both exports have independently
     # passed finite-value validation above; equal bytes alone are not enough.

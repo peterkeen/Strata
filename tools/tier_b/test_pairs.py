@@ -94,8 +94,8 @@ def export_files(vocab: int, windows: list[dict], *, truncation=False,
         T = w["T"]
         rows_bytes = T * vocab * 4
         status = w.get("status", "ok")
-        off = offset if status == "ok" else -1
-        rb = rows_bytes if status == "ok" else -1
+        off = w.get("rows_offset", offset if status == "ok" else -1)
+        rb = w.get("rows_bytes", rows_bytes if status == "ok" else -1)
         picks = ",".join(str(p) for p in w["picks"])
         lines.append(
             f"W {i} {w['pos']} {T} {w.get('accepted', T - 1)} {w.get('emitted', T)} "
@@ -120,8 +120,16 @@ def build_export(vocab: int, windows: list[dict], **kw):
     return rp.parse_manifest(text), rp.parse_rows(blob)
 
 
+def window_fixture(T=1, **kw) -> dict:
+    """Valid toy-vocab metadata by default; explicit overrides exercise rejection."""
+    w = {"pos": 100, "T": T, "accepted": T - 1, "emitted": T,
+         "picks": [i % 4 for i in range(T)], "rows": [[1.0, 2.0, 3.0, 4.0] for _ in range(T)]}
+    w.update(kw)
+    return w
+
+
 def ok_result(**kw) -> ArmResult:
-    base = dict(prompt_ids=[1, 2, 3], output_ids=[9, 9], output_hash="h", n_output=2,
+    base = dict(prompt_ids=[1, 2, 3], output_ids=[3, 3], output_hash="h", n_output=2,
                 decode_ms=10.0, decode_tok_s=50.0, prefill_ms=5.0, prefill_tok_s=200.0,
                 ttft_ms=1.0, draft_accepted=0, draft_offered=0, draft_rate=0.0,
                 tokens_per_round=1.0, stdout_raw="", stderr_raw="", wall_s=1.0,
@@ -326,7 +334,7 @@ class TestTrace(unittest.TestCase):
 class TestExport(unittest.TestCase):
     def test_valid_full_export(self):
         man, rows = build_export(4, [
-            {"pos": 0, "T": 2, "picks": [3, 4], "rows": [[0.1, 0.2, 0.3, 0.4],
+            {"pos": 0, "T": 2, "picks": [3, 2], "rows": [[0.1, 0.2, 0.3, 0.4],
                                                           [1.0, 2.0, 3.0, 4.0]]},
         ])
         v = rp.validate_export(man, rows)
@@ -378,7 +386,7 @@ class TestExport(unittest.TestCase):
 
     def test_short_export_rows_detected(self):
         man, rows = build_export(4, [
-            {"pos": 0, "T": 2, "picks": [3, 4], "rows": [[0.1, 0.2, 0.3, 0.4],
+            {"pos": 0, "T": 2, "picks": [3, 2], "rows": [[0.1, 0.2, 0.3, 0.4],
                                                           [1.0, 2.0, 3.0, 4.0]]},
         ])
         truncated_rows = rp.parse_rows(
@@ -386,6 +394,120 @@ class TestExport(unittest.TestCase):
             + struct.pack("<4f", 0.1, 0.2, 0.3, 0.4))  # only one row present
         v = rp.validate_export(man, truncated_rows)
         self.assertFalse(v.ok)
+
+
+class TestWindowValidation(unittest.TestCase):
+    def test_supported_T_cap_matches_verifier_sources(self):
+        self.assertEqual(rp.VERIFY_MAX_T, 8)
+        for path, symbol in (("include/strata/kernels/verify_kernels.hpp", "kVerifyMaxT"),
+                             ("include/strata/kernels/cpu/expert.hpp", "MAXT")):
+            self.assertRegex((ROOT / path).read_text(encoding="utf-8"),
+                             rf"inline constexpr int {symbol} = {rp.VERIFY_MAX_T};")
+
+    def test_T_boundaries(self):
+        for T in (-1, 0, *range(1, 9), 9):
+            with self.subTest(T=T):
+                man, rows = build_export(4, [window_fixture(T, accepted=max(0, T - 1),
+                                                          emitted=max(0, T))])
+                v = rp.validate_export(man, rows)
+                self.assertEqual(v.ok, 1 <= T <= 8, v.reason)
+                self.assertEqual(v.full_proof, v.ok, v.reason)
+                if T in (0, 9):
+                    self.assertIn("unsupported T", v.reason)
+
+    def test_accepted_emitted_valid_boundaries_and_clipping(self):
+        for T in (1, 4, 8):
+            for accepted in range(T):
+                for emitted in range(1, accepted + 2):
+                    with self.subTest(T=T, accepted=accepted, emitted=emitted):
+                        man, rows = build_export(4, [window_fixture(
+                            T, accepted=accepted, emitted=emitted)])
+                        v = rp.validate_export(man, rows)
+                        self.assertTrue(v.ok and v.full_proof, v.reason)
+                        self.assertEqual(len(man.windows[0].picks), T)  # not emitted
+                        self.assertEqual(man.windows[0].rows_bytes, T * 4 * 4)
+
+    def test_invalid_accepted_emitted_counts(self):
+        for T, accepted, emitted in ((1, -1, 1), (1, 1, 1), (1, 0, 0), (1, 0, 2),
+                                     (4, 4, 1), (4, 0, 2), (4, 3, 5), (4, 3, -1)):
+            with self.subTest(T=T, accepted=accepted, emitted=emitted):
+                man, rows = build_export(4, [window_fixture(T, accepted=accepted, emitted=emitted)])
+                v = rp.validate_export(man, rows)
+                self.assertFalse(v.ok or v.full_proof, v.reason)
+        text, blob = export_files(4, [window_fixture(2)])
+        for counts in ("2 x 2", "2 1 1.5", "2 1 -1", "2 -1 2"):
+            with self.subTest(counts=counts):
+                man = rp.parse_manifest(text.replace("W 0 100 2 1 2 ", f"W 0 100 {counts} "))
+                self.assertIsNotNone(man.parse_error)
+                self.assertFalse(rp.validate_export(man, rp.parse_rows(blob)).ok)
+
+    def test_clipped_prefix_can_only_end_the_run(self):
+        for wins, expected in (([window_fixture(4, emitted=1), window_fixture(pos=104)], False),
+                               ([window_fixture(), window_fixture(4, pos=101, emitted=1)], True)):
+            man, rows = build_export(4, wins)
+            for reverse in (False, True):
+                with self.subTest(expected=expected, reverse=reverse):
+                    if reverse:
+                        man.windows.reverse()  # validity uses ordinal, not comparison/list order
+                    v = rp.validate_export(man, rows)
+                    self.assertEqual(v.ok, expected, v.reason)
+                    if not expected:
+                        self.assertIn("clipped emitted prefix before later window", v.reason)
+
+    def test_picks_shape_and_token_range(self):
+        for picks in ([], [0], [0, 1, 2], [-1, 0], [0, 4]):
+            with self.subTest(picks=picks):
+                man, rows = build_export(4, [window_fixture(2, picks=picks)])
+                self.assertFalse(rp.validate_export(man, rows).ok)
+        man, rows = build_export(4, [window_fixture(2, picks=[0, 3])])
+        self.assertTrue(rp.validate_export(man, rows).ok)  # both vocabulary boundaries
+
+    def test_malformed_picks_fail_parsing(self):
+        text, blob = export_files(4, [window_fixture(2)])
+        for picks in ("0,x", "0,1.5", "0,,1", "0,1,"):
+            with self.subTest(picks=picks):
+                man = rp.parse_manifest(text.replace("picks=0,1", f"picks={picks}"))
+                self.assertIsNotNone(man.parse_error)
+                self.assertFalse(rp.validate_export(man, rp.parse_rows(blob)).ok)
+
+    def test_bad_row_span_lengths_and_file_boundaries(self):
+        for changes in ({"rows_bytes": 0}, {"rows_bytes": -1}, {"rows_bytes": 12},
+                        {"rows_bytes": 20}, {"rows_offset": -1}, {"rows_offset": HDR - 1},
+                        {"rows_offset": HDR + 16}):
+            with self.subTest(changes=changes):
+                man, rows = build_export(4, [window_fixture(**changes)])
+                v = rp.validate_export(man, rows)
+                self.assertFalse(v.ok or v.full_proof, v.reason)
+
+    def test_spans_must_be_whole_row_aligned(self):
+        for shift in (1, 4, 8, 12):
+            with self.subTest(shift=shift):
+                man, rows = build_export(4, [window_fixture(rows_offset=HDR + shift)])
+                # Extra finite rows ensure rejection is alignment, not EOF/NaN.
+                rows = rp.parse_rows(build_rows(4, [[1.0, 2.0, 3.0, 4.0]] * 3))
+                v = rp.validate_export(man, rows)
+                self.assertFalse(v.ok)
+                self.assertIn("not row-aligned", v.reason)
+
+    def test_row_span_overlap_and_aliasing_rejected(self):
+        for second_T, second_offset in ((2, HDR), (2, HDR + 16), (1, HDR + 16)):
+            man, rows = build_export(4, [window_fixture(2), window_fixture(
+                second_T, pos=102, rows_offset=second_offset)])
+            for reverse in (False, True):
+                with self.subTest(T=second_T, offset=second_offset, reverse=reverse):
+                    if reverse:
+                        man.windows.reverse()
+                    v = rp.validate_export(man, rows)
+                    self.assertFalse(v.ok)
+                    self.assertIn("overlapping row span", v.reason)
+
+    def test_adjacent_disjoint_spans_pass_in_either_order(self):
+        man, rows = build_export(4, [window_fixture(2), window_fixture(pos=102)])
+        for reverse in (False, True):
+            if reverse:
+                man.windows.reverse()
+            v = rp.validate_export(man, rows)
+            self.assertTrue(v.ok and v.full_proof, v.reason)
 
 
 # ── pair comparison under predeclared contracts ──────────────────────────────
@@ -499,10 +621,48 @@ class TestPairCompare(unittest.TestCase):
     def test_mismatched_picks_rejected(self):
         man_a, ra = build_export(4, [{"pos": 0, "T": 1, "picks": [3],
                                       "rows": [[0.1, 0.2, 0.3, 0.4]]}])
-        man_b, rb = build_export(4, [{"pos": 0, "T": 1, "picks": [5],
+        man_b, rb = build_export(4, [{"pos": 0, "T": 1, "picks": [2],
                                       "rows": [[0.1, 0.2, 0.3, 0.4]]}])
         v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb)
         self.assertFalse(v.ok)
+
+    def test_matched_window_accepted_emitted_metadata_must_match(self):
+        for family in rp.FAMILIES.values():
+            for counts_a, counts_b in (((1, 2), (2, 2)), ((3, 3), (3, 4))):
+                with self.subTest(family=family.name, A=counts_a, B=counts_b):
+                    man_a, ra = build_export(4, [window_fixture(
+                        4, accepted=counts_a[0], emitted=counts_a[1])])
+                    man_b, rb = build_export(4, [window_fixture(
+                        4, accepted=counts_b[0], emitted=counts_b[1])])
+                    self.assertTrue(rp.validate_export(man_a, ra).ok)
+                    self.assertTrue(rp.validate_export(man_b, rb).ok)
+                    v = rp.compare_pair(family, man_a, ra, man_b, rb)
+                    self.assertFalse(v.ok or v.full_proof)
+                    self.assertIn("accepted/emitted counts mismatch", v.reason)
+
+    def test_matched_clipped_window_compares_all_T_picks_and_rows(self):
+        man_a, ra = build_export(4, [window_fixture(4, accepted=3, emitted=1)])
+        man_b, rb = build_export(4, [window_fixture(4, accepted=3, emitted=1)])
+        for family in rp.FAMILIES.values():
+            v = rp.compare_pair(family, man_a, ra, man_b, rb)
+            self.assertTrue(v.ok and v.full_proof, v.reason)
+        man_b.windows[0].picks[-1] = 2  # valid token, outside the emitted prefix
+        self.assertEqual(man_a.windows[0].picks[:1], man_b.windows[0].picks[:1])
+        v = rp.compare_pair(rp.FAMILIES["normrope"], man_a, ra, man_b, rb)
+        self.assertFalse(v.ok)
+        self.assertIn("verifier picks mismatch", v.reason)
+        self.assertNotIn("emitted token IDs mismatch", v.reason)
+
+    def test_nonemitted_logit_rows_still_obey_family_contract(self):
+        wa = window_fixture(4, accepted=3, emitted=1)
+        wb = window_fixture(4, accepted=3, emitted=1)
+        wb["rows"][-1][-1] = 4.000001
+        man_a, ra = build_export(4, [wa])
+        man_b, rb = build_export(4, [wb])
+        for family in rp.FAMILIES.values():
+            v = rp.compare_pair(family, man_a, ra, man_b, rb)
+            self.assertFalse(v.ok)
+            self.assertIn("bitwise contract violated", v.reason)
 
     def test_mismatched_input_hash_rejected(self):
         man_a, ra = build_export(4, [{"pos": 0, "T": 1, "picks": [3],
@@ -524,7 +684,7 @@ class TestPairCompare(unittest.TestCase):
             rows = [[pos * 0.5, T * 0.25, j * 1.0, 1.0] for j in range(T)]
             if bump == (pos, T):
                 rows[0][3] = 1.0000001
-            out.append({"pos": pos, "T": T, "picks": [pos + j for j in range(T)],
+            out.append({"pos": pos, "T": T, "picks": [(pos + j) % 4 for j in range(T)],
                         "input_hash": f"{pos:08x}{T:08x}", "rows": rows})
         return out
 
@@ -574,7 +734,7 @@ class TestPairCompare(unittest.TestCase):
     def test_same_key_different_picks_rejected(self):
         spec = [(p, 1) for p in range(12)]
         wa, wb = self._wins(spec), self._wins(spec)
-        wb[5]["picks"] = [999]
+        wb[5]["picks"] = [(wb[5]["picks"][0] + 1) % 4]
         man_a, ra = build_export(4, wa)
         man_b, rb = build_export(4, wb)
         v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
@@ -608,6 +768,30 @@ class TestPairCompare(unittest.TestCase):
 # ── file-backed diagnostic evaluation ─────────────────────────────────────────
 
 class TestDiagnosticEvaluation(unittest.TestCase):
+    def test_twelve_empty_windows_rejected_end_to_end(self):
+        import tempfile
+        wins = [{"pos": 100 + i, "T": 0, "accepted": 0, "emitted": 0,
+                 "picks": [], "input_hash": f"{i:016x}", "rows": []} for i in range(12)]
+        text, blob = export_files(4, wins)
+        self.assertEqual(len(blob), HDR)  # the audit's header-only payload
+        for name, traces in (("normrope", (rope_fused_trace(), rope_plain_trace())),
+                             ("sub16", (sub16_default_trace(), sub16_optout_trace()))):
+            with self.subTest(family=name), tempfile.TemporaryDirectory() as tmp:
+                dirs = [Path(tmp) / arm for arm in ("A", "B")]
+                for d in dirs:
+                    d.mkdir()
+                    (d / "manifest.txt").write_text(text, encoding="utf-8")
+                    (d / "rows.bin").write_bytes(blob)
+                v = rp.evaluate_diagnostic_pair(
+                    rp.FAMILIES[name], "short_code", ok_result(stderr_raw=traces[0]),
+                    ok_result(stderr_raw=traces[1]), str(dirs[0]), str(dirs[1]), rp.Bounds())
+                self.assertTrue(v["arms_clean"] and v["whole_run_ids_match"])
+                self.assertTrue(all(arm["ok"] for arm in v["trace"].values()))
+                self.assertFalse(any(arm["ok"] for arm in v["export"].values()))
+                self.assertFalse(v["pair"]["ok"] or v["proof"] or v["full_proof"])
+                self.assertEqual(v["pair"]["n_matched"], 0)
+                self.assertIn("unsupported T=0", v["pair"]["reason"])
+
     def test_signed_zero_end_to_end_evaluation(self):
         import tempfile
         traces = {"normrope": (rope_fused_trace(), rope_plain_trace()),
@@ -622,7 +806,7 @@ class TestDiagnosticEvaluation(unittest.TestCase):
                             d.mkdir()
                             # Reuse H1's 12-window shape; differ only in the last
                             # window's final logit, keeping all metadata/IDs valid.
-                            wins = [{"pos": 100 + i, "T": 1, "picks": [7],
+                            wins = [{"pos": 100 + i, "T": 1, "picks": [3],
                                      "input_hash": f"{i:016x}",
                                      "rows": [[1.0, 2.0, 3.0, zero if i == 11 else 0.0]]}
                                     for i in range(12)]
@@ -791,7 +975,7 @@ class FakeEngine:
                 row = [0.5, 0.25, 0.125, float(i)]
                 if is_b and self.diverge_b and i == 9:
                     row = [0.5, 0.25, 0.125, 9.000001]
-                wins.append({"pos": 100 + i, "T": 1, "picks": [7], "input_hash": f"{i:016x}",
+                wins.append({"pos": 100 + i, "T": 1, "picks": [3], "input_hash": f"{i:016x}",
                              "rows": [row]})
             text, blob = export_files(4, wins, truncation=True, complete=False)
             (d / "manifest.txt").write_text(text)
@@ -806,7 +990,7 @@ class FakeEngine:
             if is_b and self.b_trace_override is not None:
                 stderr = self.b_trace_override
             del nr
-        return ok_result(prompt_ids=list(token_ids), output_ids=[7, 8], n_output=2,
+        return ok_result(prompt_ids=list(token_ids), output_ids=[3, 2], n_output=2,
                          decode_tok_s=self.decode[arm], prefill_tok_s=300.0,
                          stderr_raw=stderr, argv=[str(exe), *flags])
 
