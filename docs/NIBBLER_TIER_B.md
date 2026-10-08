@@ -3,11 +3,19 @@
 **Bench host:** nibbler (bare-metal AMD Ryzen 9 9900X, RTX 5060 Ti 16 GB).
 **Orchestration:** paseo-nibbler VM (offline tests, harness, artifact copies).
 **Dates:** 2026-10-07 (foundation and final native gates, US Eastern) to
-2026-10-08 (measurement).
+2026-10-08 (measurement, then audit remediation and revalidation).
 **Scope:** focused same-binary validation of two upstream kernel families
 already present in engine `e8ca9af`. This is not a port, a merge, a production
 change or a quality certification. It covers one GPU and the single-session CLI
 with fresh processes. It does not cover Tier-C serving/KV work.
+
+An independent final audit of this epic returned twelve findings; all were
+fixed on this branch and a revalidation stage followed. The finding-to-commit
+map, the corrected-validator replay results, the corrected host build and the
+unchanged limits are in
+[§13](#13-audit-remediation-and-corrected-evidence-disposition). No measured
+number in §5–§7 changed, and the revalidation is **not** a performance or
+production-readiness claim.
 
 The original protocol, contracts and bounds were declared beforehand in the
 [Tier-B plan](NIBBLER_TIER_B_PLAN.md). Window-key matching and its minimum of
@@ -29,6 +37,7 @@ any model timing ran; they were not originally predeclared. See
 10. [Disposition](#10-disposition)
 11. [Reproduction recipes](#11-reproduction-recipes)
 12. [Artifacts and provenance](#12-artifacts-and-provenance)
+13. [Audit remediation and corrected-evidence disposition](#13-audit-remediation-and-corrected-evidence-disposition)
 
 ---
 
@@ -71,6 +80,12 @@ any model timing ran; they were not originally predeclared. See
 
 All benchmark/measurement binaries were verified against the hashes recorded in
 the final gate run (`sha256sum -c` in-session) before use.
+
+The later corrected rebuild (source `62bf499d`) produced **different** binary
+hashes from the three above. Every timing table in §5 and §7 comes from the
+historical binaries listed here, not from the corrected build; the two sets are
+kept separate in [§13.3](#133-corrected-isolated-build-and-correctness-gates)
+and [§13.4](#134-binary-separation).
 
 ## 3. Families under test
 
@@ -127,6 +142,12 @@ The reference tolerances are the gates' own source contracts and are unchanged:
 rope host rotation 1e-6 relative, fast-trig versus table 3e-3; IQ double-dot
 gross-error guard below 1e-2 relative. Fused versus split and sub16 versus
 reference comparisons are **bitwise** (zero tolerance).
+
+**Corrected rebuild gate** (sta-osh.28, source `62bf499d`, 2026-10-08): after
+the audit fixes the same 15 CTest cases were rebuilt and rerun on the host and
+all 15 passed again, with the new CUDA-unwind and allocation-budget paths
+exercised. Details, hashes and the two added live probes are in
+[§13.3](#133-corrected-isolated-build-and-correctness-gates).
 
 ## 5. Warm native kernel timings
 
@@ -246,6 +267,16 @@ What the proof covers:
   The default arm is therefore *mostly* fused, not entirely.
 - **Rope table:** `STRATA_ROPE_TABLE` was not enabled, so all traced rope
   records have `table=0`.
+
+**Verdict source.** The four verdicts in the table above were first produced by
+the original (pre-audit) validators. The audit found four defects in those
+validators (H1–H3, M9). The **same retained export bytes** were replayed
+offline through the fully corrected validators and all four r2 cells still pass
+bitwise at 16/16 matched windows, still `full_proof=false`; the session-1
+exports pass at 16/16/16/14. Counts, byte hashes and limits are in
+[§13.2](#132-retained-logit-replay-through-the-corrected-validators). The
+surviving coverage limit is unchanged: the historical 16-window truncated
+prefix.
 
 ## 7. Cold-process model timings
 
@@ -407,7 +438,10 @@ histograms count windows, not an ordered sequence of `(pos, T, input_hash)`.
 Clean runs did not export that sequence, so they cannot establish window-by-window
 alignment, inputs or capture order even when aggregate histograms match.
 Diagnostic prefix sequences in §6 are a separate dataset, not substitutes.
-This stdout-statistics correction does not revalidate retained logit bytes.
+This stdout-statistics correction does not itself revalidate retained logit
+bytes; that was done separately by the corrected-validator replay
+([§13.2](#132-retained-logit-replay-through-the-corrected-validators)), which
+covers the diagnostic exports only, never the clean timing arms.
 
 **Why timing can feed back into draft work:** in the measured source
 (`222d39ea`; the following source files are unchanged from that pin),
@@ -459,7 +493,9 @@ cost from these runs. No steady-state gain or regression is established.
      `222d39ea`, 9 regression tests). **Both the window key and minimum 12 were
      chosen after seeing session 1's rejection, not originally predeclared.**
      Replaying the session-1 exports under the new rule gave 16/16/16/14 matched,
-     all bitwise.
+     all bitwise. The later corrected validators reproduced the same
+     16/16/16/14 result on the same retained bytes
+     ([§13.2](#132-retained-logit-replay-through-the-corrected-validators)).
    - **Rerun:** session r2 then passed. This is the only contract changed after
      seeing host data, and it relaxes window alignment only, not the bitwise
      identity requirement.
@@ -484,7 +520,17 @@ cost from these runs. No steady-state gain or regression is established.
    heredoc is committed. The r2 measurement script was `/tmp/tier-b-measure.sh`
    (sha256 `00dea19031297350106d3322dafacb5d3e5eb7a8a102ff55fe36468dfc558a08`,
    on paseo-nibbler and on the host). Their essential steps are reproduced in
-   [§11](#11-reproduction-recipes).
+   [§11](#11-reproduction-recipes). The later revalidation script
+   `/tmp/tier-b-remediation/host-remediation.sh` is likewise uncommitted; its
+   evidence is in [§13.3](#133-corrected-isolated-build-and-correctness-gates)
+   and [§13.5](#135-enforced-host-preconditions-and-postconditions).
+5. **Validators corrected after the measured runs.** The §6 proof verdicts were
+   originally computed by validators the audit found defective (H1–H3, M9).
+   The retained bytes were replayed through the corrected validators and the
+   verdicts held ([§13.2](#132-retained-logit-replay-through-the-corrected-validators)).
+   The corrected admission protocol also makes the historical, unstamped
+   diagnostic summaries **inadmissible** for any future timing run
+   ([§13.6](#136-what-the-revalidation-does-not-establish)).
 
 ## 9. Deferred families and gaps
 
@@ -519,7 +565,11 @@ Open gaps for the first wave:
 - **Provenance and host-state coverage:** missing model/pack/MTP/profile/ggml
   content hashes and snapshot-only state evidence limit identity claims.
   Final GPU/router state was recorded but not exit-gated in r2; post-run audio
-  health is absent ([§11](#historical-safeguards-enforced-vs-observed)).
+  health is absent ([§11](#historical-safeguards-enforced-vs-observed)). The
+  later revalidation stage did enforce those postconditions fail-closed
+  ([§13.5](#135-enforced-host-preconditions-and-postconditions)), but that
+  does **not** retroactively gate the r2 measurement runs, and no model or
+  benchmark arm was re-timed.
 
 ## 10. Disposition
 
@@ -537,6 +587,11 @@ Open gaps for the first wave:
   a decode kernel-time breakdown, *before* touching the default.
 - **Out of scope:** nothing here certifies output quality, serving parity,
   production readiness or the historical all-PR gain.
+- **Post-audit status:** the twelve audit findings are fixed and the retained
+  evidence was revalidated, so the two dispositions above stand on corrected
+  validators. Neither disposition is strengthened: the corrected build was
+  never timed, so "no action" and "follow-up before any change" are unchanged
+  ([§13](#13-audit-remediation-and-corrected-evidence-disposition)).
 - **Recorded production state:** all four saved session post-state files
   report the four baseline production hashes OK, launcher mode 644, production
   HEAD `9921eec` and PID 1436043 with command name `audiocpp_server`. The two
@@ -658,8 +713,10 @@ The historical host locations and original local snapshot roots are below;
 they are not fresh host availability checks. The original compact copies in
 `/tmp/strata-tier-b-artifacts` omit the large logit row files. Full session-1/r2
 exports are now retained separately under
-`/tmp/tier-b-retained/{measure-20261008,measure-20261008-r2}`; they were not
-revalidated by this documentation correction.
+`/tmp/tier-b-retained/{measure-20261008,measure-20261008-r2}`. Those are the
+bytes sta-osh.28 later replayed through the corrected validators
+([§13.2](#132-retained-logit-replay-through-the-corrected-validators)); the
+earlier documentation-only corrections (M10, M11) revalidated nothing.
 
 | Session | Host path | Local copy | Result |
 | --- | --- | --- | --- |
@@ -694,3 +751,199 @@ Final-gate files: `binaries.sha256`, `checkout.sha256`, `toolchain-source.txt`,
 
 All statistics in §5–§7 were recomputed from these raw files for this report. They
 agree with the harness's printed medians.
+
+Remediation-stage artifacts are separate and additive; no historical file was
+edited or deleted. Local root `/tmp/tier-b-remediation/sta-osh-28/`:
+`retained-replay.json` (offline replay verdicts) and `host/` (the corrected host
+build and gate run, host root
+`/data/llm/Strata-tests/tier-b-remediation-20261008`).
+
+## 13. Audit remediation and corrected-evidence disposition
+
+An independent audit of this epic at report commit `f34a840b` (auditor
+`3297118b`) returned twelve findings: six high (H1–H6), five medium (M7–M11) and
+one low (L12). All twelve were fixed on branch `perf/nibbler-tier-b-kernels` and
+then revalidated; none were deferred. M7 spans three executables and needed two
+extra tasks (.30, .31) after its first fix proved too broad, so the twelve
+findings map to sixteen tasks (sta-osh.14–.27, .30, .31).
+
+### 13.1 Finding-to-commit map
+
+| Finding | What was wrong | Task | Commit |
+| --- | --- | --- | --- |
+| H1 | Identity arms were compared as decoded floats, so a signed-zero (−0.0 versus +0.0) mismatch could pass as "bitwise" | sta-osh.14 | `cfb799c7` |
+| H2 | Empty or malformed completed windows (zero supported T, zero row bytes, bad counts, overlapping row spans) counted as proof | sta-osh.15 | `5346c6dd` |
+| H3 | An `export_error` or a missing/invalid completion footer was treated as ordinary truncation instead of rejecting the proof | sta-osh.16 | `d8e8dfea` |
+| H4 | Timing admitted any summary carrying a `proof: true` key, without checking contracts, bounds, settings or nested verdicts | sta-osh.17 | `c40b7e09` |
+| H5 | A rejected diagnostic or timing pair did not stop the session, so later pairs still launched | sta-osh.18 | `c40b7e09` |
+| H6 | CLI timeout teardown could signal the wrong process group and used unbounded waits | sta-osh.19 | `3e50a2b1` |
+| M7 (rope) | `tier_b_rope_bench` exited on CUDA error, leaking streams/events/graphs and leaving selector state changed | sta-osh.20 | `ae67e36c` |
+| M7 (expert) | `tier_b_expert_bench` leaked partially constructed benches and capture failures | sta-osh.21 | `7b8f0234` |
+| M7 (parity) | `iq_multi_parity` had the same exit-on-error unwind bypass | sta-osh.22 | `8b7217a7` |
+| M7 (IQ policy) | IQ kernel launch failures could not unwind a scoped caller; a first attempt at global exception conversion was rejected as too broad and narrowed to an opt-in thread-local policy for audited standalone callers | sta-osh.30, sta-osh.31 | `6fb32311`, `a5d7fb5a` |
+| M8 | The expert benchmark's device-allocation cap counted weights only, not guards/scratch/index/pointer buffers | sta-osh.23 | `a5d7fb5a` |
+| M9 | Unknown/error capture states and `format_error` were accepted as trace evidence | sta-osh.24 | `c40b7e09` |
+| M10 | The report's clean-run draft statistics and DraftPolicy timing-feedback caveats were wrong or missing | sta-osh.25 | `f05dd6ae` |
+| M11 | The report conflated enforced postconditions with observed snapshots and overstated provenance identity | sta-osh.26 | `5443dfbd` |
+| L12 | `--pair gu,dt` parsing mis-split the argument | sta-osh.27 | `a5d7fb5a` |
+
+Every commit above is a code, test or document change. One further commit,
+`590ff010`, is **Beads-only** (a single `.beads/issues.jsonl` edit): it recorded
+the decision to reject the first global exception-conversion attempt as too
+broad and split the remaining M7 work into sta-osh.30 and sta-osh.31. It
+implements nothing and is listed here for decision provenance, not as a fix.
+
+The two documentation findings (M10, M11) changed §7.3, §8, §9 and §10 of this
+report; no measured number in §5–§7 was altered by any of these commits.
+
+### 13.2 Retained-logit replay through the corrected validators
+
+sta-osh.28 replayed the **original retained host export bytes** through the
+fully corrected validators at code commit `62bf499d` (clean tree). This is a
+replay, not a new generation run: no model, GPU or CLI arm was executed, and no
+historical artifact was modified. The inputs were the full retained exports
+under `/tmp/tier-b-retained/{measure-20261008,measure-20261008-r2}`
+([§12](#12-artifacts-and-provenance)), read only.
+
+Validator identity at replay time:
+
+| File | sha256 |
+| --- | --- |
+| `tools/tier_b/run_pairs.py` | `2dac4521fee4a2bf2c474ef0fd85caf4c7f72b8690feccae9242dd3203149476` |
+| `tools/tier_b/test_pairs.py` | `6ec941f31b3f0d688a2de07735d0495a9848fdd704777a0f4abfa109b072f2d6` |
+| `include/strata/kernels/tier_b_diagnostics.hpp` | `1d76383de526be43353f09f131322ab4cce01538179a5d2a5081232d6f68a2ef` |
+
+Verdicts on the retained bytes (`retained-replay.json`):
+
+| Session | Family / workload | Matched windows | Rows bitwise | `proof` | `full_proof` |
+| --- | --- | --- | --- | --- | --- |
+| r2 | f / short_code | 16 | yes | true | false |
+| r2 | f / long_doc | 16 | yes | true | false |
+| r2 | h / short_code | 16 | yes | true | false |
+| r2 | h / long_doc | 16 | yes | true | false |
+| session 1 | f / short_code | 16 | yes | true | false |
+| session 1 | f / long_doc | 16 | yes | true | false |
+| session 1 | h / short_code | 16 | yes | true | false |
+| session 1 | h / long_doc | 14 | yes | true | false |
+
+Every cell reports unmatched A=0 and B=0 and the reason "controlled correctness
+proven (coverage incomplete: truncated prefix/windows)". The four r2 verdicts
+reproduce [§6](#6-model-proof-reachability-and-bitwise-windows); the four
+session-1 verdicts reproduce the 16/16/16/14 replay reported in
+[deviation 1](#8-deviations-from-the-plan). The §6 bitwise claims therefore
+survive the corrected validators unchanged, including the corrected
+signed-zero-sensitive byte comparison.
+
+`retained-replay.json` also records the sha256 of each replayed `manifest.txt`
+and `rows.bin`, pinning exactly which bytes produced these verdicts. Both arms
+of a cell share one `rows.bin` hash wherever the exports are byte-identical,
+which is the bitwise result itself; the distinct manifest hashes reflect
+differing per-arm window metadata.
+
+### 13.3 Corrected isolated build and correctness gates
+
+sta-osh.28's host stage ran as root on nibbler in a transient
+`systemd-run --collect` unit, in the isolated checkout `/data/llm/Strata-tier-b`
+with a **separate** build directory `build-tier-b-fix`, writing to the fresh
+artifact root `/data/llm/Strata-tests/tier-b-remediation-20261008`. The source
+came from a local bundle pinned to `62bf499d`; `result.txt` records
+`remediation_exit=0 elapsed_s=116` (2026-10-08T15:48:12 to 15:50:08 −04:00).
+
+| Step | Result |
+| --- | --- |
+| Configure | CUDA 13.3.73 with host GNU 15.3.0, sm120, `FETCHCONTENT_FULLY_DISCONNECTED=ON`; configure 2.0 s |
+| Build | 149 ninja actions, all eight targets |
+| CTest (required gates) | **15/15 passed, 0 failed**, 7.52 s — the same case set as the §4 final gate |
+| Offline harness suite on host | 260 tests, OK, 1 skip (the retained-artifact test, whose inputs are not on the host) |
+| `tier_b_rope_bench` (bounded) | 96 cases, 96 timed, **0 gate/replay failures** |
+| `tier_b_expert_bench` (default) | 7 manifest pairs, **0 parity failures**, 7 timed |
+| `--pair 18,20` (L12 fix on real CUDA) | parsed to `IQ3_XXS/IQ4_NL`, 0 parity failures, 1 timed pair |
+| Allocation-budget rejection (M8 fix, cap 1 MiB) | all 7 pairs rejected **before device-buffer allocation**, `budget_reject_exit=1` |
+
+The budget log shows the corrected accounting explicitly, for example
+`IQ3_XXS/IQ4_NL : explicit device buffers 139670440 B (weight working set
+139264000 B, auxiliary+guards 406440 B)`. That 406440 B auxiliary term is what
+M8 reported missing. The binary still prints its own limit: the budget counts
+`cudaMalloc` buffers and guards and excludes opaque CUDA graph/exec/stream/event
+and driver allocations, so it is not a total-VRAM cap.
+
+Corrected binary hashes are in `host/binaries.corrected.sha256` and the
+harness/tool file hashes in `host/harness.corrected.sha256`.
+
+### 13.4 Binary separation
+
+The corrected build produced different binaries from the measured ones. The
+measured values in §5 and §7 belong to the §2 binaries only:
+
+| Binary | Build | sha256 |
+| --- | --- | --- |
+| `strata` | measured, `3af1e4c8` | `59f0d53627773b3dac02fac861421441ee11848d27a0508216e905e984c9a7f7` |
+| `strata` | corrected, `62bf499d` | `1d6d5c9270602e8597f872f99c2a77bf9efb922d9856d8da5bc3e392cb9cb962` |
+| `tier_b_rope_bench` | measured | `82467382094a5120b95de98632e7758e6d19a79f6211c8ccf6d08f496eafa42f` |
+| `tier_b_rope_bench` | corrected | `74b4451f7e76754da6a0a5e5b0c872992df57ef57c62af50fe2b41d2dc766424` |
+| `tier_b_expert_bench` | measured | `6d1bcd3a463674564d6201625a40304242d240a7e8b8332e85ae1f886ad841a2` |
+| `tier_b_expert_bench` | corrected | `88352ac354f107d5dd6d88cc97c6681f73059c7cb863181efcb6b9d2e0168755` |
+
+The measured hashes repeat [§2](#2-pins-hardware-and-toolchain);
+`host/binaries.corrected.sha256` additionally covers the five corrected parity
+executables.
+
+The corrected build's bench runs used small bounded settings for a liveness and
+cleanup check, not the measurement protocol: 96 rope cases and 7 expert pairs in
+about 4 s total, against far larger §5 sample counts. **Their printed
+microsecond values are not comparable with §5 and are not quoted as results
+anywhere in this report.** No corrected-build model arm was run, so §7 has no
+corrected counterpart at all.
+
+### 13.5 Enforced host preconditions and postconditions
+
+Unlike r2 ([§11](#historical-safeguards-enforced-vs-observed)), the remediation
+stage asserted its postconditions fail-closed. `post-state.txt` labels each
+group `(enforced)`:
+
+| Check | Pre | Post (enforced) |
+| --- | --- | --- |
+| Four production file hashes | all OK at 15:48:12 | all OK at 15:50:08 |
+| Launcher guard mode | — | 644 |
+| Production source HEAD | — | `9921eecae9d442878de5bfe2b2cd25a71fbdb4ed` |
+| Audio process identity | — | PID 1436043, `audiocpp_server`, start Tue Oct 6 07:28:15 2026 |
+| **Audio HTTP health** | `audio-before.json` | `status=ok`, `backend=cpu`, `models=2` — the r2 gap M11 identified is closed for this stage |
+| Router `/running` | `router-before.json` | llama-swap `active`, only `pocket-tts` ready, no `qwen3.8*` |
+| GPU | 2 MiB used, 0 % util, driver 610.57.04 on the RTX 5060 Ti | 2 MiB, 2610 MHz, 31 °C |
+| Timers | — | `no strata timers` |
+| Sessions | only root (tailscaled, pts/3) | — |
+
+These remain before/after observations of two instants, now exit-gated; they
+still do not establish continuously unchanged state in between, and they cover
+four production files rather than a whole-tree hash. The revalidation stage
+made no production, audio, router, model-download, deployment or timer change.
+
+### 13.6 What the revalidation does not establish
+
+- **No new timing.** No model pair and no measurement-protocol benchmark was
+  rerun. Every number in §5–§7 is still the single-session, n=3, cold-process
+  observation described there, with the same thin statistics.
+- **No retroactive enforcement.** The enforced postconditions in §13.5 apply to
+  the remediation stage only. The r2 enforced-versus-observed mapping in §11 is
+  unchanged, and r2's missing post-run audio health stays missing.
+- **Coverage is unchanged.** The replay inherits the historical 16-window
+  truncated prefix, so every cell is still `full_proof=false`; windows past 16
+  rely on whole-run output-ID identity.
+- **Provenance gaps persist.** No model shard, pack, MTP, profile or ggml tree
+  content hash exists for the historical runs, and a replay cannot create one
+  after the fact ([deviation 2](#8-deviations-from-the-plan)).
+- **Historical summaries are now inadmissible.** The H4 fix stamps
+  `tier-b-proof-admission/1` into both `provenance.json` and `summary.json`,
+  with no backward compatibility. The session-1 and r2 `diag/summary.json` files
+  predate the stamp, so any future timing run will refuse them and require a
+  fresh diagnostic run. The §13.2 verdicts came from replaying raw export bytes,
+  which is a separate path from that admission gate.
+- **Clean timing arms were never logit-validated.** The replay covers
+  diagnostic exports only; clean runs exported no windows
+  ([§7.3](#73-clean-run-draft-statistics-and-timing-feedback)).
+- **Dispositions unchanged.** [§10](#10-disposition) still recommends keeping
+  both upstream defaults, with a focused follow-up before any sub16 change. The
+  remediation raises confidence in the correctness verdicts; it adds no
+  performance evidence.
+- **Audit status.** An independent final audit of this remediation is required
+  before the epic closes, and was not complete when this section was written.

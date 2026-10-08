@@ -1,17 +1,34 @@
 # Nibbler Tier-B first-wave kernel plan
 
-**Status:** source inventory and acceptance manifest, not a measurement report.
-First-wave parity code is committed (`5ad25255` fused norm+RoPE, `8b375cc7`
-sub16 gate) and harness hardening is committed (`2612b143`, `8eb80858`). The
-preliminary foundation CUDA gate (sta-osh.13) **passed** on nibbler at
-`8b375cc7`; the final rebuild/rerun gate (sta-osh.10), benchmark compilation
-and every model reachability/timing gate remain **pending**. Offline Python
-success cannot satisfy a GPU gate.
+**Status (updated 2026-10-08):** this remains a source inventory and acceptance
+manifest, not a measurement report. The gates it describes have since run; the
+results live in [NIBBLER_TIER_B.md](NIBBLER_TIER_B.md), which supersedes every
+"pending" phrasing below.
 
-**Owned scope of sta-osh.3:** this new document only, in
-`/home/pete/devel/strata-tier-b`, branch `perf/nibbler-tier-b-kernels`.
-Concurrent implementation tasks own their code; this document does not accept
-those implementations. Beads were inspected read-only.
+| Stage | Status | Evidence |
+| --- | --- | --- |
+| First-wave parity code | Committed | `5ad25255` (f), `8b375cc7` (h) |
+| Harness hardening | Committed | `2612b143`, `8eb80858` |
+| Foundation CUDA gate (sta-osh.13) | **Passed 2026-10-07** at `8b375cc7`, superseded | 3/3 ctests |
+| Benchmark registration (sta-osh.8) | **Done** | `tier_b_rope_bench` / `tier_b_expert_bench` are registered in `CMakeLists.txt` and tracked in `src/kernels/`; the "untracked, unregistered" rows below are historical |
+| Final build and gates (sta-osh.10) | **Passed 2026-10-08** at `3af1e4c8` | 15/15 ctests, [report §4](NIBBLER_TIER_B.md#4-native-correctness-gates) |
+| Measurement (sta-osh.11) | **Done 2026-10-08**, session r2, exit 0, 1052 s | [report §5–§7](NIBBLER_TIER_B.md#5-warm-native-kernel-timings) |
+| Report (sta-osh.12) | **Done** at `f34a840b` | [NIBBLER_TIER_B.md](NIBBLER_TIER_B.md) |
+| Independent audit of the report | **Done**: 12 findings (H1–H6, M7–M11, L12) | auditor `3297118b` |
+| Audit remediation (sta-osh.14–.27, .30, .31) | **All 12 fixed**, none deferred | [report §13.1](NIBBLER_TIER_B.md#131-finding-to-commit-map) |
+| Revalidation (sta-osh.28) | **Passed 2026-10-08** at `62bf499d`: retained-byte replay plus rebuilt 15/15 host gates | [report §13.2–§13.5](NIBBLER_TIER_B.md#132-retained-logit-replay-through-the-corrected-validators) |
+| Independent final audit of the remediation | **Pending** | required before epic closure |
+
+Still true and unchanged: offline Python success cannot satisfy a GPU gate; no
+promotion, production change or quality certification is claimed; and no warm
+or steady-state model timing was ever taken.
+
+**Owned scope of sta-osh.3:** this document was written under sta-osh.3 in
+`/home/pete/devel/strata-tier-b`, branch `perf/nibbler-tier-b-kernels`, and did
+not accept the concurrent implementation tasks' code. The status table above
+and the dated notes below were added later by sta-osh.29 so the plan does not
+contradict the finished report; the plan's acceptance criteria themselves are
+unchanged.
 
 ## Contents
 
@@ -35,7 +52,7 @@ those implementations. Beads were inspected read-only.
 | First-wave parity code | `5ad25255` (f), `8b375cc7` (h) | Committed rope_parity/sub16 extensions in this clone; foundation GPU gate passed at `8b375cc7`, no benchmarks timed. |
 | Harness hardening | `2612b143` (sta-d76), `8eb80858` (sta-0a7) | Committed cancellation + prefill fixes; offline evidence only. |
 | Foundation GPU gate | `8b375cc7` | Primary build `/data/llm/Strata-tier-b/build-foundation`; 3/3 parity ctests PASS, 0 skip. Artifacts `/data/llm/Strata-tests/tier-b-foundation-20261007` (local copies `/tmp/strata-tier-b-artifacts/foundation`). Preliminary only. |
-| Tier-B build | **Foundation done, final pending** | Foundation `build-foundation` built at `8b375cc7` (CUDA 13.3.73, GCC 15.3, sm120); record final source+deps+binary hashes after later code and `.8` registration. Never attribute the instrumented binary to pristine `e8ca9af` alone. |
+| Tier-B build | **Foundation, final and corrected builds all done** | Foundation `build-foundation` at `8b375cc7`; final `build-tier-b` at `3af1e4c8` (measured binaries); corrected `build-tier-b-fix` at `62bf499d` (never timed). All CUDA 13.3.73, GCC 15.3, sm120. Hashes are in the report's §2, §12 and [§13.4](NIBBLER_TIER_B.md#134-binary-separation). Never attribute an instrumented binary to pristine `e8ca9af` alone, and never mix measured and corrected binaries. |
 
 The fork and upstream engine have **unrelated git histories**. Tier A compared
 whole pinned trees; it did not isolate kernel ports. This is focused validation
@@ -241,9 +258,15 @@ production readiness, serving parity or universal feature parity.
 
 ## Acceptance and dependency map
 
-This table defines required evidence, not a declaration that another task is done.
-`sta-osh` is the parent of .1–.13. All host/runtime rows remain pending.
-Planned new paths are shown as code, not links to nonexistent files.
+This table defines required evidence, not a declaration that another task is
+done. It was written when `sta-osh` had children .1–.13 and every host/runtime
+row was pending. **All of .1–.13 have since closed, and audit-remediation
+children .14–.31 were added afterwards**; their outcomes are in the status
+table at the top of this document and in
+[report §13](NIBBLER_TIER_B.md#13-audit-remediation-and-corrected-evidence-disposition).
+The rows below are the original acceptance definitions, kept as written.
+Paths marked "planned", "untracked" or "unregistered" were planned at writing
+time; the benchmark sources and their CMake targets are now committed.
 
 | Task | Required acceptance evidence | Blocking inputs / next gate |
 | --- | --- | --- |
@@ -253,8 +276,8 @@ Planned new paths are shown as code, not links to nonexistent files.
 | sta-osh.3 | This plan: pins/history, f/h and exclusions, source/reference links, eligibility limits, contracts, complete acceptance map, bounds, mandatory host/harness gates. | Blocks .11. Document checks only; no code/Beads/GPU authority. |
 | sta-osh.4 | Opt-in bounded machine-readable diagnostics in native RoPE/IQ plus small helper; disabled mode has no readback/allocation/sync/logs. Record actual family/shape/formats/path/submission state, distinguish capacity from actual groups and unsupported/empty work, no selector switch inside capture. | .1+.2 → .4 → .5/.11. Submission record is not execution proof. |
 | sta-osh.5 | Bounded completed-window export in `src/program/generate.cpp`, minimal verifier accessor only if needed; offline `tools/tier_b/test_diagnostics.py`. Window ordinal/position/T/accepted/emitted/input hashes/status; checked full native logit rows with vocab/shape/offset metadata and explicit truncation; readback/I/O errors reject. | .4 → .5 → .9/.11. Use `Verifier::copy_logits`; ordinary `--dump-logits` bypasses this native path. No change to acceptance/commit or serving ownership. |
-| sta-osh.6 | `src/kernels/tier_b_rope_bench.cpp` (untracked, unregistered): parity first, AB/BA with canonical input re-upload before each timed arm outside the event window, bounded warmup/iterations/samples, direct/warmed replay/capture costs separate, changed-input replay gate, shapes/raw pairs/spread, checked cleanup/errors. | .1 → .6 → .8. Fairness fix implemented, not GPU-tested; timing pending. |
-| sta-osh.7 | `src/kernels/tier_b_expert_bench.cpp` (untracked, pending parent review): selector restore, actual mixed pairs and proved representative groups2560x640, layout-only change/identical bytes, parity first, rotating >L2 working set with explicit bytes/budget, AB/BA direct/replay/capture raw evidence; old per-column pinned off. | .2 → .7 → .8. Parent review pending; no GPU perf claimed. |
+| sta-osh.6 | `src/kernels/tier_b_rope_bench.cpp` (now committed and registered): parity first, AB/BA with canonical input re-upload before each timed arm outside the event window, bounded warmup/iterations/samples, direct/warmed replay/capture costs separate, changed-input replay gate, shapes/raw pairs/spread, checked cleanup/errors. | .1 → .6 → .8. Timing later taken in [report §5](NIBBLER_TIER_B.md#5-warm-native-kernel-timings). |
+| sta-osh.7 | `src/kernels/tier_b_expert_bench.cpp` (now committed and registered): selector restore, actual mixed pairs and proved representative groups2560x640, layout-only change/identical bytes, parity first, rotating >L2 working set with explicit bytes/budget, AB/BA direct/replay/capture raw evidence; old per-column pinned off. | .2 → .7 → .8. Timing later taken in [report §5](NIBBLER_TIER_B.md#5-warm-native-kernel-timings); M8 budget accounting corrected under sta-osh.23. |
 | sta-osh.8 | Only [CMakeLists.txt](../CMakeLists.txt): independent benchmark targets with parity-style kernel/quant-table linkage, CUDA13.3/GCC15/sm120 compatibility, preserved HIP/platform/default targets; bounded explicit invocations, not unbounded automatic CTests. | .6+.7 → .8 → .10. Primary configure/build is mandatory. |
 | sta-osh.9 | New `tools/tier_b/run_pairs.py`/`test_pairs.py`: same-binary independent f/h, full STRATA env stripping plus allowlist, fixed settings/adapt0, diagnostic versus clean runs, provenance/raw windows/capture/output/logit validation, strict rejection and cancellation, zero-launch dry-run and bounds/error fixtures. | .5 + **sta-d76 + sta-0a7** → .9 → .11. Reuse hardened Tier-A runner without owning its edits. |
 | sta-osh.10 | Primary-only isolated host build in `/data/llm/Strata-tier-b` and fresh `/data/llm/Strata-tests/tier-b-*`: fresh preflight, source/deps/build/binary hashes; all chosen parity and bench targets compile, required new CUDA sections run, logs/exits, no orphan processes, production/audio/router guard preserved. | .1+.2+.8 + **sta-d76 + sta-0a7** → .10 → .11. Must rebuild/rerun after later code changes and .8 registration; .13 foundation proof is not reusable as final proof. Reject skipped required sections or any failure before timing. |
@@ -485,12 +508,21 @@ uses the retained r2 script and timestamped gate/session artifacts: r2 final
 GPU/process/router queries were logging only, and post audio HTTP health was
 absent. A successful historical exit is not proof that those postconditions
 were enforced; the gate heredocs are not present in the inspected artifact
-copies. Later parent-owned sta-osh.28 checks and retained-byte revalidation
-are pending, not retroactive
-evidence or completion claimed by this document.
+copies. The parent-owned sta-osh.28 checks and retained-byte revalidation were
+pending when this section was written and are not retroactive evidence for the
+historical runs.
 
-Only the primary may later perform the authorized host stage. This document
-task performs **no SSH, GPU, live, setup or model-download operation**.
+The later parent-owned stages did run. sta-osh.28 (2026-10-08, source
+`62bf499d`) enforced its own fail-closed postconditions — production hashes,
+launcher mode 644, production HEAD, audio PID **and** HTTP health, router
+`/running` with no Qwen, GPU baseline and absence of strata timers — and exited
+0 in 116 s; see
+[report §13.5](NIBBLER_TIER_B.md#135-enforced-host-preconditions-and-postconditions).
+That closes the post-audio-health gap for that stage only and does **not**
+retroactively enforce anything in the historical r2 run.
+
+Only the primary may perform an authorized host stage. This document
+task itself performs **no SSH, GPU, live, setup or model-download operation**.
 Before any such later action, primary must read the homelab repository's
 `AGENTS.md` and `docs/architecture/overview.md`, run its required
 `scripts/agent-preflight.sh`, and obtain fresh target-local evidence.
@@ -540,7 +572,14 @@ Before execution, write the resolved host manifest into the fresh
 `/data/llm/Strata-tests/tier-b-*` artifact root (primary's later task). The
 foundation job already produced `/data/llm/Strata-tests/tier-b-foundation-20261007`
 (local copies `/tmp/strata-tier-b-artifacts/foundation`); the full `.10` manifest
-and post-change rebuild remain future.
+and post-change rebuild were future at writing time.
+
+Those later roots now exist under `/data/llm/Strata-tests/`:
+`tier-b-final-gates-20261008` (`.10`), `tier-b-measure-20261008` and
+`tier-b-measure-20261008-r2` (`.11`), and `tier-b-remediation-20261008`
+(sta-osh.28). The manifest of what was actually retained,
+including which hashes exist and which never do, is
+[report §12](NIBBLER_TIER_B.md#12-artifacts-and-provenance).
 
 - Engine base/fork/Tier-A pins, exact Tier-B source+patch identity, build/source
   tree hashes and clean/dirty provenance; compiler/CUDA/dependency versions,
@@ -565,14 +604,21 @@ and post-change rebuild remain future.
 - Owned-unit cleanup and baseline postrun state. Recompute statistics from raw
   artifacts for .12; independent final audit follows the child tasks.
 
-Disposition now: f/h are **source-eligible and foundation-proof at `8b375cc7`**,
-not production parity; their parity gates passed the sta-osh.13 foundation GPU
-run, but benchmarks are not compiled/timed and no model arm has run. Harness
-hardening is committed (`2612b143`/`8eb80858`) with offline evidence. Other
-families are deferred or inapplicable as qualified above. No performance/
-promotion recommendation is made. The future report must mark passed, failed,
-skipped, rejected and pending evidence separately and retain uncertainty,
-without claiming general production feature or quality certification.
+Disposition at writing time: f/h were **source-eligible and foundation-proof at
+`8b375cc7`**, not production parity, with no benchmark compiled or timed and no
+model arm run.
+
+**Superseded 2026-10-08.** Benchmarks were compiled and timed, model arms ran,
+and the results, deviations and remaining uncertainty are in
+[NIBBLER_TIER_B.md](NIBBLER_TIER_B.md). The conclusion there is still
+**no promotion and no default change**: f shows no resolved cold-model effect,
+and h's roughly 2% long_doc lead is a lead only, pending a warmed or
+steady-state measurement. Harness hardening is committed
+(`2612b143`/`8eb80858`) with offline evidence. Other families remain deferred
+or inapplicable as qualified above. The report marks passed, failed, skipped,
+rejected and pending evidence separately and claims no production feature or
+quality certification; an independent final audit of the audit remediation is
+still required before the epic closes.
 
 ## Offline document verification
 
@@ -591,10 +637,19 @@ python3 -m unittest discover -s tools/tier_a -p 'test_*.py' -q
 git diff --check -- docs/NIBBLER_TIER_B_PLAN.md
 ```
 
-Require zero regex-dependency skips; the current committed harness runs
-**168 tests, 0 skips**, plus 59 saved-capture validations, under this exact
-regex path. Report actual test counts and any failures; these offline checks
-never execute CUDA.
+Require zero regex-dependency skips. The count has grown with the audit
+remediation; measured on this branch at `62bf499d` under this exact regex path:
+
+| Suite | Count |
+| --- | --- |
+| `tools/tier_a` | **179 tests, 0 skips, OK** (was 168 when this document was written) |
+| `tools/tier_b` | **260 tests, 0 skips, OK** on paseo-nibbler |
+
+On the host the Tier-B suite reported 260 tests with **1 skip**: the retained
+artifact test, whose `/tmp/strata-tier-b-artifacts` inputs exist only on
+paseo-nibbler ([report §13.3](NIBBLER_TIER_B.md#133-corrected-isolated-build-and-correctness-gates)).
+That skip is an input-availability skip, not a regex-dependency skip. Report
+actual test counts and any failures; these offline checks never execute CUDA.
 Because a new untracked file is absent from ordinary `git diff`, also inspect
 its no-index diff/whitespace without staging it. Concurrent helpers' changed
 files are not part of sta-osh.3 and must not be edited or reverted. No Beads
