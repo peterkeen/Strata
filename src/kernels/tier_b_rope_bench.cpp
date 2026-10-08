@@ -178,9 +178,12 @@ int main(int argc, char** argv) {
 
     cudaDeviceProp prop;
     ck(cudaGetDeviceProperties(&prop, 0), "device properties");
+    // cudaDeviceProp::clockRate was removed in CUDA 13; query the attribute (kHz) instead.
+    int clock_khz = 0;
+    ck(cudaDeviceGetAttribute(&clock_khz, cudaDevAttrClockRate, 0), "device clock rate");
     std::printf("tier_b_rope_bench: isolated kernel timings, NOT steady-state model throughput\n");
     std::printf("device: %s | SMs %d | clock %d MHz | mem %zu MiB | iters %d warmup %d samples %d T %d..%d\n",
-                prop.name, prop.multiProcessorCount, prop.clockRate / 1000, (size_t) prop.totalGlobalMem >> 20,
+                prop.name, prop.multiProcessorCount, clock_khz / 1000, (size_t) prop.totalGlobalMem >> 20,
                 iters, warmup, samples, t_lo, t_hi);
 
     CudaResources res;
