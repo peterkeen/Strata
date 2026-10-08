@@ -452,6 +452,89 @@ class TestPairCompare(unittest.TestCase):
         v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb)
         self.assertFalse(v.ok)
 
+    # Regression (host session 1, sub16/long_doc): identical configs drafted
+    # pos 8919 as T=4 in one run and T=3 in the other.  Matching is by
+    # (pos, T, input_hash); unmatched windows are never compared.
+
+    @staticmethod
+    def _wins(spec, bump=None):
+        """spec: list of (pos, T); rows are a deterministic function of (pos,T)."""
+        out = []
+        for pos, T in spec:
+            rows = [[pos * 0.5, T * 0.25, j * 1.0, 1.0] for j in range(T)]
+            if bump == (pos, T):
+                rows[0][3] = 1.0000001
+            out.append({"pos": pos, "T": T, "picks": [pos + j for j in range(T)],
+                        "input_hash": f"{pos:08x}{T:08x}", "rows": rows})
+        return out
+
+    def test_draft_drift_matched_by_key_passes_incomplete(self):
+        common = [(p, 1) for p in range(12)]
+        man_a, ra = build_export(4, self._wins(common + [(20, 4), (24, 4)]))
+        man_b, rb = build_export(4, self._wins(common + [(20, 3), (23, 5)]))
+        v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertTrue(v.ok, v.reason)
+        self.assertFalse(v.full_proof)
+        self.assertEqual((v.n_matched, v.n_unmatched_a, v.n_unmatched_b), (12, 2, 2))
+
+    def test_draft_drift_order_independent(self):
+        spec = [(p, 1) for p in range(12)]
+        man_a, ra = build_export(4, self._wins(spec))
+        man_b, rb = build_export(4, self._wins(list(reversed(spec))))
+        v = rp.compare_pair(rp.FAMILIES["normrope"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertTrue(v.ok and v.full_proof, v.reason)
+
+    def test_matched_window_one_ulp_still_fails(self):
+        spec = [(p, 1) for p in range(12)] + [(20, 4)]
+        man_a, ra = build_export(4, self._wins(spec))
+        man_b, rb = build_export(4, self._wins(spec, bump=(20, 4)))
+        v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertFalse(v.ok)
+        self.assertIn("pos=20 T=4", v.reason)
+
+    def test_too_few_matched_windows_rejected(self):
+        man_a, ra = build_export(4, self._wins([(p, 1) for p in range(11)] + [(20, 4)]))
+        man_b, rb = build_export(4, self._wins([(p, 1) for p in range(11)] + [(20, 3)]))
+        v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertFalse(v.ok)
+        self.assertIn("matched windows 11 < required 12", v.reason)
+
+    def test_unmatched_divergent_rows_not_compared(self):
+        # Different T => different computation; even wildly different rows on
+        # unmatched keys are not evidence either way.
+        common = [(p, 1) for p in range(12)]
+        wa = self._wins(common + [(20, 4)])
+        wb = self._wins(common + [(20, 3)])
+        wb[-1]["rows"] = [[9e9, -9e9, 0.0, 1.0]] * 3
+        man_a, ra = build_export(4, wa)
+        man_b, rb = build_export(4, wb)
+        v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertTrue(v.ok, v.reason)
+
+    def test_same_key_different_picks_rejected(self):
+        spec = [(p, 1) for p in range(12)]
+        wa, wb = self._wins(spec), self._wins(spec)
+        wb[5]["picks"] = [999]
+        man_a, ra = build_export(4, wa)
+        man_b, rb = build_export(4, wb)
+        v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertFalse(v.ok)
+        self.assertIn("emitted token IDs", v.reason)
+
+    def test_duplicate_key_rejected(self):
+        spec = [(p, 1) for p in range(12)] + [(3, 1)]
+        man_a, ra = build_export(4, self._wins(spec))
+        man_b, rb = build_export(4, self._wins(spec))
+        v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb, rp.Bounds())
+        self.assertFalse(v.ok)
+        self.assertIn("duplicate window key", v.reason)
+
+    def test_min_matched_bound_validated(self):
+        with self.assertRaises(ValueError):
+            rp.Bounds(min_matched_windows=0).validate()
+        with self.assertRaises(ValueError):
+            rp.Bounds(min_matched_windows=17).validate()
+
     def test_incomplete_coverage_not_full_proof(self):
         a = [[0.1, 0.2, 0.3, 0.4]]
         man_a, ra = build_export(4, [{"pos": 0, "T": 1, "picks": [3], "rows": a}],
@@ -602,10 +685,14 @@ class FakeEngine:
             d = Path(flags[flags.index("--tier-b-export") + 1])
             assert d.is_absolute() and d.parent.is_dir() and not d.exists()
             d.mkdir()
-            row = [0.5, 0.25, 0.125, 1.0]
-            if is_b and self.diverge_b:
-                row = [0.5, 0.25, 0.125, 1.0000001]
-            text, blob = export_files(4, [{"pos": 0, "T": 1, "picks": [7], "rows": [row]}])
+            wins = []
+            for i in range(16):
+                row = [0.5, 0.25, 0.125, float(i)]
+                if is_b and self.diverge_b and i == 9:
+                    row = [0.5, 0.25, 0.125, 9.000001]
+                wins.append({"pos": 100 + i, "T": 1, "picks": [7], "input_hash": f"{i:016x}",
+                             "rows": [row]})
+            text, blob = export_files(4, wins, truncation=True, complete=False)
             (d / "manifest.txt").write_text(text)
             (d / "rows.bin").write_bytes(blob)
             nr = "STRATA_NO_NORM_ROPE" in env_overrides or not is_b
@@ -673,7 +760,10 @@ class TestDriverDiagnostic(DriverHarness):
         s = self.summary(out)
         self.assertTrue(s["complete"])
         self.assertEqual(len(s["pairs"]), 4)
-        self.assertTrue(all(p["proof"] and p["full_proof"] for p in s["pairs"]))
+        self.assertTrue(all(p["proof"] for p in s["pairs"]))
+        # Fake export is truncated at the 16-window cap: proof, never full proof.
+        self.assertFalse(any(p["full_proof"] for p in s["pairs"]))
+        self.assertTrue(all(p["pair"]["n_matched"] == 16 for p in s["pairs"]))
 
     def test_diagnostic_logit_divergence_fails_run(self):
         out = self.tmp / "diag"

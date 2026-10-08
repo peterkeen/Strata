@@ -390,8 +390,20 @@ positive finite metrics and primary prefill diagnostics. Diagnostic runs are
 **never timing samples**. Use separately established proof/capture signatures
 and any nonintrusive existing clean-run window metadata; if obtaining full
 clean-run T sequences requires instrumentation, record that limitation rather
-than enable it and call the result clean. Output/window mismatches are not a
-controlled comparison. Short output follows inherited eligibility rules and
+than enable it and call the result clean. Output mismatches are not a
+controlled comparison.
+
+**Window matching (amended after host session 1, before any model timing).**
+Speculative draft lengths are not deterministic run to run: two identical
+default configs on `long_doc` windowed pos 8919 as T=4 vs T=3, with identical
+whole-run output. Ordinal alignment is therefore not a valid contract. Windows
+are matched by `(pos, T, input_hash)`; every matched window must have equal
+emitted IDs and satisfy the family contract (bitwise) on its full logit rows;
+at least **12** matched windows (`Bounds.min_matched_windows`) are required;
+duplicate keys reject; unmatched windows are counted, never compared, and make
+coverage incomplete (no full proof). Whole-run prompt/output token identity is
+still required. Replay of the session-1 exports under this rule: 16/16/16/14
+matched windows, all bitwise. Short output follows inherited eligibility rules and
 is saved, not selectively topped up. Forced follow tokens are not a fallback
 for proving natural output or quality parity.
 

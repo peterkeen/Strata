@@ -151,6 +151,11 @@ class Bounds:
     recorded_pairs: int = 3            # three interleaved recorded pairs / family / workload
     max_new_short: int = 256           # short_code budget
     max_new_long: int = 512            # long_doc budget
+    # Speculative draft lengths vary run to run (host session 1: identical
+    # default configs split a window at pos 8919 as T=4 vs T=3), so windows are
+    # matched by (pos, T, input_hash), not ordinal.  At least this many matched
+    # windows must be compared bitwise; fewer rejects the pair.
+    min_matched_windows: int = 12
 
     # Hard ceilings: refuse to enlarge past these rather than overrun silently.
     # max_windows/max_export match exactly what the binary enforces at
@@ -174,6 +179,9 @@ class Bounds:
                 raise ValueError(f"bound {name}={val} exceeds hard ceiling {hi}")
         if self.recorded_pairs < 1:
             raise ValueError("recorded_pairs must be >= 1")
+        if not (1 <= self.min_matched_windows <= self.max_windows):
+            raise ValueError(f"min_matched_windows={self.min_matched_windows} must be in "
+                             f"1..max_windows ({self.max_windows})")
 
     def max_new_for(self, workload: str) -> int:
         return self.max_new_short if workload == "short_code" else self.max_new_long
@@ -596,51 +604,86 @@ class PairVerdict(NamedTuple):
     ok: bool
     full_proof: bool
     reason: str
+    n_matched: int = 0
+    n_unmatched_a: int = 0
+    n_unmatched_b: int = 0
+
+
+def window_key(w: Window) -> tuple[int, int, str]:
+    """Identity of one verifier computation: same start position, same window
+    length and the same input token IDs (fnv1a over the T int32 inputs)."""
+    return (w.pos, w.T, w.input_hash)
 
 
 def compare_pair(family: Family,
                  man_a: ExportManifest, rows_a: RowsFile,
                  man_b: ExportManifest, rows_b: RowsFile,
                  bounds: Bounds | None = None) -> PairVerdict:
-    """Controlled A/B comparison.  Both arms must export valid windows; window
-    geometry, T sequence, positions, input hashes and emitted token IDs must
-    match; then the predeclared contract (bitwise for both first-wave identity
-    families; the tolerance branch exists only for future declared families) is
-    applied to the logit rows.  Mismatched natural windows or
-    picks reject the controlled comparison."""
+    """Controlled A/B comparison over windows matched by (pos, T, input_hash).
+
+    Speculative draft lengths are not deterministic run to run, so the two arms
+    may window the same committed tokens differently; ordinal alignment is not
+    a valid contract.  Both arms must export valid windows with unique keys.
+    For every key present in BOTH arms the emitted token IDs must be equal and
+    the predeclared contract (bitwise for both first-wave identity families;
+    the tolerance branch exists only for future declared families) is applied
+    to the logit rows.  At least `min_matched_windows` (bounds; 1 without
+    bounds) keys must match.  Unmatched windows are counted, never compared and
+    never proof: any unmatched window makes coverage incomplete (no full proof).
+    Whole-run token identity is enforced separately by the caller."""
     va = validate_export(man_a, rows_a, bounds)
     vb = validate_export(man_b, rows_b, bounds)
     if not va.ok:
         return PairVerdict(False, False, f"arm A export invalid: {va.reason}")
     if not vb.ok:
         return PairVerdict(False, False, f"arm B export invalid: {vb.reason}")
-    if len(man_a.windows) != len(man_b.windows):
-        return PairVerdict(False, False, "window count mismatch between arms")
-    for wa, wb in zip(man_a.windows, man_b.windows):
-        if (wa.pos, wa.T) != (wb.pos, wb.T):
-            return PairVerdict(False, False, f"window geometry/T mismatch at ordinal {wa.ordinal}")
-        if wa.input_hash != wb.input_hash:
-            return PairVerdict(False, False, f"input hash mismatch at ordinal {wa.ordinal}")
+    keyed: list[dict[tuple[int, int, str], Window]] = []
+    for arm, man in (("A", man_a), ("B", man_b)):
+        d: dict[tuple[int, int, str], Window] = {}
+        for w in man.windows:
+            k = window_key(w)
+            if k in d:
+                return PairVerdict(False, False, f"arm {arm} duplicate window key {k} "
+                                                 f"(ordinals {d[k].ordinal}, {w.ordinal})")
+            d[k] = w
+        keyed.append(d)
+    ka, kb = keyed
+    common = sorted(set(ka) & set(kb))
+    n_ua, n_ub = len(ka) - len(common), len(kb) - len(common)
+    min_matched = bounds.min_matched_windows if bounds is not None else 1
+    if len(common) < min_matched:
+        return PairVerdict(False, False, f"matched windows {len(common)} < required {min_matched} "
+                                         f"(unmatched A={n_ua} B={n_ub})", len(common), n_ua, n_ub)
+    for k in common:
+        wa, wb = ka[k], kb[k]
         if wa.picks != wb.picks:
-            return PairVerdict(False, False, f"emitted token IDs mismatch at ordinal {wa.ordinal}")
+            return PairVerdict(False, False, f"emitted token IDs mismatch at window pos={k[0]} T={k[1]}",
+                               len(common), n_ua, n_ub)
     # Contract on the logit rows themselves.
-    for wa, wb in zip(man_a.windows, man_b.windows):
+    for k in common:
+        wa, wb = ka[k], kb[k]
         fa = window_floats(man_a, rows_a, wa)
         fb = window_floats(man_b, rows_b, wb)
+        where = f"window pos={k[0]} T={k[1]} (ordinals A={wa.ordinal} B={wb.ordinal})"
         if len(fa) != len(fb):
-            return PairVerdict(False, False, f"logit length mismatch at ordinal {wa.ordinal}")
+            return PairVerdict(False, False, f"logit length mismatch at {where}",
+                               len(common), n_ua, n_ub)
         if family.contract == "bitwise":
             if fa != fb:
-                return PairVerdict(False, False, f"bitwise contract violated at ordinal {wa.ordinal}")
+                return PairVerdict(False, False, f"bitwise contract violated at {where}",
+                                   len(common), n_ua, n_ub)
         else:
             for x, y in zip(fa, fb):
                 denom = max(abs(x), abs(y), 1.0)
                 if abs(x - y) / denom > family.rel_tol:
-                    return PairVerdict(False, False,
-                                       f"tolerance {family.rel_tol:g} exceeded at ordinal {wa.ordinal}")
-    full = va.full_proof and vb.full_proof
-    reason = "controlled correctness proven" if full else "windows matched but coverage incomplete"
-    return PairVerdict(True, full, reason)
+                    return PairVerdict(False, False, f"tolerance {family.rel_tol:g} exceeded at {where}",
+                                       len(common), n_ua, n_ub)
+    full = va.full_proof and vb.full_proof and n_ua == 0 and n_ub == 0
+    reason = (f"{len(common)} matched windows bitwise" if family.contract == "bitwise"
+              else f"{len(common)} matched windows within tolerance")
+    if not full:
+        reason += f"; coverage incomplete (unmatched A={n_ua} B={n_ub}, export truncation)"
+    return PairVerdict(True, full, reason, len(common), n_ua, n_ub)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -719,7 +762,7 @@ def evaluate_diagnostic_pair(family: Family, workload: str,
 
     proof = clean and tv_a.ok and tv_b.ok and ev_a.ok and ev_b.ok and pv.ok and ids_match
     full_proof = proof and tv_a.complete and tv_b.complete and pv.full_proof
-    n_windows = min(ev_a.n_windows, ev_b.n_windows)
+    n_windows = pv.n_matched
     if proof and not reasons:
         reasons.append("controlled correctness proven"
                        + ("" if full_proof else " (coverage incomplete: truncated prefix/windows)"))
@@ -733,7 +776,9 @@ def evaluate_diagnostic_pair(family: Family, workload: str,
                          "n_windows": ev_a.n_windows, "reason": ev_a.reason},
                    "B": {"ok": ev_b.ok, "full_proof": ev_b.full_proof,
                          "n_windows": ev_b.n_windows, "reason": ev_b.reason}},
-        "pair": {"ok": pv.ok, "full_proof": pv.full_proof, "reason": pv.reason},
+        "pair": {"ok": pv.ok, "full_proof": pv.full_proof, "reason": pv.reason,
+                 "n_matched": pv.n_matched, "n_unmatched": {"A": pv.n_unmatched_a,
+                                                            "B": pv.n_unmatched_b}},
         "whole_run_ids_match": ids_match,
         "output_hash": {"A": res_a.output_hash, "B": res_b.output_hash},
         "n_output": {"A": res_a.n_output, "B": res_b.n_output},
@@ -1026,6 +1071,7 @@ def write_provenance(out_dir: Path | None, args, bounds: Bounds,
                    "max_windows": bounds.max_windows,
                    "max_export_bytes": bounds.max_export_bytes,
                    "recorded_pairs": bounds.recorded_pairs,
+                   "min_matched_windows": bounds.min_matched_windows,
                    "max_new_short": bounds.max_new_short,
                    "max_new_long": bounds.max_new_long},
         "common_strata": COMMON_STRATA,
@@ -1219,7 +1265,7 @@ def run(argv: list[str] | None = None) -> int:
         for f in families), flush=True)
     print(f"Bounds: per_arm_timeout={bounds.per_arm_timeout_s}s session_cap={bounds.session_cap_s}s "
           f"max_windows={bounds.max_windows} max_export={bounds.max_export_bytes} "
-          f"recorded_pairs={bounds.recorded_pairs}", flush=True)
+          f"recorded_pairs={bounds.recorded_pairs} min_matched_windows={bounds.min_matched_windows}", flush=True)
 
     pairs = (plan_diagnostic(families, workloads, base_flags, plan_root)
              if args.mode == "diagnostic"
