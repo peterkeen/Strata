@@ -30,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -94,11 +95,30 @@ using Graph = CudaOwner<cudaGraph_t, cudaGraphDestroy>;
 using GraphExec = CudaOwner<cudaGraphExec_t, cudaGraphExecDestroy>;
 using Graphs = std::vector<GraphExec>;
 
+constexpr size_t kDeviceGuardBytes = 256;
+constexpr int kInputTokens = 8;
+
+size_t add_bytes(size_t a, size_t b) {
+    if (b > std::numeric_limits<size_t>::max() - a)
+        throw std::overflow_error("device allocation size addition overflow");
+    return a + b;
+}
+size_t mul_bytes(size_t a, size_t b) {
+    if (a && b > std::numeric_limits<size_t>::max() / a)
+        throw std::overflow_error("device allocation size multiplication overflow");
+    return a * b;
+}
+size_t align256(size_t n) { return add_bytes(n, 255) & ~(size_t) 255; }
+
+template<typename T>
+size_t buffer_bytes(size_t n) { return add_bytes(mul_bytes(n, sizeof(T)), kDeviceGuardBytes); }
+
 template<typename T>
 Device<T> dalloc(size_t n) {
+    const size_t bytes = buffer_bytes<T>(n);
     Device<T> p;
-    ck(cudaMalloc(p.put(), n * sizeof(T) + 256), "malloc");
-    ck(cudaMemset(p, 0, n * sizeof(T) + 256), "memset");
+    ck(cudaMalloc(p.put(), bytes), "malloc");
+    ck(cudaMemset(p, 0, bytes), "memset");
     return p;
 }
 
@@ -172,7 +192,7 @@ std::vector<float> random_x(size_t n, std::mt19937& rng) {
 // ---------------------------------------------------------------- command line
 struct Cli {
     int groups = 8, tokens = 2, slots = 8, warmup = 25, samples = 30, max_slots = 64;
-    size_t max_bytes = 512ull << 20;                 // 512 MiB device allocation budget
+    size_t max_bytes = 512ull << 20;                 // 512 MiB cap on explicit device buffers, guards included
     bool help = false;
     std::vector<std::pair<int, int>> pairs;          // empty = all 7 manifest pairs
 };
@@ -185,7 +205,7 @@ int usage() {
         "  --slots S      rotation slots (1..max-slots, default 8; auto-bumped until working set > L2)\n"
         "  --warmup W     fixed warmup calls per layout (1..1000, default 25)\n"
         "  --samples M    raw paired samples per layout (1..10000, default 30)\n"
-        "  --max-bytes B  device allocation budget, bytes (1048576..1099511627776, default 536870912)\n"
+        "  --max-bytes B  explicit device-buffer cap, guards included (1048576..1099511627776, default 536870912)\n"
         "  --max-slots MS slot cap (1..1024, default 64)\n"
         "  --pair gu,dt   only this format pair (repeatable; default all 7 manifest pairs)\n"
         "  --help\n");
@@ -229,11 +249,14 @@ Cli parse(int argc, char** argv) {
             }
             c.max_bytes = (size_t) b;
         } else if (a == "--pair") {
-            const char* v = need("--pair");
-            const char* comma = std::strchr(v, ',');
-            if (!comma) { std::fprintf(stderr, "--pair needs gu,dt\n"); std::exit(2); }
-            const int gu = (int) num(v, "--pair gu", 1, 1024);
-            const int dt = (int) num(comma + 1, "--pair dt", 1, 1024);
+            const std::string v = need("--pair");
+            const size_t comma = v.find(',');
+            if (comma == std::string::npos) { std::fprintf(stderr, "--pair needs gu,dt\n"); std::exit(2); }
+            // Each side is parsed on its own NUL-terminated text: `num` requires the whole string, so
+            // handing it "gu,dt" rejected every valid pair.  A second comma stays rejected via `dt`.
+            const std::string gu_text = v.substr(0, comma), dt_text = v.substr(comma + 1);
+            const int gu = (int) num(gu_text.c_str(), "--pair gu", 1, 1024);
+            const int dt = (int) num(dt_text.c_str(), "--pair dt", 1, 1024);
             c.pairs.push_back({gu, dt});
         } else {
             std::fprintf(stderr, "unknown argument: %s (see --help)\n", a.c_str());
@@ -243,10 +266,58 @@ Cli parse(int argc, char** argv) {
     return c;
 }
 
+// ---------------------------------------------------------------- one pair's complete explicit allocation plan
+// Weight working set excludes the allocation's guard; total_bytes includes every cudaMalloc request.
+// CUDA's opaque graph/exec/stream/event/driver allocations are outside this count: their size is not measured.
+struct DevicePlan {
+    k::NativeExpertLayout L;
+    int groups, tokens, slots, n_ent;
+    size_t blob_stride, slot_bytes, arena_bytes, ptr_count, start_count;
+    size_t x_floats, xq_bytes, scratch_bytes, out_floats, total_bytes;
+};
+
+DevicePlan device_plan(const k::NativeExpertLayout& L, int groups, int tokens, int slots) {
+    if (groups <= 0 || tokens <= 0 || slots <= 0 || L.n_embd <= 0 || L.n_ff <= 0 ||
+        L.n_embd % 32 != 0 || L.n_ff % 32 != 0)
+        throw std::invalid_argument("invalid expert allocation geometry");
+    if ((uint64_t) L.n_embd > std::numeric_limits<size_t>::max() ||
+        (uint64_t) L.n_ff > std::numeric_limits<size_t>::max())
+        throw std::overflow_error("expert allocation dimension does not fit size_t");
+    const size_t H = (size_t) L.n_embd, FF = (size_t) L.n_ff;
+    DevicePlan p{};
+    p.L = L; p.groups = groups; p.tokens = tokens; p.slots = slots;
+    const size_t entries = mul_bytes((size_t) groups, (size_t) tokens);
+    if (entries > (size_t) std::numeric_limits<int>::max())
+        throw std::overflow_error("expert entry count does not fit int");
+    p.n_ent = (int) entries;
+    p.blob_stride = align256(L.bytes);
+    p.slot_bytes = mul_bytes((size_t) groups, p.blob_stride);
+    p.arena_bytes = mul_bytes((size_t) slots, p.slot_bytes);
+    p.ptr_count = mul_bytes((size_t) slots, (size_t) groups);
+    p.start_count = add_bytes((size_t) groups, 1);
+    p.x_floats = mul_bytes((size_t) kInputTokens, H);
+    p.xq_bytes = mul_bytes(mul_bytes((size_t) kInputTokens, H / 32), 36);
+    p.out_floats = mul_bytes(entries, H);
+    // Check every operation in the kernel API's scratch formula before calling its unchecked size helper.
+    const size_t f = mul_bytes(mul_bytes(entries, FF), sizeof(float));
+    const size_t hq = mul_bytes(mul_bytes(entries, FF / 32), 36);
+    p.scratch_bytes = add_bytes(mul_bytes(3, align256(f)), align256(hq));
+    if (p.scratch_bytes != k::native_expert_scratch_bytes(p.n_ent, L.n_ff))
+        throw std::runtime_error("expert scratch allocation contract changed");
+    for (size_t bytes : {buffer_bytes<uint8_t>(p.arena_bytes),
+                         buffer_bytes<unsigned long long>(p.ptr_count),
+                         buffer_bytes<int32_t>(p.start_count), buffer_bytes<int32_t>(1),
+                         buffer_bytes<int32_t>(entries), buffer_bytes<int32_t>(entries),
+                         buffer_bytes<float>(p.x_floats), buffer_bytes<uint8_t>(p.xq_bytes),
+                         buffer_bytes<uint8_t>(p.scratch_bytes), buffer_bytes<float>(p.out_floats)})
+        p.total_bytes = add_bytes(p.total_bytes, bytes);
+    return p;
+}
+
 // ---------------------------------------------------------------- one pair's device state
 struct Bench {
     k::NativeExpertLayout L;
-    int G = 0, T = 0, NTOK = 8, slots = 0;
+    int G = 0, T = 0, NTOK = kInputTokens, slots = 0;
     int cap_groups = 0, n_ent = 0;
     size_t blob_stride = 0, slot_bytes = 0, arena_bytes = 0, out_floats = 0;
     Device<uint8_t> darena;
@@ -256,17 +327,19 @@ struct Bench {
     Device<uint8_t> dxq, dscr;
     Device<float> dout;
 
-    Bench(int gu, int dt, int64_t H, int64_t FF, int g, int t, int sl, std::mt19937& rng, cudaStream_t s)
-        : G(g), T(t), slots(sl) {
-        L = k::native_expert_layout(gu, dt, H, FF);
-        cap_groups = G;
-        n_ent = G * T;
-        blob_stride = (L.bytes + 255) & ~(size_t) 255;
-        slot_bytes = (size_t) G * blob_stride;
-        arena_bytes = (size_t) slots * slot_bytes;
-        out_floats = (size_t) n_ent * H;
+    Bench(int gu, int dt, int64_t H, int64_t FF, int g, int t, int sl, std::mt19937& rng, cudaStream_t s,
+          size_t max_bytes = 512ull << 20)
+        : Bench(device_plan(k::native_expert_layout(gu, dt, H, FF), g, t, sl), rng, s, max_bytes) {}
+
+    Bench(const DevicePlan& p, std::mt19937& rng, cudaStream_t s, size_t max_bytes)
+        : L(p.L), G(p.groups), T(p.tokens), slots(p.slots), cap_groups(p.groups), n_ent(p.n_ent),
+          blob_stride(p.blob_stride), slot_bytes(p.slot_bytes), arena_bytes(p.arena_bytes), out_floats(p.out_floats) {
+        // Also protect direct constructor callers; the CLI performs this admission before constructing Bench.
+        if (p.total_bytes > max_bytes) throw std::length_error("explicit device buffers exceed allocation budget");
+        const int gu = L.gu_type, dt = L.d_type;
+        const int64_t H = L.n_embd, FF = L.n_ff;
         darena = dalloc<uint8_t>(arena_bytes);
-        std::vector<unsigned long long> ptr((size_t) slots * G);
+        std::vector<unsigned long long> ptr(p.ptr_count);
         for (int j = 0; j < slots; ++j) {
             for (int g = 0; g < G; ++g) {
                 auto b = random_rows(gu, 2 * FF, H, rng);   // gate rows | up rows
@@ -282,7 +355,7 @@ struct Bench {
         }
         dptr = dalloc<unsigned long long>(ptr.size());
         ck(cudaMemcpy(dptr, ptr.data(), ptr.size() * 8, cudaMemcpyHostToDevice), "ptr");
-        std::vector<int32_t> start(G + 1), dst_v(n_ent), tok_v(n_ent);
+        std::vector<int32_t> start(p.start_count), dst_v(n_ent), tok_v(n_ent);
         for (int g = 0; g < G; ++g) {
             start[g] = g * T;
             for (int t = 0; t < T; ++t) {
@@ -291,7 +364,7 @@ struct Bench {
             }
         }
         start[G] = n_ent;
-        dstart = dalloc<int32_t>(G + 1);
+        dstart = dalloc<int32_t>(p.start_count);
         dn = dalloc<int32_t>(1);
         ddst = dalloc<int32_t>(n_ent);
         dtok = dalloc<int32_t>(n_ent);
@@ -299,12 +372,12 @@ struct Bench {
         ck(cudaMemcpy(dn, &G, 4, cudaMemcpyHostToDevice), "n");
         ck(cudaMemcpy(ddst, dst_v.data(), dst_v.size() * 4, cudaMemcpyHostToDevice), "dst");
         ck(cudaMemcpy(dtok, tok_v.data(), tok_v.size() * 4, cudaMemcpyHostToDevice), "tok");
-        const auto x = random_x((size_t) NTOK * H, rng);
+        const auto x = random_x(p.x_floats, rng);
         dx = dalloc<float>(x.size());
         ck(cudaMemcpy(dx, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "x");
-        dxq = dalloc<uint8_t>((size_t) NTOK * (H / 32) * 36);
+        dxq = dalloc<uint8_t>(p.xq_bytes);
         k::quantize_q8_1_rows(dx, NTOK, H, dxq, s);       // one quantization, shared by both layouts
-        dscr = dalloc<uint8_t>(k::native_expert_scratch_bytes(n_ent, FF));
+        dscr = dalloc<uint8_t>(p.scratch_bytes);
         dout = dalloc<float>(out_floats);
     }
     void call(int slot, cudaStream_t s) {
@@ -313,8 +386,14 @@ struct Bench {
     }
 };
 
-// ---------------------------------------------------------------- selector guard (restore on scope exit)
+// ---------------------------------------------------------------- selector + error-policy guard (restore on scope exit)
+// This standalone benchmark is an audited opt-in caller for the IQ host-error policy: launch/argument
+// failures must unwind through the RAII owners above instead of calling exit(1) and leaking device state.
+// `errors` is declared FIRST so the policy is enabled before any selector call, any CUDA acquisition and any
+// kernel launch, and is destroyed LAST so restore() and all unwinding still run under it.  Its destructor
+// puts back whatever policy this thread had (nestable); the default engine policy is untouched.
 struct Guard {
+    k::IqHostErrorScope errors;
     const bool ns = k::native_grouped_no_sub16_gu();
     const bool old = k::iq_old_kernels();
     Guard() { k::iq_set_old_kernels(false); }   // decode-once only, never the old per-column kernels
@@ -490,10 +569,19 @@ int run_benchmark(int argc, char** argv) {
     const Cli c = parse(argc, argv);
     if (c.help) return usage();
 
+    // Before the first CUDA call: scoped throwing IQ host-error policy plus selector restoration.
+    Guard guard;
+    if (!k::iq_host_errors_throw()) {
+        std::printf("tier_b_expert_bench FAIL: scoped IQ host-error policy did not take effect\n");
+        return 1;
+    }
+
     cudaDeviceProp prop{};
     ck(cudaGetDeviceProperties(&prop, 0), "device props");
     const size_t l2 = (size_t) prop.l2CacheSize;
-    std::printf("device %s, L2 %zu bytes, allocation budget %zu bytes\n", prop.name, l2, c.max_bytes);
+    std::printf("device %s, L2 %zu bytes, explicit device-buffer budget %zu bytes\n", prop.name, l2, c.max_bytes);
+    std::printf("budget counts all cudaMalloc buffers and guards; opaque CUDA graph/exec/stream/event/driver\n"
+                "allocations are excluded and their sizes are not measured (not a total VRAM-use cap).\n");
 
 #if defined(STRATA_HIP_GFX906)
     std::printf("tier_b_expert_bench FAIL: needs the CUDA sub16/fallback dispatch, not gfx906 alternate layouts\n");
@@ -512,7 +600,6 @@ int run_benchmark(int argc, char** argv) {
     std::vector<std::pair<int, int>> pairs = c.pairs;
     if (pairs.empty()) for (const auto& p : kPairs) pairs.push_back(p);
 
-    Guard guard;
     std::mt19937 rng(2715);
     Stream s;
     ck(cudaStreamCreate(s.put()), "stream");
@@ -528,25 +615,30 @@ int run_benchmark(int argc, char** argv) {
             continue;
         }
         const auto L = k::native_expert_layout(gu, dt, 2560, 640);
-        const size_t blob_stride = (L.bytes + 255) & ~(size_t) 255;
-        const size_t slot_bytes = (size_t) c.groups * blob_stride;
+        const size_t blob_stride = align256(L.bytes);
+        const size_t slot_bytes = mul_bytes((size_t) c.groups, blob_stride);
         int slots = std::min(c.slots, c.max_slots);
-        while ((size_t) slots * slot_bytes <= l2 && slots < c.max_slots) ++slots;   // exceed L2, bounded
-        const size_t arena = (size_t) slots * slot_bytes;
-        if ((size_t) slots * slot_bytes <= l2) {
+        while (mul_bytes((size_t) slots, slot_bytes) <= l2 && slots < c.max_slots) ++slots;   // exceed L2, bounded
+        const auto plan = device_plan(L, c.groups, c.tokens, slots);
+        const size_t arena = plan.arena_bytes;
+        if (arena <= l2) {
             std::printf("%-8s/%-7s: working set %zu B <= L2 %zu B even at max slots %d\n",
                         name_of(gu), name_of(dt), arena, l2, slots);
             ++parity_fail;
             continue;
         }
-        if (arena > c.max_bytes) {
-            std::printf("%-8s/%-7s: arena %zu B exceeds budget %zu B\n", name_of(gu), name_of(dt), arena, c.max_bytes);
+        if (plan.total_bytes > c.max_bytes) {
+            std::printf("%-8s/%-7s: explicit device buffers %zu B (weight working set %zu B, auxiliary+guards %zu B)\n"
+                        "  exceeds budget %zu B; rejected before device-buffer allocation\n",
+                        name_of(gu), name_of(dt), plan.total_bytes, arena, plan.total_bytes - arena, c.max_bytes);
             ++parity_fail;
             continue;
         }
-        Bench B(gu, dt, 2560, 640, c.groups, c.tokens, slots, rng, s);
+        Bench B(plan, rng, s, c.max_bytes);
         std::printf("%-8s/%-7s G %d T %d | work %zu B = %d slots x %d groups x %zu B/blob, rotation %d, L2 %zu B\n",
                     name_of(gu), name_of(dt), c.groups, c.tokens, arena, slots, c.groups, blob_stride, slots, l2);
+        std::printf("  allocation: weight working set %zu B; explicit device buffers %zu B; auxiliary+guards %zu B; budget %zu B\n",
+                    arena, plan.total_bytes, plan.total_bytes - arena, c.max_bytes);
 
         // parity first: fail nonzero, never time a pair that is not bitwise equal
         if (parity(B, s)) { ++parity_fail; continue; }

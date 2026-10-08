@@ -4,9 +4,15 @@ Compiles the entire owned source with real IQ API declarations. The dedicated fa
 CUDA tracks every resource, ends captures, and injects failures at each constructor,
 graph, parity and timing API (including partial output handles). Fake IQ kernels
 only write finite constants: these tests do NOT prove CUDA arithmetic or performance.
+
+sta-osh.31: the fake also models the thread-local IQ host-error policy, recording for
+every CUDA operation whether the benchmark's scope was already active, so the probes
+prove the policy is enabled before any acquisition/launch and restored on all exits.
+The real header's IqHostErrorScope is used; only the two policy accessors are faked.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -83,6 +89,13 @@ class ExpertCleanupTests(unittest.TestCase):
 
     def test_move_ownership_releases_exactly_once(self):
         self.probe("move")
+
+    def test_scoped_iq_error_policy_enabled_before_cuda_and_restored_on_all_exits(self):
+        result = self.probe("policy")
+        self.assertIn("policy=restored cuda_outside_policy=0", result.stdout)
+        # Both prior policies x (success + every CUDA failure point + three kernel throw kinds) + nesting.
+        checks = int(re.search(r"PROBE policy checks=(\d+)", result.stdout).group(1))
+        self.assertGreater(checks, 2 * (1 + 3))
 
 
 if __name__ == "__main__":

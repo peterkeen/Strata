@@ -26,12 +26,25 @@ struct cudaDeviceProp { char name[64]; int l2CacheSize; };
 namespace expert_fake {
 inline std::map<void*, std::string> live;
 inline std::vector<std::string> calls;
+inline std::vector<size_t> allocation_sizes;
+inline std::map<void*, size_t> buffer_sizes;
+inline size_t buffer_live_bytes = 0, buffer_peak_bytes = 0;
+inline int device_l2 = 1;
+inline bool only_manifest_pair = false;
 inline int fail_at = -1, cleanup_attempts = 0, captures_ended = 0;
 inline bool partial_create = false, all_cleanup_fail = false, refuse_cleanup = false;
 inline bool end_error = false, bad_layout = false;
 inline int kernel_throw = 0;
 inline bool ns = true, old = true;
+// Stand-in for the thread-local IQ host-error policy the benchmark opts into (sta-osh.30 API).
+// `prior_policy` is what this thread's policy must be back to between probes; reset() enforces it.
+inline bool host_errors_throw = false, prior_policy = false;
+inline int steps_with_policy = 0, steps_without_policy = 0;
+inline int kernel_errors = 0, kernel_errors_without_policy = 0;
 inline cudaError_t step(const char* name) {
+    // Every fake CUDA operation records whether the throwing policy was already active when it ran,
+    // so a probe can prove the scope was entered before ANY acquisition or launch.
+    if (host_errors_throw) ++steps_with_policy; else ++steps_without_policy;
     calls.emplace_back(name);
     return static_cast<int>(calls.size()) == fail_at ? cudaErrorUnknown : cudaSuccess;
 }
@@ -42,11 +55,18 @@ inline void untrack(void* p) {
 inline bool empty() { return live.empty(); }
 inline void reset() {
     if (!empty()) throw std::runtime_error("resources remain between probes");
-    calls.clear(); fail_at = -1; cleanup_attempts = captures_ended = 0;
+    if (host_errors_throw != prior_policy) throw std::runtime_error("IQ host-error policy not restored");
+    calls.clear(); allocation_sizes.clear(); buffer_sizes.clear();
+    buffer_live_bytes = buffer_peak_bytes = 0; device_l2 = 1; only_manifest_pair = false;
+    fail_at = -1; cleanup_attempts = captures_ended = 0;
+    steps_with_policy = steps_without_policy = kernel_errors = kernel_errors_without_policy = 0;
     partial_create = all_cleanup_fail = refuse_cleanup = end_error = bad_layout = false; kernel_throw = 0;
 }
 inline void kernel_step(const char* name) {
     if (step(name) != cudaSuccess) {
+        // A real IQ launch failure only unwinds instead of exit(1) while the policy is enabled.
+        ++kernel_errors;
+        if (!host_errors_throw) ++kernel_errors_without_policy;
         if (kernel_throw == 1) throw std::bad_alloc();
         if (kernel_throw == 2) throw 71;
         throw std::runtime_error("injected kernel exception");
@@ -57,19 +77,24 @@ inline void output(float* p, size_t n) { std::fill(p, p + n, 1.0f); }
 inline const char* cudaGetErrorString(cudaError_t) { return "expert-fake-injected"; }
 inline cudaError_t cudaGetDeviceProperties(cudaDeviceProp* p, int) {
     auto e = expert_fake::step("props");
-    std::strcpy(p->name, "OFFLINE expert fake CUDA"); p->l2CacheSize = 1; return e;
+    std::strcpy(p->name, "OFFLINE expert fake CUDA"); p->l2CacheSize = expert_fake::device_l2; return e;
 }
 template<typename T> cudaError_t cudaMalloc(T** p, size_t n) {
     auto e = expert_fake::step("malloc");
     if (e && !expert_fake::partial_create) return e;
     *p = static_cast<T*>(std::malloc(n));
     if (!*p) throw std::bad_alloc();
-    expert_fake::track(*p, "allocation"); return e;
+    expert_fake::track(*p, "allocation");
+    expert_fake::allocation_sizes.push_back(n); expert_fake::buffer_sizes.emplace(*p, n);
+    expert_fake::buffer_live_bytes += n;
+    expert_fake::buffer_peak_bytes = std::max(expert_fake::buffer_peak_bytes, expert_fake::buffer_live_bytes);
+    return e;
 }
 inline cudaError_t cudaFree(void* p) {
     ++expert_fake::cleanup_attempts;
     auto e = expert_fake::step("free");
     if (expert_fake::refuse_cleanup) return cudaErrorUnknown;
+    expert_fake::buffer_live_bytes -= expert_fake::buffer_sizes.at(p); expert_fake::buffer_sizes.erase(p);
     expert_fake::untrack(p); std::free(p);
     // Model a release that reports an earlier async error; later releases still must run.
     return expert_fake::all_cleanup_fail ? cudaErrorUnknown : e;
