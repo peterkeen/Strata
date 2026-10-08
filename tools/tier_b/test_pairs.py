@@ -404,6 +404,66 @@ class TestPairCompare(unittest.TestCase):
         v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb)
         self.assertTrue(v.ok and v.full_proof, v.reason)
 
+    def test_identity_signed_zero_mismatch_rejected(self):
+        for family in rp.FAMILIES.values():
+            for zero_a, zero_b in ((0.0, -0.0), (-0.0, 0.0)):
+                with self.subTest(family=family.name, zero_a=repr(zero_a)):
+                    a = [[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, zero_a]]
+                    b = [[1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0, zero_b]]
+                    man_a, ra, man_b, rb = self._twin(a, b)
+                    self.assertNotEqual(ra.data, rb.data)
+                    self.assertEqual(rp.window_floats(man_a, ra, man_a.windows[0]),
+                                     rp.window_floats(man_b, rb, man_b.windows[0]))
+                    v = rp.compare_pair(family, man_a, ra, man_b, rb)
+                    self.assertFalse(v.ok)
+                    self.assertFalse(v.full_proof)
+                    self.assertIn("bitwise contract violated", v.reason)
+
+    def test_identity_identical_finite_bytes_pass(self):
+        # Both zero encodings, subnormals and the largest finite float32 are valid.
+        a = [[0.0, -0.0, 2.0 ** -149, -(2.0 ** -149)],
+             [struct.unpack("<f", bytes.fromhex("ffff7f7f"))[0], -1.0, 2.0, 3.0]]
+        for family in rp.FAMILIES.values():
+            with self.subTest(family=family.name):
+                man_a, ra, man_b, rb = self._twin(a, [list(row) for row in a])
+                self.assertEqual(ra.data, rb.data)
+                v = rp.compare_pair(family, man_a, ra, man_b, rb)
+                self.assertTrue(v.ok and v.full_proof, v.reason)
+
+    def test_nonfinite_rejected_independently_of_contract(self):
+        tolerance = rp.Family("future", "STRATA_FUTURE", "tolerance", 1e-3)
+        tolerance.validate()
+        for family in (*rp.FAMILIES.values(), tolerance):
+            for value in (float("inf"), float("-inf"), float("nan")):
+                for bad_arm in ("A", "B", "both"):
+                    with self.subTest(family=family.name, value=value, bad_arm=bad_arm):
+                        a = [[value if bad_arm != "B" else 0.0, 1.0, 2.0, 3.0]]
+                        b = [[value if bad_arm != "A" else 0.0, 1.0, 2.0, 3.0]]
+                        man_a, ra, man_b, rb = self._twin(a, b)
+                        if bad_arm == "both":
+                            self.assertEqual(ra.data, rb.data)
+                        v = rp.compare_pair(family, man_a, ra, man_b, rb)
+                        self.assertFalse(v.ok)
+                        self.assertFalse(v.full_proof)
+                        self.assertIn("non-finite logits", v.reason)
+                        self.assertIn(f"arm {'B' if bad_arm == 'B' else 'A'} export invalid",
+                                      v.reason)
+
+    def test_tolerance_remains_numeric_not_bitwise(self):
+        family = rp.Family("future", "STRATA_FUTURE", "tolerance", 1e-3)
+        family.validate()
+        a = [[0.0, 0.0, 100.0, -100.0]]
+        for b, expected in (([[-0.0, 0.0005, 100.05, -100.05]], True),
+                            ([[-0.0, 0.002, 100.0, -100.0]], False),
+                            ([[-0.0, 0.0, 100.2, -100.0]], False)):
+            with self.subTest(rows_b=b):
+                man_a, ra, man_b, rb = self._twin(a, b)
+                self.assertNotEqual(ra.data, rb.data)
+                v = rp.compare_pair(family, man_a, ra, man_b, rb)
+                self.assertEqual(v.ok, expected, v.reason)
+                self.assertEqual(v.full_proof, expected, v.reason)
+                self.assertIn("tolerance", v.reason)
+
     def test_sub16_any_diff_fails(self):
         man_a, ra, man_b, rb = self._twin([[0.1, 0.2, 0.3, 0.4]],
                                           [[0.1, 0.2, 0.3, 0.4000001]])
@@ -543,6 +603,47 @@ class TestPairCompare(unittest.TestCase):
         v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb)
         self.assertTrue(v.ok)
         self.assertFalse(v.full_proof)
+
+
+# ── file-backed diagnostic evaluation ─────────────────────────────────────────
+
+class TestDiagnosticEvaluation(unittest.TestCase):
+    def test_signed_zero_end_to_end_evaluation(self):
+        import tempfile
+        traces = {"normrope": (rope_fused_trace(), rope_plain_trace()),
+                  "sub16": (sub16_default_trace(), sub16_optout_trace())}
+        for family in rp.FAMILIES.values():
+            for zero_a, zero_b, expected in ((0.0, -0.0, False),
+                                              (0.0, 0.0, True), (-0.0, -0.0, True)):
+                with self.subTest(family=family.name, zeros=(repr(zero_a), repr(zero_b))):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        dirs = [Path(tmp) / arm for arm in ("A", "B")]
+                        for d, zero in zip(dirs, (zero_a, zero_b)):
+                            d.mkdir()
+                            # Reuse H1's 12-window shape; differ only in the last
+                            # window's final logit, keeping all metadata/IDs valid.
+                            wins = [{"pos": 100 + i, "T": 1, "picks": [7],
+                                     "input_hash": f"{i:016x}",
+                                     "rows": [[1.0, 2.0, 3.0, zero if i == 11 else 0.0]]}
+                                    for i in range(12)]
+                            text, blob = export_files(4, wins)
+                            (d / "manifest.txt").write_text(text, encoding="utf-8")
+                            (d / "rows.bin").write_bytes(blob)
+                        trace_a, trace_b = traces[family.name]
+                        v = rp.evaluate_diagnostic_pair(
+                            family, "short_code", ok_result(stderr_raw=trace_a),
+                            ok_result(stderr_raw=trace_b), str(dirs[0]), str(dirs[1]), rp.Bounds())
+                    self.assertTrue(v["arms_clean"] and v["whole_run_ids_match"])
+                    self.assertTrue(all(arm["ok"] for arm in v["trace"].values()))
+                    self.assertTrue(all(arm["full_proof"] for arm in v["export"].values()))
+                    self.assertEqual(v["pair"]["n_matched"], 12)
+                    self.assertEqual(v["pair"]["n_unmatched"], {"A": 0, "B": 0})
+                    self.assertEqual(v["pair"]["ok"], expected, v["pair"]["reason"])
+                    self.assertEqual(v["proof"], expected, v["reasons"])
+                    self.assertEqual(v["full_proof"], expected, v["reasons"])
+                    if not expected:
+                        self.assertIn("bitwise contract violated at window pos=111 T=1",
+                                      v["pair"]["reason"])
 
 
 # ── timing discipline ────────────────────────────────────────────────────────

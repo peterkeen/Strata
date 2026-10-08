@@ -594,10 +594,14 @@ def validate_export(manifest: ExportManifest, rows: RowsFile,
 # PAIR CORRECTNESS: matched windows + predeclared contract on logit rows
 # ─────────────────────────────────────────────────────────────────────────────
 
-def window_floats(manifest: ExportManifest, rows: RowsFile, w: Window) -> tuple[float, ...]:
+def window_payload(rows: RowsFile, w: Window) -> bytes:
+    """Raw float32 bytes for a window whose span validate_export has checked."""
     start = w.rows_offset - _ROWS_HEADER_BYTES
-    end = start + w.rows_bytes
-    return struct.unpack(f"<{w.T * manifest.vocab}f", rows.data[start:end])
+    return rows.data[start:start + w.rows_bytes]
+
+
+def window_floats(manifest: ExportManifest, rows: RowsFile, w: Window) -> tuple[float, ...]:
+    return struct.unpack(f"<{w.T * manifest.vocab}f", window_payload(rows, w))
 
 
 class PairVerdict(NamedTuple):
@@ -659,20 +663,25 @@ def compare_pair(family: Family,
         if wa.picks != wb.picks:
             return PairVerdict(False, False, f"emitted token IDs mismatch at window pos={k[0]} T={k[1]}",
                                len(common), n_ua, n_ub)
-    # Contract on the logit rows themselves.
+    # Contract on the logit rows themselves.  Both exports have independently
+    # passed finite-value validation above; equal bytes alone are not enough.
     for k in common:
         wa, wb = ka[k], kb[k]
-        fa = window_floats(man_a, rows_a, wa)
-        fb = window_floats(man_b, rows_b, wb)
+        payload_a = window_payload(rows_a, wa)
+        payload_b = window_payload(rows_b, wb)
         where = f"window pos={k[0]} T={k[1]} (ordinals A={wa.ordinal} B={wb.ordinal})"
-        if len(fa) != len(fb):
+        if len(payload_a) != len(payload_b):
             return PairVerdict(False, False, f"logit length mismatch at {where}",
                                len(common), n_ua, n_ub)
         if family.contract == "bitwise":
-            if fa != fb:
+            # Python float equality collapses +0.0/-0.0; compare the original
+            # float32 encodings, never decoded or repacked values.
+            if payload_a != payload_b:
                 return PairVerdict(False, False, f"bitwise contract violated at {where}",
                                    len(common), n_ua, n_ub)
         else:
+            fa = window_floats(man_a, rows_a, wa)
+            fb = window_floats(man_b, rows_b, wb)
             for x, y in zip(fa, fb):
                 denom = max(abs(x), abs(y), 1.0)
                 if abs(x - y) / denom > family.rel_tol:
