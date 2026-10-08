@@ -454,24 +454,58 @@ class ExportManifest:
 
 
 def parse_manifest(text: str) -> ExportManifest:
+    """Parse exporter metadata, requiring canonical, unique terminal lines.
+
+    finish() writes optional truncation, then either an export error or a
+    successful completion footer. No window/header data can follow these lines.
+    Error IDs may contain spaces (e.g. "rows close").
+    """
     m = ExportManifest()
     lines = text.splitlines()
     if not lines or lines[0].strip() != "# tier-b native window export v=1":
         m.parse_error = "missing/stale manifest header"
         return m
+    seen_terminal: set[str] = set()
     for line in lines[1:]:
+        # Recognize malformed spellings/spacing too, so a later valid footer
+        # cannot hide them. Only the exporter's exact success spelling counts.
+        terminal = re.match(r"^#\s*(truncation|export_error|complete)", line.strip())
+        if terminal:
+            key = terminal.group(1)
+            if key in seen_terminal:
+                m.parse_error = f"duplicate terminal metadata: {key}"
+                return m
+            if m.complete or (key == "truncation" and m.export_error is not None):
+                m.parse_error = f"terminal metadata out of order: {line!r}"
+                return m
+            seen_terminal.add(key)
+            if key == "export_error":
+                prefix = "# export_error "
+                error_id = line[len(prefix):] if line.startswith(prefix) else ""
+                if not error_id or error_id != error_id.strip():
+                    m.parse_error = f"malformed export_error line: {line!r}"
+                    return m
+                m.export_error = error_id
+            elif line != f"# {key} 1":
+                m.parse_error = f"malformed {key} line: {line!r}"
+                return m
+            elif key == "complete":
+                if m.export_error is not None:
+                    m.parse_error = "complete footer conflicts with export_error"
+                    return m
+                m.complete = True
+            else:
+                m.truncation = True
+            continue
+        if seen_terminal and line.strip():
+            m.parse_error = f"data after terminal metadata: {line!r}"
+            return m
         if line.startswith("# vocab "):
             m.vocab = int(line.split()[2])
         elif line.startswith("# max_windows "):
             m.max_windows = int(line.split()[2])
         elif line.startswith("# max_row_bytes "):
             m.max_row_bytes = int(line.split()[2])
-        elif line.startswith("# truncation 1"):
-            m.truncation = True
-        elif line.startswith("# export_error "):
-            m.export_error = line.split(maxsplit=2)[2]
-        elif line.startswith("# complete 1"):
-            m.complete = True
         elif line.startswith("W "):
             mm = _W_RE.match(line)
             if mm is None:
@@ -519,18 +553,19 @@ def parse_rows(blob: bytes) -> RowsFile:
 
 
 class ExportVerdict(NamedTuple):
-    ok: bool                 # all present windows are valid (finite, in-span)
-    full_proof: bool         # ok AND complete AND not truncated AND no export_error
+    ok: bool                 # successful finalization AND valid nonempty windows
+    full_proof: bool         # ok AND not truncated
     n_windows: int
     reason: str
 
 
 def validate_export(manifest: ExportManifest, rows: RowsFile,
                     bounds: Bounds | None = None) -> ExportVerdict:
-    """Require valid full export rows: header/spans, finite values and shape.
-    Truncation/incomplete/error => coverage is explicitly incomplete (never full
-    proof).  Metadata/footer alone is never sufficient: at least one valid
-    'ok' window with real rows is required for full proof.
+    """Require successful finalization and valid rows/spans/finite values/shape.
+    Any export error or missing/invalid completion footer rejects all proof.
+    Only a successfully finalized budget-truncated export may supply bounded
+    prefix evidence (never full proof). Metadata/footer alone is insufficient:
+    at least one valid 'ok' window with real rows is required.
 
     When `bounds` is supplied, the manifest's declared budget header must match
     what the binary enforces: `# max_windows` / `# max_row_bytes` must equal the
@@ -539,6 +574,10 @@ def validate_export(manifest: ExportManifest, rows: RowsFile,
     bounds have drifted and the export is rejected."""
     if manifest.parse_error:
         return ExportVerdict(False, False, 0, f"manifest: {manifest.parse_error}")
+    if manifest.export_error is not None:
+        return ExportVerdict(False, False, 0, f"export_error={manifest.export_error}")
+    if not manifest.complete:
+        return ExportVerdict(False, False, 0, "no complete footer (generation/export unfinished)")
     if rows.error:
         return ExportVerdict(False, False, 0, f"rows: {rows.error}")
     if manifest.vocab != rows.vocab:
@@ -607,15 +646,8 @@ def validate_export(manifest: ExportManifest, rows: RowsFile,
         ok_windows += 1
     if ok_windows == 0:
         return ExportVerdict(False, False, 0, "no completed windows (metadata/footer alone)")
-    incomplete = manifest.truncation or manifest.export_error is not None or not manifest.complete
-    full = not incomplete
-    reason = "full proof" if full else (
-        "incomplete: " + ", ".join(filter(None, [
-            "truncated" if manifest.truncation else "",
-            f"export_error={manifest.export_error}" if manifest.export_error else "",
-            "no complete footer" if not manifest.complete else "",
-        ]))
-    )
+    full = not manifest.truncation
+    reason = "full proof" if full else "coverage incomplete: truncated (successfully finalized)"
     return ExportVerdict(True, full, ok_windows, reason)
 
 

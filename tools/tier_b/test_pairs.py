@@ -350,17 +350,19 @@ class TestExport(unittest.TestCase):
     def test_truncation_blocks_full_proof(self):
         man, rows = build_export(4, [
             {"pos": 0, "T": 1, "picks": [3], "rows": [[0.1, 0.2, 0.3, 0.4]]},
-        ], truncation=True, complete=False)
+        ], truncation=True, complete=True)
         v = rp.validate_export(man, rows)
         self.assertTrue(v.ok)
         self.assertFalse(v.full_proof)
 
-    def test_export_error_blocks_full_proof(self):
+    def test_export_error_rejects_all_proof(self):
         man, rows = build_export(4, [
             {"pos": 0, "T": 1, "picks": [3], "rows": [[0.1, 0.2, 0.3, 0.4]]},
         ], export_error="shape", complete=False)
         v = rp.validate_export(man, rows)
+        self.assertFalse(v.ok)
         self.assertFalse(v.full_proof)
+        self.assertIn("export_error=shape", v.reason)
 
     def test_nonfinite_logits_rejected(self):
         man, rows = build_export(4, [
@@ -394,6 +396,110 @@ class TestExport(unittest.TestCase):
             + struct.pack("<4f", 0.1, 0.2, 0.3, 0.4))  # only one row present
         v = rp.validate_export(man, truncated_rows)
         self.assertFalse(v.ok)
+
+
+class TestExportFinalization(unittest.TestCase):
+    @staticmethod
+    def _with_suffix(suffix):
+        text, blob = export_files(4, [window_fixture()], complete=False)
+        return rp.parse_manifest(text + suffix), rp.parse_rows(blob)
+
+    def test_missing_completion_rejects_even_truncated(self):
+        for suffix in ("", "# truncation 1\n"):
+            with self.subTest(suffix=suffix):
+                man, rows = self._with_suffix(suffix)
+                self.assertIsNone(man.parse_error)
+                v = rp.validate_export(man, rows)
+                self.assertFalse(v.ok or v.full_proof)
+                self.assertIn("no complete footer", v.reason)
+
+    def test_export_errors_reject_valid_nonempty_rows(self):
+        # close_one() can use multi-word error IDs, not just a single token.
+        for suffix in ("# export_error rows_io\n", "# export_error rows close\n",
+                       "# truncation 1\n# export_error unknown\n"):
+            with self.subTest(suffix=suffix):
+                man, rows = self._with_suffix(suffix)
+                self.assertIsNone(man.parse_error)
+                self.assertIsNotNone(man.export_error)
+                self.assertFalse(man.complete)
+                self.assertEqual(rows.n_rows, 1)
+                v = rp.validate_export(man, rows)
+                self.assertFalse(v.ok or v.full_proof)
+                self.assertIn(f"export_error={man.export_error}", v.reason)
+
+    def test_export_error_cannot_be_overridden_by_complete(self):
+        for suffix in ("# export_error rows_io\n# complete 1\n",
+                       "# complete 1\n# export_error rows_io\n",
+                       "# truncation 1\n# export_error rows close\n# complete 1\n"):
+            with self.subTest(suffix=suffix):
+                man, rows = self._with_suffix(suffix)
+                self.assertIsNotNone(man.parse_error)
+                self.assertFalse(rp.validate_export(man, rows).ok)
+                if suffix.startswith("# export_error"):
+                    self.assertEqual(man.export_error, "rows_io")
+                    self.assertFalse(man.complete)
+
+    def test_completion_footer_must_be_exact(self):
+        for line in ("# complete", "# complete ", "# complete 0", "# complete 2",
+                     "# complete -1", "# complete true", "# complete 1junk",
+                     "# complete 10", "# complete 1 extra", "# complete 1 ",
+                     " # complete 1", "#complete 1", "# complete\t1"):
+            for later_success in (False, True):
+                with self.subTest(line=line, later_success=later_success):
+                    suffix = line + "\n" + ("# complete 1\n" if later_success else "")
+                    man, rows = self._with_suffix(suffix)
+                    self.assertIsNotNone(man.parse_error)
+                    self.assertFalse(man.complete)
+                    self.assertFalse(rp.validate_export(man, rows).ok)
+
+    def test_duplicate_terminal_metadata_rejected(self):
+        for suffix in ("# complete 1\n# complete 1\n",
+                       "# complete 1\n# complete 0\n",
+                       "# truncation 1\n# truncation 1\n# complete 1\n",
+                       "# export_error rows_io\n# export_error unknown\n# complete 1\n"):
+            with self.subTest(suffix=suffix):
+                man, rows = self._with_suffix(suffix)
+                self.assertIn("duplicate terminal metadata", man.parse_error)
+                self.assertFalse(rp.validate_export(man, rows).ok)
+                if suffix.startswith("# export_error"):
+                    self.assertEqual(man.export_error, "rows_io")  # never overwritten
+
+    def test_malformed_terminal_lines_never_hidden_by_success(self):
+        for line in ("# truncation", "# truncation 0", "# truncation 1junk",
+                     "# truncation 1 extra", "# export_error", "# export_error ",
+                     "# export_error   ", "#export_error rows_io",
+                     " # export_error rows_io", "# export_error rows_io "):
+            with self.subTest(line=line):
+                man, rows = self._with_suffix(line + "\n# complete 1\n")
+                self.assertIsNotNone(man.parse_error)
+                self.assertFalse(rp.validate_export(man, rows).ok)
+
+    def test_terminal_metadata_must_follow_windows_and_success_is_last(self):
+        text, _ = export_files(4, [window_fixture()], complete=False)
+        window_line = next(line for line in text.splitlines() if line.startswith("W ")) + "\n"
+        for suffix in ("# complete 1\n" + window_line,
+                       "# truncation 1\n" + window_line + "# complete 1\n",
+                       "# export_error rows_io\n" + window_line,
+                       "# complete 1\n# vocab 4\n", "# complete 1\n# unknown\n",
+                       "# complete 1\n# truncation 1\n",
+                       "# export_error rows_io\n# truncation 1\n"):
+            with self.subTest(suffix=suffix):
+                man, rows = self._with_suffix(suffix)
+                self.assertIsNotNone(man.parse_error)
+                self.assertFalse(rp.validate_export(man, rows).ok)
+
+    def test_successful_finalization_with_optional_budget_truncation(self):
+        for truncated in (False, True):
+            with self.subTest(truncated=truncated):
+                suffix = ("# truncation 1\n" if truncated else "") + "# complete 1\n"
+                man, rows = self._with_suffix(suffix)
+                self.assertIsNone(man.parse_error)
+                self.assertTrue(man.complete)
+                self.assertIsNone(man.export_error)
+                v = rp.validate_export(man, rows)
+                self.assertTrue(v.ok, v.reason)
+                self.assertEqual(v.full_proof, not truncated)
+                self.assertEqual(v.n_windows, 1)
 
 
 class TestWindowValidation(unittest.TestCase):
@@ -758,7 +864,7 @@ class TestPairCompare(unittest.TestCase):
     def test_incomplete_coverage_not_full_proof(self):
         a = [[0.1, 0.2, 0.3, 0.4]]
         man_a, ra = build_export(4, [{"pos": 0, "T": 1, "picks": [3], "rows": a}],
-                                 truncation=True, complete=False)
+                                 truncation=True, complete=True)
         man_b, rb = build_export(4, [{"pos": 0, "T": 1, "picks": [3], "rows": [list(a[0])]}])
         v = rp.compare_pair(rp.FAMILIES["sub16"], man_a, ra, man_b, rb)
         self.assertTrue(v.ok)
@@ -768,6 +874,84 @@ class TestPairCompare(unittest.TestCase):
 # ── file-backed diagnostic evaluation ─────────────────────────────────────────
 
 class TestDiagnosticEvaluation(unittest.TestCase):
+    def _finalization_verdict(self, family, suffix_a, suffix_b, n_windows=12):
+        import tempfile
+        traces = {"normrope": (rope_fused_trace(), rope_plain_trace()),
+                  "sub16": (sub16_default_trace(), sub16_optout_trace())}
+        wins = [window_fixture(pos=100 + i, input_hash=f"{i:016x}") for i in range(n_windows)]
+        text, blob = export_files(4, wins, complete=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            dirs = [Path(tmp) / arm for arm in ("A", "B")]
+            for d, suffix in zip(dirs, (suffix_a, suffix_b)):
+                d.mkdir()
+                (d / "manifest.txt").write_text(text + suffix, encoding="utf-8")
+                (d / "rows.bin").write_bytes(blob)
+            trace_a, trace_b = traces[family.name]
+            v = rp.evaluate_diagnostic_pair(
+                family, "short_code", ok_result(stderr_raw=trace_a), ok_result(stderr_raw=trace_b),
+                str(dirs[0]), str(dirs[1]), rp.Bounds())
+        self.assertTrue(v["arms_clean"] and v["whole_run_ids_match"])
+        self.assertTrue(all(arm["ok"] for arm in v["trace"].values()))
+        return v
+
+    def test_failed_and_unfinished_exports_rejected_end_to_end(self):
+        for family in rp.FAMILIES.values():
+            for suffix in ("", "# truncation 1\n", "# export_error rows_io\n",
+                           "# export_error rows close\n", "# truncation 1\n# export_error unknown\n"):
+                for bad_arm in ("A", "B", "both"):
+                    with self.subTest(family=family.name, suffix=suffix, bad_arm=bad_arm):
+                        v = self._finalization_verdict(
+                            family, suffix if bad_arm != "B" else "# complete 1\n",
+                            suffix if bad_arm != "A" else "# complete 1\n")
+                        self.assertFalse(v["proof"] or v["full_proof"] or v["pair"]["ok"])
+                        for arm in ("A", "B"):
+                            self.assertEqual(v["export"][arm]["ok"], bad_arm not in (arm, "both"))
+                            if bad_arm in (arm, "both"):
+                                self.assertFalse(v["export"][arm]["full_proof"])
+                                expected = "export_error=" if "export_error" in suffix else "no complete footer"
+                                self.assertIn(expected, v["export"][arm]["reason"])
+
+    def test_malformed_and_conflicting_footers_rejected_end_to_end(self):
+        for family in rp.FAMILIES.values():
+            for suffix in ("# complete 1junk\n", "# complete 0\n", "# complete\n",
+                           "# complete 1junk\n# complete 1\n", "# complete 0\n# complete 1\n",
+                           "# complete 1\n# complete 1\n", "# complete 1\n# complete 0\n",
+                           "# export_error rows_io\n# complete 1\n",
+                           "# complete 1\n# export_error rows_io\n",
+                           "# export_error\n# complete 1\n",
+                           "# export_error rows_io\n# export_error unknown\n# complete 1\n",
+                           "# truncation 1junk\n# complete 1\n",
+                           "# truncation 1\n# truncation 1\n# complete 1\n",
+                           "# complete 1\n# truncation 1\n", "# complete 1\n# unknown\n"):
+                for bad_arm in ("A", "B", "both"):
+                    with self.subTest(family=family.name, suffix=suffix, bad_arm=bad_arm):
+                        v = self._finalization_verdict(
+                            family, suffix if bad_arm != "B" else "# complete 1\n",
+                            suffix if bad_arm != "A" else "# complete 1\n")
+                        self.assertFalse(v["proof"] or v["full_proof"] or v["pair"]["ok"])
+                        for arm in ("A", "B"):
+                            self.assertEqual(v["export"][arm]["ok"], bad_arm not in (arm, "both"))
+                            if bad_arm in (arm, "both"):
+                                self.assertFalse(v["export"][arm]["full_proof"])
+                                self.assertIn("manifest:", v["export"][arm]["reason"])
+
+    def test_finalized_truncation_requires_twelve_nonempty_matches(self):
+        for family in rp.FAMILIES.values():
+            for truncated_arm in ("A", "B", "both"):
+                for n_windows in (11, 12, 16):
+                    with self.subTest(family=family.name, arm=truncated_arm, n=n_windows):
+                        suffixes = ["# truncation 1\n# complete 1\n" if truncated_arm in (arm, "both")
+                                    else "# complete 1\n" for arm in ("A", "B")]
+                        v = self._finalization_verdict(family, *suffixes, n_windows=n_windows)
+                        self.assertTrue(all(arm["ok"] for arm in v["export"].values()))
+                        self.assertEqual(v["proof"], n_windows >= 12, v["reasons"])
+                        self.assertEqual(v["pair"]["ok"], n_windows >= 12)
+                        self.assertFalse(v["full_proof"] or v["pair"]["full_proof"])
+                        self.assertEqual(v["pair"]["n_matched"], n_windows)
+                        self.assertEqual(v["pair"]["n_unmatched"], {"A": 0, "B": 0})
+                        if n_windows < 12:
+                            self.assertIn("matched windows 11 < required 12", v["pair"]["reason"])
+
     def test_twelve_empty_windows_rejected_end_to_end(self):
         import tempfile
         wins = [{"pos": 100 + i, "T": 0, "accepted": 0, "emitted": 0,
@@ -977,7 +1161,8 @@ class FakeEngine:
                     row = [0.5, 0.25, 0.125, 9.000001]
                 wins.append({"pos": 100 + i, "T": 1, "picks": [3], "input_hash": f"{i:016x}",
                              "rows": [row]})
-            text, blob = export_files(4, wins, truncation=True, complete=False)
+            # Budget-limited prefix, but generation and export finalized successfully.
+            text, blob = export_files(4, wins, truncation=True, complete=True)
             (d / "manifest.txt").write_text(text)
             (d / "rows.bin").write_bytes(blob)
             nr = "STRATA_NO_NORM_ROPE" in env_overrides or not is_b
@@ -1049,6 +1234,36 @@ class TestDriverDiagnostic(DriverHarness):
         # Fake export is truncated at the 16-window cap: proof, never full proof.
         self.assertFalse(any(p["full_proof"] for p in s["pairs"]))
         self.assertTrue(all(p["pair"]["n_matched"] == 16 for p in s["pairs"]))
+
+    def test_failed_unfinished_and_malformed_exports_fail_driver(self):
+        import contextlib
+        import io
+        for family in rp.FAMILIES.values():
+            for suffix in ("", "# export_error rows_io\n", "# complete 1junk\n"):
+                for bad_arm in ("A", "B"):
+                    with self.subTest(family=family.name, suffix=suffix, bad_arm=bad_arm):
+                        fake_engine = FakeEngine()
+
+                        def fake(**kw):
+                            result = fake_engine(**kw)  # synthetic, no subprocess/model launch
+                            is_b = any(v in kw["env_overrides"] for v in rp.FAMILY_OVERRIDE_VARS)
+                            if ("B" if is_b else "A") == bad_arm:
+                                flags = kw["flags"]
+                                path = Path(flags[flags.index("--tier-b-export") + 1]) / "manifest.txt"
+                                text = path.read_text(encoding="utf-8")
+                                path.write_text(text.replace("# complete 1\n", suffix), encoding="utf-8")
+                            return result
+
+                        out = self.tmp / f"diag-{family.name}-{bad_arm}-{len(suffix)}"
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            rc = self.run_live(fake, "--mode", "diagnostic", "--family", family.name,
+                                               "--workload", "short_code", "--out", str(out))
+                        self.assertEqual(rc, 1)
+                        s = self.summary(out)
+                        self.assertFalse(s["complete"])
+                        self.assertTrue(s["failures"])
+                        self.assertFalse(s["pairs"][0]["proof"] or s["pairs"][0]["full_proof"])
+                        self.assertFalse(s["pairs"][0]["export"][bad_arm]["ok"])
 
     def test_diagnostic_logit_divergence_fails_run(self):
         out = self.tmp / "diag"
