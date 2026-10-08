@@ -45,54 +45,113 @@ namespace K = strata::kernels;
 namespace {
 
 void ck(cudaError_t e, const char* what) {
+    if (e != cudaSuccess)
+        throw std::runtime_error(std::string(what) + ": " + cudaGetErrorString(e));
+}
+
+// Destructors must not throw or exit: attempt every release, preserving an earlier exception.
+// main checks this flag AFTER all owners have unwound, including on the successful path.
+void cleanup(cudaError_t e, const char* what, bool& failed) noexcept {
     if (e != cudaSuccess) {
         std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e));
-        std::exit(2);
+        failed = true;
     }
 }
 
+struct RopeTableMode {
+    bool& cleanup_failed;
+    bool had_value;
+    std::string previous;
+
+    explicit RopeTableMode(bool& failed) : cleanup_failed(failed) {
+        const char* value = std::getenv("STRATA_ROPE_TABLE");
+        had_value = value != nullptr;
+        if (value) previous = value;
+#ifdef _WIN32
+        const int e = _putenv_s("STRATA_ROPE_TABLE", "1");
+#else
+        const int e = setenv("STRATA_ROPE_TABLE", "1", 1);
+#endif
+        if (e != 0) throw std::runtime_error("setenv STRATA_ROPE_TABLE failed");
+    }
+    RopeTableMode(const RopeTableMode&) = delete;
+    RopeTableMode& operator=(const RopeTableMode&) = delete;
+    ~RopeTableMode() noexcept {
+#ifdef _WIN32
+        const int e = _putenv_s("STRATA_ROPE_TABLE", had_value ? previous.c_str() : "");
+#else
+        const int e = had_value ? setenv("STRATA_ROPE_TABLE", previous.c_str(), 1) : unsetenv("STRATA_ROPE_TABLE");
+#endif
+        if (e != 0) {
+            std::fprintf(stderr, "cleanup restore STRATA_ROPE_TABLE failed\n");
+            cleanup_failed = true;
+        }
+    }
+};
+
 struct CudaResources {
+    bool& cleanup_failed;
     std::vector<void*> allocations;
     cudaStream_t stream = nullptr;
     cudaEvent_t e0 = nullptr, e1 = nullptr;
-    cudaGraph_t graph = nullptr;
-    cudaGraphExec_t exec = nullptr;
-    bool capturing = false;
     const float* registered_cos = nullptr;
 
-    CudaResources() = default;
+    explicit CudaResources(bool& failed) : cleanup_failed(failed) {}
     CudaResources(const CudaResources&) = delete;
     CudaResources& operator=(const CudaResources&) = delete;
 
     template <class T> T* allocate(size_t n) {
         T* p = nullptr;
         const auto e = cudaMalloc(&p, n * sizeof(T));
-        if (e != cudaSuccess) {
-            std::fprintf(stderr, "alloc: %s\n", cudaGetErrorString(e));
-            std::exit(2);
+        // Retain any returned handle before checking the result, as with stream/event/graph creation.
+        if (p) {
+            try { allocations.push_back(p); }
+            catch (...) { cleanup(cudaFree(p), "cleanup untracked allocation", cleanup_failed); throw; }
         }
-        try { allocations.push_back(p); }
-        catch (...) { cudaFree(p); throw; }
+        ck(e, "alloc");
         return p;
     }
-    ~CudaResources() {
-        bool failed = false;
-        auto release = [&](cudaError_t e, const char* what) {
-            if (e != cudaSuccess) {
-                std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e));
-                failed = true;
-            }
-        };
-        if (capturing) release(cudaStreamEndCapture(stream, &graph), "cleanup end capture");
-        if (stream) release(cudaStreamSynchronize(stream), "cleanup synchronize");
-        if (exec) release(cudaGraphExecDestroy(exec), "cleanup graph exec");
-        if (graph) release(cudaGraphDestroy(graph), "cleanup graph");
-        K::rope_table_release(registered_cos);
-        if (e0) release(cudaEventDestroy(e0), "cleanup event0");
-        if (e1) release(cudaEventDestroy(e1), "cleanup event1");
-        if (stream) release(cudaStreamDestroy(stream), "cleanup stream");
-        for (void* p : allocations) release(cudaFree(p), "cleanup allocation");
-        if (failed) std::exit(2);
+    ~CudaResources() noexcept {
+        if (stream) cleanup(cudaStreamSynchronize(stream), "cleanup synchronize", cleanup_failed);
+        // Forget the benchmark's table before freeing its storage; native enable/scaling selectors
+        // are never changed by this standalone program.
+        try { K::rope_table_release(registered_cos); }
+        catch (...) {
+            std::fprintf(stderr, "cleanup release rope table failed\n");
+            cleanup_failed = true;
+        }
+        if (e0) cleanup(cudaEventDestroy(e0), "cleanup event0", cleanup_failed);
+        if (e1) cleanup(cudaEventDestroy(e1), "cleanup event1", cleanup_failed);
+        if (stream) cleanup(cudaStreamDestroy(stream), "cleanup stream", cleanup_failed);
+        for (void* p : allocations) cleanup(cudaFree(p), "cleanup allocation", cleanup_failed);
+    }
+};
+
+// One scoped pair per shape: handles are owned from the instant CUDA writes them, even when
+// capture/instantiate only partially succeeds. This owner dies before the stream and buffers.
+struct CudaGraphs {
+    cudaStream_t stream;
+    bool& cleanup_failed;
+    cudaGraph_t gF = nullptr, gS = nullptr;
+    cudaGraphExec_t exF = nullptr, exS = nullptr;
+    bool capturing = false;
+
+    CudaGraphs(cudaStream_t cs, bool& failed) : stream(cs), cleanup_failed(failed) {}
+    CudaGraphs(const CudaGraphs&) = delete;
+    CudaGraphs& operator=(const CudaGraphs&) = delete;
+    ~CudaGraphs() noexcept {
+        if (capturing) {
+            // Do not overwrite an already owned graph while aborting an invalidated capture.
+            cudaGraph_t abandoned = nullptr;
+            cleanup(cudaStreamEndCapture(stream, &abandoned), "cleanup end capture", cleanup_failed);
+            if (abandoned) cleanup(cudaGraphDestroy(abandoned), "cleanup abandoned graph", cleanup_failed);
+        }
+        if (gF || gS || exF || exS)
+            cleanup(cudaStreamSynchronize(stream), "cleanup graph synchronize", cleanup_failed);
+        if (exF) cleanup(cudaGraphExecDestroy(exF), "cleanup execF", cleanup_failed);
+        if (exS) cleanup(cudaGraphExecDestroy(exS), "cleanup execS", cleanup_failed);
+        if (gF) cleanup(cudaGraphDestroy(gF), "cleanup gF", cleanup_failed);
+        if (gS) cleanup(cudaGraphDestroy(gS), "cleanup gS", cleanup_failed);
     }
 };
 
@@ -122,7 +181,7 @@ std::string csv(const Series& s) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int benchmark_main(int argc, char** argv, bool& cleanup_failed) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     int iters = 200, warmup = 50, samples = 5, t_lo = 1, t_hi = 8;
     bool no_graph = false;
@@ -159,11 +218,7 @@ int main(int argc, char** argv) {
 
     // The table opt-in is cached at the first native call; enable it up front so the analytic path stays
     // analytic (no table registered) and the table path can be switched per shape by register/release.
-#ifdef _WIN32
-    if (_putenv_s("STRATA_ROPE_TABLE", "1") != 0) { std::fprintf(stderr, "setenv failed\n"); return 2; }
-#else
-    if (setenv("STRATA_ROPE_TABLE", "1", 1) != 0) { std::fprintf(stderr, "setenv failed\n"); return 2; }
-#endif
+    RopeTableMode table_mode(cleanup_failed);
 
     const bool usable = K::native_norm_rope_usable(128, 64) && K::native_norm_rope_usable(256, 64);
     if (!usable) {
@@ -186,7 +241,7 @@ int main(int argc, char** argv) {
                 prop.name, prop.multiProcessorCount, clock_khz / 1000, (size_t) prop.totalGlobalMem >> 20,
                 iters, warmup, samples, t_lo, t_hi);
 
-    CudaResources res;
+    CudaResources res(cleanup_failed);
     ck(cudaStreamCreateWithFlags(&res.stream, cudaStreamNonBlocking), "stream");
     ck(cudaEventCreate(&res.e0), "event0");
     ck(cudaEventCreate(&res.e1), "event1");
@@ -267,8 +322,7 @@ int main(int argc, char** argv) {
                     if (table) {
                         K::rope_table_set(d_cos, d_sin, npos, none);
                         if (K::rope_table_for(none).cos != d_cos) {
-                            std::fprintf(stderr, "table path did not select the registered table\n");
-                            std::exit(2);
+                            throw std::runtime_error("table path did not select the registered table");
                         }
                     }
 
@@ -316,17 +370,23 @@ int main(int argc, char** argv) {
 
                     // ---- 2. capture both graphs, measuring capture/instantiate on the host clock
                     double capF = 0, capS = 0, instF = 0, instS = 0;
-                    cudaGraph_t gF = nullptr, gS = nullptr;
-                    cudaGraphExec_t exF = nullptr, exS = nullptr;
+                    CudaGraphs graphs(cs, cleanup_failed);
+                    auto& gF = graphs.gF;
+                    auto& gS = graphs.gS;
+                    auto& exF = graphs.exF;
+                    auto& exS = graphs.exS;
                     if (!no_graph) {
                         upload(xA, posA);
                         auto capture = [&](const auto& launch, cudaGraph_t& g, double& cap_ms) {
                             auto t0 = std::chrono::steady_clock::now();
                             ck(cudaStreamBeginCapture(cs, cudaStreamCaptureModeThreadLocal), "begin capture");
-                            res.capturing = true;
+                            graphs.capturing = true;
                             launch();
-                            ck(cudaStreamEndCapture(cs, &g), "end capture");
-                            res.capturing = false;
+                            const auto e = cudaStreamEndCapture(cs, &g);
+                            // EndCapture terminates capture even when it reports invalidation; do not
+                            // attempt a second EndCapture during unwinding. Any output is already owned.
+                            graphs.capturing = false;
+                            ck(e, "end capture");
                             auto t1 = std::chrono::steady_clock::now();
                             cap_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                         };
@@ -362,11 +422,7 @@ int main(int argc, char** argv) {
                             ++failures;
                             std::printf("T=%d hd=%d rows=%d %s %-9s: CHANGED-INPUT GRAPH REPLAY DIFFERS (not timed)\n",
                                         T, hd, rows, layout_name, table ? "table" : "analytic");
-                            ck(cudaGraphExecDestroy(exF), "destroy execF");
-                            ck(cudaGraphExecDestroy(exS), "destroy execS");
-                            ck(cudaGraphDestroy(gF), "destroy gF");
-                            ck(cudaGraphDestroy(gS), "destroy gS");
-                            continue;
+                            continue;  // the graph pair unwinds before the next shape
                         }
                     }
 
@@ -404,12 +460,6 @@ int main(int argc, char** argv) {
                                     grF.med(), grF.mn(), grF.mx(), grS.med(), grS.mn(), grS.mx(), capF, capS, instF, instS);
                     std::printf("  raw directF:%s\n  raw directS:%s\n", csv(dF).c_str(), csv(dS).c_str());
                     if (!no_graph) std::printf("  raw graphF:%s\n  raw graphS:%s\n", csv(grF).c_str(), csv(grS).c_str());
-                    if (!no_graph) {
-                        ck(cudaGraphExecDestroy(exF), "destroy execF");
-                        ck(cudaGraphExecDestroy(exS), "destroy execS");
-                        ck(cudaGraphDestroy(gF), "destroy gF");
-                        ck(cudaGraphDestroy(gS), "destroy gS");
-                    }
                 }
             }
         }
@@ -417,4 +467,17 @@ int main(int argc, char** argv) {
 
     std::printf("tier_b_rope_bench: %d cases, %d timed, %d gate/replay failures\n", cases, timed_cases, failures);
     return failures ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    bool cleanup_failed = false;
+    try {
+        const int result = benchmark_main(argc, argv, cleanup_failed);
+        return cleanup_failed ? 2 : result;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "tier_b_rope_bench FAILED: %s\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "tier_b_rope_bench FAILED: unknown exception\n");
+    }
+    return 2;
 }
