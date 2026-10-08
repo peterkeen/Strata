@@ -349,9 +349,18 @@ it offline rather than run an unbounded default or tune after seeing results.
   [fixed corpus](../tools/tier_a/prompts.py). Reuse token IDs after verifying
   their hashes/counts; proposed budgets are 256 new tokens for short code and
   512 for long text. One diagnostic A/B pair per family/workload (eight proof
-  arms total), with at most eight completed windows and 64 MiB full-logit
-  export per arm; if a row cannot fit, fail explicitly. Truncated exports are
-  bounded prefix evidence, never whole-run logit proof.
+  arms total), with at most 16 completed windows and 64 MiB full-logit
+  export per arm (the exporter's compiled-in `TierBExport::open` bounds in
+  [generate.cpp](../src/program/generate.cpp); the harness rejects a manifest
+  declaring different bounds); if a row cannot fit, fail explicitly. Dispatch
+  traces are capped at 1024 records: a truncated trace is prefix dispatch
+  evidence only, recorded as incomplete coverage, never full coverage. Truncated exports are
+  bounded prefix evidence, never whole-run logit proof. Both first-wave
+  families are identity arms: exported logit rows must be bitwise equal and
+  the whole-run prompt/output token IDs must match; no tolerance is fitted
+  after seeing results. Timing refuses to start without a passed live proof
+  summary for the same executable sha256, model inputs and prompts, and every
+  arm's timeout is clipped to the remaining session budget.
 - Only after proof succeeds: one excluded preparatory A/B process pair per
   family/workload, then **three interleaved recorded pairs** per family/workload
   (24 recorded model arms). Each process remains fresh; preparatory processes
