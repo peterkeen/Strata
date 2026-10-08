@@ -32,6 +32,7 @@
 #include <cstring>
 #include <numeric>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -44,18 +45,87 @@ int g_fail = 0;
 
 void ck(cudaError_t e, const char* w) {
     if (e != cudaSuccess) {
-        std::fprintf(stderr, "CUDA error in %s: %s\n", w, cudaGetErrorString(e));
-        std::exit(2);
+        throw std::runtime_error(std::string("CUDA error in ") + w + ": " + cudaGetErrorString(e));
     }
 }
 
+// Cleanup must neither throw nor stop subsequent releases (including during constructor unwinding).
+void cleanup(cudaError_t e, const char* w) noexcept {
+    if (e != cudaSuccess) {
+        std::fprintf(stderr, "CUDA cleanup error in %s: %s\n", w, cudaGetErrorString(e));
+        ++g_fail;
+    }
+}
+
+template<typename T, auto Destroy>
+class CudaOwner {
+    T value_ = nullptr;
+public:
+    CudaOwner() = default;
+    CudaOwner(const CudaOwner&) = delete;
+    CudaOwner& operator=(const CudaOwner&) = delete;
+    CudaOwner(CudaOwner&& other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+    CudaOwner& operator=(CudaOwner&& other) noexcept {
+        if (this != &other) {
+            reset();
+            value_ = std::exchange(other.value_, nullptr);
+        }
+        return *this;
+    }
+    ~CudaOwner() noexcept { reset(); }
+    operator T() const noexcept { return value_; }
+    // Only used on empty owners: CUDA writes directly into owned storage, even on a failed create.
+    T* put() noexcept { return &value_; }
+    void reset() noexcept {
+        if (value_) cleanup(Destroy(std::exchange(value_, nullptr)), "resource release");
+    }
+    void close(const char* w) {
+        if (value_) {
+            ck(Destroy(value_), w);
+            value_ = nullptr;  // keep ownership on failure so unwinding can try best-effort release
+        }
+    }
+};
+
+template<typename T> using Device = CudaOwner<T*, cudaFree>;
+using Stream = CudaOwner<cudaStream_t, cudaStreamDestroy>;
+using Event = CudaOwner<cudaEvent_t, cudaEventDestroy>;
+using Graph = CudaOwner<cudaGraph_t, cudaGraphDestroy>;
+using GraphExec = CudaOwner<cudaGraphExec_t, cudaGraphExecDestroy>;
+using Graphs = std::vector<GraphExec>;
+
 template<typename T>
-T* dalloc(size_t n) {
-    T* p = nullptr;
-    ck(cudaMalloc(&p, n * sizeof(T) + 256), "malloc");
+Device<T> dalloc(size_t n) {
+    Device<T> p;
+    ck(cudaMalloc(p.put(), n * sizeof(T) + 256), "malloc");
     ck(cudaMemset(p, 0, n * sizeof(T) + 256), "memset");
     return p;
 }
+
+// End even an invalidated capture before freeing captured inputs or destroying its stream.
+// CUDA ends capture on an EndCapture error too; any returned graph is always owned.
+class Capture {
+    cudaStream_t s_;
+    bool active_ = false;
+public:
+    explicit Capture(cudaStream_t s, const char* w) : s_(s) {
+        ck(cudaStreamBeginCapture(s_, cudaStreamCaptureModeThreadLocal), w);
+        active_ = true;
+    }
+    Capture(const Capture&) = delete;
+    Capture& operator=(const Capture&) = delete;
+    void end(Graph& g, const char* w) {
+        const auto e = cudaStreamEndCapture(s_, g.put());
+        active_ = false;
+        ck(e, w);
+    }
+    ~Capture() noexcept {
+        if (active_) {
+            Graph abandoned;
+            cleanup(cudaStreamEndCapture(s_, abandoned.put()), "abandon capture");
+        }
+    }
+};
 
 const char* name_of(int t) {
     switch (t) {
@@ -179,12 +249,12 @@ struct Bench {
     int G = 0, T = 0, NTOK = 8, slots = 0;
     int cap_groups = 0, n_ent = 0;
     size_t blob_stride = 0, slot_bytes = 0, arena_bytes = 0, out_floats = 0;
-    uint8_t* darena = nullptr;
-    unsigned long long* dptr = nullptr;
-    int32_t *dstart = nullptr, *dn = nullptr, *ddst = nullptr, *dtok = nullptr;
-    float* dx = nullptr;
-    uint8_t *dxq = nullptr, *dscr = nullptr;
-    float* dout = nullptr;
+    Device<uint8_t> darena;
+    Device<unsigned long long> dptr;
+    Device<int32_t> dstart, dn, ddst, dtok;
+    Device<float> dx;
+    Device<uint8_t> dxq, dscr;
+    Device<float> dout;
 
     Bench(int gu, int dt, int64_t H, int64_t FF, int g, int t, int sl, std::mt19937& rng, cudaStream_t s)
         : G(g), T(t), slots(sl) {
@@ -202,7 +272,9 @@ struct Bench {
                 auto b = random_rows(gu, 2 * FF, H, rng);   // gate rows | up rows
                 const auto d = random_rows(dt, H, FF, rng); // down rows
                 b.insert(b.end(), d.begin(), d.end());
-                if (b.size() != L.bytes) { std::fprintf(stderr, "blob %zu != %zu\n", b.size(), L.bytes); std::exit(2); }
+                if (b.size() != L.bytes) {
+                    throw std::runtime_error("blob " + std::to_string(b.size()) + " != " + std::to_string(L.bytes));
+                }
                 uint8_t* dst = darena + (size_t) j * slot_bytes + (size_t) g * blob_stride;
                 ck(cudaMemcpy(dst, b.data(), b.size(), cudaMemcpyHostToDevice), "blob");
                 ptr[(size_t) j * G + g] = (unsigned long long) dst;
@@ -235,14 +307,6 @@ struct Bench {
         dscr = dalloc<uint8_t>(k::native_expert_scratch_bytes(n_ent, FF));
         dout = dalloc<float>(out_floats);
     }
-    ~Bench() {
-        ck(cudaFree(darena), "free arena");
-        ck(cudaFree(dptr), "free ptr");
-        ck(cudaFree(dstart), "free start"); ck(cudaFree(dn), "free count");
-        ck(cudaFree(ddst), "free dst"); ck(cudaFree(dtok), "free tok");
-        ck(cudaFree(dx), "free x"); ck(cudaFree(dxq), "free xq");
-        ck(cudaFree(dscr), "free scratch"); ck(cudaFree(dout), "free out");
-    }
     void call(int slot, cudaStream_t s) {
         k::native_expert_grouped(L, dptr + (size_t) slot * cap_groups, dstart, dn, ddst, dtok,
                                  cap_groups, n_ent, dxq, dscr, dout, s, 0);
@@ -254,8 +318,10 @@ struct Guard {
     const bool ns = k::native_grouped_no_sub16_gu();
     const bool old = k::iq_old_kernels();
     Guard() { k::iq_set_old_kernels(false); }   // decode-once only, never the old per-column kernels
-    void restore() { k::native_grouped_set_no_sub16_gu(ns); k::iq_set_old_kernels(old); }
-    ~Guard() { restore(); }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+    void restore() noexcept { k::native_grouped_set_no_sub16_gu(ns); k::iq_set_old_kernels(old); }
+    ~Guard() noexcept { restore(); }
 };
 
 // ---------------------------------------------------------------- correctness (parity before timing)
@@ -288,24 +354,24 @@ int parity(Bench& B, cudaStream_t s) {
 }
 
 // one graph per slot; captured with the given layout before any timing of it
-std::vector<cudaGraphExec_t> graphs(Bench& B, bool ns, cudaStream_t s) {
+Graphs graphs(Bench& B, bool ns, cudaStream_t s) {
     k::native_grouped_set_no_sub16_gu(ns);
-    std::vector<cudaGraphExec_t> gs(B.slots);
+    Graphs gs(B.slots);
     for (int j = 0; j < B.slots; ++j) {
-        cudaGraph_t g = nullptr;
-        cudaGraphExec_t ex = nullptr;
-        ck(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal), "graph begin");
+        Graph g;
+        GraphExec ex;
+        Capture capture(s, "graph begin");
         B.call(j, s);
-        ck(cudaStreamEndCapture(s, &g), "graph end");
-        ck(cudaGraphInstantiate(&ex, g, 0), "graph instantiate");
-        ck(cudaGraphDestroy(g), "graph destroy");
-        gs[j] = ex;
+        capture.end(g, "graph end");
+        ck(cudaGraphInstantiate(ex.put(), g, 0), "graph instantiate");
+        g.close("graph destroy");
+        gs[j] = std::move(ex);
     }
     return gs;
 }
 
 // replay slot 0 with the opposite host selector: the graph must keep its captured layout, bit for bit
-int graph_check(Bench& B, const std::vector<cudaGraphExec_t>& gs, bool captured_ns, cudaStream_t s) {
+int graph_check(Bench& B, const Graphs& gs, bool captured_ns, cudaStream_t s) {
     std::vector<uint32_t> direct(B.out_floats), replay(B.out_floats);
     k::native_grouped_set_no_sub16_gu(captured_ns);
     ck(cudaMemsetAsync(B.dout, 0xFF, B.out_floats * 4, s), "gc reset");
@@ -345,7 +411,7 @@ void warm_direct(Bench& B, int n, cudaStream_t s) {
     int slot = 0;
     for (int i = 0; i < n; ++i) { k::native_grouped_set_no_sub16_gu(i & 1); B.call(slot, s); slot = (slot + 1) % B.slots; }
 }
-void warm_graph(Bench& B, std::vector<cudaGraphExec_t>& gs, int n, cudaStream_t s) {
+void warm_graph(Bench& B, Graphs& gs, int n, cudaStream_t s) {
     int slot = 0;
     for (int i = 0; i < n; ++i) { ck(cudaGraphLaunch(gs[slot], s), "warm launch"); slot = (slot + 1) % B.slots; }
 }
@@ -353,7 +419,7 @@ float direct_arm(Bench& B, int slot, bool ns, cudaStream_t s, cudaEvent_t e0, cu
     k::native_grouped_set_no_sub16_gu(ns);
     return us(s, e0, e1, [&] { B.call(slot, s); });
 }
-float graph_arm(int slot, const std::vector<cudaGraphExec_t>& gs, cudaStream_t s, cudaEvent_t e0, cudaEvent_t e1) {
+float graph_arm(int slot, const Graphs& gs, cudaStream_t s, cudaEvent_t e0, cudaEvent_t e1) {
     return us(s, e0, e1, [&] { ck(cudaGraphLaunch(gs[slot], s), "graph launch"); });
 }
 
@@ -367,15 +433,15 @@ Stats stats(std::vector<float> v) {
 double capture_us(Bench& B, bool ns, cudaStream_t s) {
     k::native_grouped_set_no_sub16_gu(ns);
     const auto t0 = std::chrono::steady_clock::now();
-    cudaGraph_t g = nullptr;
-    cudaGraphExec_t ex = nullptr;
-    ck(cudaStreamBeginCapture(s, cudaStreamCaptureModeThreadLocal), "cap begin");
+    Graph g;
+    GraphExec ex;
+    Capture capture(s, "cap begin");
     B.call(0, s);
-    ck(cudaStreamEndCapture(s, &g), "cap end");
-    ck(cudaGraphInstantiate(&ex, g, 0), "cap instantiate");
+    capture.end(g, "cap end");
+    ck(cudaGraphInstantiate(ex.put(), g, 0), "cap instantiate");
     const auto t1 = std::chrono::steady_clock::now();
-    ck(cudaGraphDestroy(g), "cap graph destroy");
-    ck(cudaGraphExecDestroy(ex), "cap exec destroy");
+    g.close("cap graph destroy");
+    ex.close("cap exec destroy");
     return std::chrono::duration<double, std::micro>(t1 - t0).count();
 }
 
@@ -399,7 +465,7 @@ PairRun paired_direct(Bench& B, int samples, cudaStream_t s, cudaEvent_t e0, cud
     }
     return r;
 }
-PairRun paired_graph(Bench& B, std::vector<cudaGraphExec_t>& gs_sub16, std::vector<cudaGraphExec_t>& gs_ref,
+PairRun paired_graph(Bench& B, Graphs& gs_sub16, Graphs& gs_ref,
                      int samples, cudaStream_t s, cudaEvent_t e0, cudaEvent_t e1) {
     PairRun r;
     int slot = 0;
@@ -419,7 +485,7 @@ PairRun paired_graph(Bench& B, std::vector<cudaGraphExec_t>& gs_sub16, std::vect
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int run_benchmark(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     const Cli c = parse(argc, argv);
     if (c.help) return usage();
@@ -448,11 +514,11 @@ int main(int argc, char** argv) {
 
     Guard guard;
     std::mt19937 rng(2715);
-    cudaStream_t s;
-    ck(cudaStreamCreate(&s), "stream");
-    cudaEvent_t e0, e1;
-    ck(cudaEventCreate(&e0), "e0");
-    ck(cudaEventCreate(&e1), "e1");
+    Stream s;
+    ck(cudaStreamCreate(s.put()), "stream");
+    Event e0, e1;
+    ck(cudaEventCreate(e0.put()), "e0");
+    ck(cudaEventCreate(e1.put()), "e1");
 
     int parity_fail = 0, timed = 0;
     for (const auto& [gu, dt] : pairs) {
@@ -508,8 +574,8 @@ int main(int argc, char** argv) {
                         capture_us(B, false, s), capture_us(B, true, s));
             ++timed;
         }
-        for (auto* g : gs_sub16) ck(cudaGraphExecDestroy(g), "exec free");
-        for (auto* g : gs_ref) ck(cudaGraphExecDestroy(g), "exec free");
+        for (auto& g : gs_sub16) g.close("exec free");
+        for (auto& g : gs_ref) g.close("exec free");
     }
 
     guard.restore();
@@ -517,9 +583,22 @@ int main(int argc, char** argv) {
         std::printf("selector restoration FAIL\n");
         ++g_fail;
     }
-    ck(cudaEventDestroy(e0), "e0 free");
-    ck(cudaEventDestroy(e1), "e1 free");
-    ck(cudaStreamDestroy(s), "stream free");
+    e0.close("e0 free");
+    e1.close("e1 free");
+    s.close("stream free");
     std::printf("tier_b_expert_bench: %d parity failures, %d timed pairs\n", parity_fail, timed);
     return (g_fail || parity_fail) ? 1 : 0;
+}
+
+int main(int argc, char** argv) {
+    try {
+        const int result = run_benchmark(argc, argv);
+        // Locals (including selectors and noexcept CUDA owners) have unwound before this check.
+        return result ? result : (g_fail ? 2 : 0);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "tier_b_expert_bench FAIL: %s\n", e.what());
+    } catch (...) {
+        std::fprintf(stderr, "tier_b_expert_bench FAIL: unknown exception\n");
+    }
+    return 2;
 }
