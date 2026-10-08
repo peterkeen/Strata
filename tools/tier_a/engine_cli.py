@@ -208,7 +208,10 @@ def _sentinel(
 
 # ── subprocess lifecycle helpers ──────────────────────────────────────────────
 
-def _terminate_owned_pgroup(proc: subprocess.Popen) -> None:
+def _terminate_owned_pgroup(
+    proc: subprocess.Popen,
+    *, timeout_exc: subprocess.TimeoutExpired | None = None,
+) -> tuple[bytes, bytes]:
     """Stop this run's child/group, reap the child, and close owned pipes.
 
     start_new_session=True makes the POSIX PGID equal proc.pid.  Use that
@@ -221,28 +224,36 @@ def _terminate_owned_pgroup(proc: subprocess.Popen) -> None:
     after a grace period (when it could have been reused).  Otherwise give
     the group a bounded grace, then KILL regardless of leader liveness.
     Finally wait for the child with a timeout and explicitly close our pipe
-    handles; wait() alone does not close them.  Never drain pipes here.
+    handles; wait() alone does not close them.  Cancellation never drains
+    pipes.  A timeout instead KILLs immediately, then drains for at most one
+    grace period, retaining the latest cumulative TimeoutExpired output if
+    inherited pipes stay open.  Drain exceptions propagate after reap/close;
+    the caller's cancellation exception is never replaced by cleanup errors.
     Non-POSIX systems retain direct-child terminate/kill fallback.
     """
     pgid = proc.pid if hasattr(os, "killpg") else None
     group_present = True
+    stdout_b = (timeout_exc.output or b"") if timeout_exc is not None else b""
+    stderr_b = (timeout_exc.stderr or b"") if timeout_exc is not None else b""
+    teardown_complete = False
     try:
         try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGTERM)
-            else:
-                proc.terminate()
-        except ProcessLookupError:
-            group_present = False
-        except OSError:
-            pass  # still attempt escalation after another signal error
-
-        if group_present:
-            try:
-                time.sleep(_TERM_GRACE_S)
-            finally:
-                # Escalate even if the grace itself is interrupted.  Do not
-                # release the leader PID with poll()/wait() before this.
+            if timeout_exc is None:
+                try:
+                    if pgid is not None:
+                        os.killpg(pgid, signal.SIGTERM)
+                    else:
+                        proc.terminate()
+                except ProcessLookupError:
+                    group_present = False
+                except OSError:
+                    pass  # still attempt escalation after another signal error
+                if group_present:
+                    time.sleep(_TERM_GRACE_S)
+        finally:
+            # Escalate even if TERM or its grace is interrupted.  Timeouts
+            # skip TERM/grace entirely.  Never reap before the group signals.
+            if group_present:
                 try:
                     if pgid is not None:
                         os.killpg(pgid, signal.SIGKILL)
@@ -250,11 +261,48 @@ def _terminate_owned_pgroup(proc: subprocess.Popen) -> None:
                         proc.kill()
                 except OSError:
                     pass
+                except BaseException:
+                    # A one-shot interruption of KILL must not skip teardown.
+                    # Retry once before reap, preserving that exact exception.
+                    try:
+                        if pgid is not None:
+                            os.killpg(pgid, signal.SIGKILL)
+                        else:
+                            proc.kill()
+                    except BaseException:
+                        pass
+                    raise
+
+        if timeout_exc is not None:
+            try:
+                drained_out, drained_err = proc.communicate(timeout=_TERM_GRACE_S)
+            except subprocess.TimeoutExpired as exc:
+                drained_out, drained_err = exc.output, exc.stderr
+            # communicate retries return cumulative bytes, not a suffix.
+            # None means no new capture; do not discard the first timeout's
+            # partial output or concatenate it a second time.
+            if drained_out is not None:
+                stdout_b = drained_out
+            if drained_err is not None:
+                stderr_b = drained_err
+        teardown_complete = True
     finally:
+        reap_deadline = time.monotonic() + _TERM_GRACE_S
         try:
             proc.wait(timeout=_TERM_GRACE_S)
-        except BaseException:  # best-effort; preserve original cancellation
-            pass
+        except subprocess.TimeoutExpired:
+            pass  # bounded best-effort reap (e.g. an uninterruptible child)
+        except BaseException:
+            # A one-shot interruption of wait should still reap the child.
+            # The retry shares the original deadline, not another grace.
+            try:
+                proc.wait(timeout=max(0.0, reap_deadline - time.monotonic()))
+            except BaseException:
+                pass
+            if timeout_exc is not None and teardown_complete:
+                raise  # preserve this timeout-cleanup exception unchanged
+            # Otherwise preserve the already-active signal/drain/cancellation
+            # exception rather than replacing it with a secondary wait error.
         finally:
             # Tracebacks may retain proc indefinitely.  Close each parent's
             # read handle explicitly even if wait or another close failed.
@@ -264,6 +312,7 @@ def _terminate_owned_pgroup(proc: subprocess.Popen) -> None:
                         pipe.close()
                     except BaseException:
                         pass
+    return stdout_b, stderr_b
 
 
 # ── single arm runner ──────────────────────────────────────────────────────────
@@ -318,13 +367,10 @@ def run_arm(
 
         try:
             stdout_b, stderr_b = proc.communicate(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            # Normal timeout: SIGKILL immediately (engine exceeded budget).
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()
-            stdout_b, stderr_b = proc.communicate()
+        except subprocess.TimeoutExpired as exc:
+            # The helper owns signals, bounded drain/reap, and pipe closure
+            # even when the leader is gone or timeout teardown is interrupted.
+            stdout_b, stderr_b = _terminate_owned_pgroup(proc, timeout_exc=exc)
             wall_s = time.monotonic() - t0
             return _sentinel(
                 token_ids, f"timeout after {timeout_s:.0f}s", cmd,

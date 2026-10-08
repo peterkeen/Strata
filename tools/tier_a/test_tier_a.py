@@ -386,6 +386,332 @@ class TestRunArmTimeout(unittest.TestCase):
         self.assertIn("timeout", r.error)
         self.assertEqual(r.exit_code, -1)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_timeout_uses_owned_pgid_and_bounded_drain(self):
+        """H6: an absent leader is not a reason to miss its surviving group."""
+        import signal
+        from unittest import mock
+
+        proc = mock.Mock(pid=123456)
+        first = subprocess.TimeoutExpired("dummy", 1, output=b"out", stderr=b"err")
+        events = []
+
+        def communicate(*, timeout):
+            events.append(("communicate", timeout))
+            if len(events) == 1:
+                raise first
+            return b"out tail\xff", b"err tail"
+
+        proc.communicate.side_effect = communicate
+        proc.wait.side_effect = lambda **kw: events.append(("wait", kw["timeout"]))
+        proc.stdout.close.side_effect = lambda: events.append("stdout.close")
+        proc.stderr.close.side_effect = lambda: events.append("stderr.close")
+        with (mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc) as launch,
+              mock.patch("tier_a.engine_cli.os.getpgid", side_effect=ProcessLookupError) as lookup,
+              mock.patch("tier_a.engine_cli.os.killpg",
+                         side_effect=lambda pgid, sig: events.append((pgid, sig))) as killpg,
+              mock.patch("tier_a.engine_cli.time.sleep") as sleep,
+              mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+            r = run_arm("/not-launched", [], [1], 1, {}, (), 1, tmp_dir=self._tmp)
+        self.assertTrue(launch.call_args.kwargs["start_new_session"])
+        lookup.assert_not_called()
+        killpg.assert_called_once_with(proc.pid, signal.SIGKILL)
+        proc.kill.assert_not_called()
+        proc.poll.assert_not_called()
+        sleep.assert_not_called()
+        self.assertEqual(events, [("communicate", 1), (proc.pid, signal.SIGKILL),
+                                  ("communicate", 0.1), ("wait", 0.1),
+                                  "stdout.close", "stderr.close"])
+        self.assertEqual(r.stdout_raw, "out tail\ufffd")
+        self.assertEqual(r.stderr_raw, "err tail")
+        self.assertEqual(r.error, "timeout after 1s")
+        self.assertEqual(r.exit_code, -1)
+        self.assertFalse(Path(r.argv[r.argv.index("--tokens-file") + 1]).exists())
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_timeout_persistent_pipes_keep_latest_partial_output(self):
+        """A second timeout is still a timeout, not an unbounded drain/reap."""
+        from unittest import mock
+
+        for out, err in ((b"out tail", b"err tail"), (None, b"err tail"),
+                         (b"out tail", None), (None, None)):
+            with self.subTest(out=out, err=err):
+                proc = mock.Mock(pid=123456)
+                proc.communicate.side_effect = [
+                    subprocess.TimeoutExpired("dummy", 1, output=b"out", stderr=b"err"),
+                    subprocess.TimeoutExpired("dummy", 0.1, output=out, stderr=err),
+                ]
+                proc.wait.side_effect = subprocess.TimeoutExpired("dummy", 0.1)
+                with (mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc),
+                      mock.patch("tier_a.engine_cli.os.killpg"),
+                      mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+                    r = run_arm("/not-launched", [], [1], 1, {}, (), 1, tmp_dir=self._tmp)
+                self.assertEqual(proc.communicate.call_args_list,
+                                 [mock.call(timeout=1), mock.call(timeout=0.1)])
+                proc.wait.assert_called_once_with(timeout=0.1)
+                proc.stdout.close.assert_called_once()
+                proc.stderr.close.assert_called_once()
+                self.assertEqual(r.stdout_raw, (out if out is not None else b"out").decode())
+                self.assertEqual(r.stderr_raw, (err if err is not None else b"err").decode())
+                self.assertEqual(r.error, "timeout after 1s")
+                self.assertEqual(r.exit_code, -1)
+                self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_timeout_drain_exceptions_reap_close_and_preserve_original(self):
+        """Adapted timeout_check.py: second communicate cannot bypass cleanup."""
+        import signal
+        from unittest import mock
+
+        for original in (KeyboardInterrupt("second communicate"), SystemExit(7),
+                         RuntimeError("drain failed")):
+            with self.subTest(exception=type(original).__name__):
+                proc = mock.Mock(pid=123456)
+                proc.communicate.side_effect = [subprocess.TimeoutExpired("dummy", 1), original]
+                # Secondary cleanup failures must not mask the drain exception
+                # or keep the other pipe / tokens-file open.
+                proc.wait.side_effect = OSError("secondary reap error")
+                proc.stdout.close.side_effect = KeyboardInterrupt("secondary close error")
+                with (mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc),
+                      mock.patch("tier_a.engine_cli.os.getpgid", side_effect=ProcessLookupError) as lookup,
+                      mock.patch("tier_a.engine_cli.os.killpg") as killpg,
+                      mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+                    with self.assertRaises(type(original)) as cm:
+                        run_arm("/not-launched", [], [1], 1, {}, (), 1, tmp_dir=self._tmp)
+                self.assertIs(cm.exception, original)
+                lookup.assert_not_called()
+                killpg.assert_called_once_with(proc.pid, signal.SIGKILL)
+                self.assertEqual(proc.communicate.call_args_list,
+                                 [mock.call(timeout=1), mock.call(timeout=0.1)])
+                self.assertEqual(proc.wait.call_count, 2)
+                for call in proc.wait.call_args_list:
+                    self.assertGreaterEqual(call.kwargs["timeout"], 0)
+                    self.assertLessEqual(call.kwargs["timeout"], 0.1)
+                proc.stdout.close.assert_called_once()
+                proc.stderr.close.assert_called_once()
+                self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_timeout_kill_interruption_retries_before_reap(self):
+        import signal
+        from unittest import mock
+
+        original = KeyboardInterrupt("KILL interrupted")
+        proc = mock.Mock(pid=123456)
+        proc.communicate.side_effect = subprocess.TimeoutExpired("dummy", 1)
+        events = []
+
+        def kill(pgid, sig):
+            events.append((pgid, sig))
+            if len(events) == 1:
+                raise original
+
+        proc.wait.side_effect = lambda **kw: events.append("wait")
+        with (mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc),
+              mock.patch("tier_a.engine_cli.os.killpg", side_effect=kill),
+              mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+            with self.assertRaises(KeyboardInterrupt) as cm:
+                run_arm("/not-launched", [], [1], 1, {}, (), 1, tmp_dir=self._tmp)
+        self.assertIs(cm.exception, original)
+        self.assertEqual(events, [(proc.pid, signal.SIGKILL),
+                                  (proc.pid, signal.SIGKILL), "wait"])
+        proc.communicate.assert_called_once_with(timeout=1)
+        proc.wait.assert_called_once_with(timeout=0.1)
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+        self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_timeout_reap_interruption_retries_and_preserves_original(self):
+        from unittest import mock
+
+        original = KeyboardInterrupt("wait interrupted")
+        proc = mock.Mock(pid=123456)
+        proc.communicate.side_effect = [subprocess.TimeoutExpired("dummy", 1), (b"out", b"err")]
+        proc.wait.side_effect = [original, 0]
+        with (mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc),
+              mock.patch("tier_a.engine_cli.os.killpg"),
+              mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+            with self.assertRaises(KeyboardInterrupt) as cm:
+                run_arm("/not-launched", [], [1], 1, {}, (), 1, tmp_dir=self._tmp)
+        self.assertIs(cm.exception, original)
+        self.assertEqual(proc.wait.call_count, 2)
+        for call in proc.wait.call_args_list:
+            self.assertGreaterEqual(call.kwargs["timeout"], 0)
+            self.assertLessEqual(call.kwargs["timeout"], 0.1)
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+        self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_timeout_absent_group_never_retries_stale_pgid(self):
+        import signal
+        from unittest import mock
+
+        proc = mock.Mock(pid=123456)
+        proc.communicate.side_effect = [subprocess.TimeoutExpired("dummy", 1), (b"out", b"err")]
+        with (mock.patch("tier_a.engine_cli.subprocess.Popen", return_value=proc),
+              mock.patch("tier_a.engine_cli.os.killpg", side_effect=ProcessLookupError) as killpg,
+              mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+            r = run_arm("/not-launched", [], [1], 1, {}, (), 1, tmp_dir=self._tmp)
+        killpg.assert_called_once_with(proc.pid, signal.SIGKILL)
+        proc.kill.assert_not_called()
+        proc.wait.assert_called_once_with(timeout=0.1)
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+        self.assertEqual(r.error, "timeout after 1s")
+        self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+
+    def test_timeout_nonposix_direct_child_fallback_is_bounded(self):
+        from unittest import mock
+        from tier_a import engine_cli
+
+        proc = mock.Mock(pid=123456)
+        proc.communicate.return_value = (b"out tail", b"err tail")
+        with (mock.patch.object(engine_cli, "os") as mock_os,
+              mock.patch.object(engine_cli, "_TERM_GRACE_S", 0.1)):
+            del mock_os.killpg
+            captured = _terminate_owned_pgroup(
+                proc, timeout_exc=subprocess.TimeoutExpired("dummy", 1,
+                                                           output=b"out", stderr=b"err"))
+        self.assertEqual(captured, (b"out tail", b"err tail"))
+        proc.kill.assert_called_once()
+        proc.terminate.assert_not_called()
+        proc.communicate.assert_called_once_with(timeout=0.1)
+        proc.wait.assert_called_once_with(timeout=0.1)
+        proc.stdout.close.assert_called_once()
+        proc.stderr.close.assert_called_once()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fork/process-state fixture")
+    def test_real_timeout_exited_leader_inherited_pipes(self):
+        self._real_timeout_fixture()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fork/process-state fixture")
+    def test_real_timeout_escaped_pipe_holder_is_bounded_not_signalled(self):
+        self._real_timeout_fixture(escape=True)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fork/process-state fixture")
+    def test_real_timeout_drain_interruption_closes_retained_pipes(self):
+        self._real_timeout_fixture(interrupt=True)
+
+    def _real_timeout_fixture(self, *, escape=False, interrupt=False):
+        """Real dummy child forks a pipe-inheriting grandchild then exits.
+
+        Reap the leader before the first real communicate to force getpgid's
+        ESRCH case.  An optional escaped fixture keeps pipes open past group
+        KILL; the runner must bound its drain without signalling that session.
+        """
+        import signal
+        from unittest import mock
+
+        ready = Path(self._tmp) / "grandchild.ready"
+        script = Path(self._tmp) / "timeout_fixture.py"
+        script.write_text(f"#!{sys.executable}\n" + textwrap.dedent(f"""\
+            import os, signal, time
+            from pathlib import Path
+            pid = os.fork()
+            if pid == 0:
+                if {escape!r}:
+                    os.setsid()
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                os.write(1, b'grandchild stdout\\n')
+                os.write(2, b'grandchild stderr\\n')
+                ready = Path({str(ready)!r})
+                pending = ready.with_suffix('.tmp')
+                pending.write_text(str(os.getpid()))
+                pending.rename(ready)
+                time.sleep(60)
+                os._exit(0)
+            os.write(1, b'leader stdout\\n')
+            os.write(2, b'leader stderr\\n')
+            os._exit(0)
+        """), encoding="utf-8")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        real_communicate = subprocess.Popen.communicate
+        real_killpg = os.killpg
+        children = []
+        calls = []
+        gc_pid = None
+        original = KeyboardInterrupt("real timeout drain interrupted")
+        retained = None
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                                     start_new_session=True)
+
+        def communicate(proc, *, timeout):
+            calls.append(timeout)
+            if len(calls) == 1:
+                children.append(proc)
+                deadline = time.monotonic() + 5
+                while not ready.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(ready.exists(), "grandchild fixture never became ready")
+                self.assertEqual(proc.wait(timeout=2), 0)
+                grandchild = int(ready.read_text())
+                self.assertEqual(os.getpgid(grandchild), grandchild if escape else proc.pid)
+                with self.assertRaises(ProcessLookupError):
+                    os.getpgid(proc.pid)
+            elif interrupt:
+                raise original
+            return real_communicate(proc, timeout=timeout)
+
+        def fixture_running(pid):
+            try:
+                fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            except (FileNotFoundError, ProcessLookupError):
+                return False
+            return fields[0] != "Z"
+
+        t0 = time.monotonic()
+        try:
+            with (mock.patch.object(subprocess.Popen, "communicate", communicate),
+                  mock.patch("tier_a.engine_cli.os.killpg", wraps=real_killpg) as killpg,
+                  mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.15)):
+                if interrupt:
+                    try:
+                        run_arm(str(script), [], [1], 1, {}, (), 0.15, tmp_dir=self._tmp)
+                    except KeyboardInterrupt as exc:
+                        retained = exc
+                    self.assertIs(retained, original)
+                    self.assertIsNotNone(retained.__traceback__)
+                else:
+                    r = run_arm(str(script), [], [1], 1, {}, (), 0.15, tmp_dir=self._tmp)
+                    self.assertEqual(r.error, "timeout after 0s")
+                    self.assertEqual(r.exit_code, -1)
+                    for name in ("leader", "grandchild"):
+                        self.assertIn(f"{name} stdout\n", r.stdout_raw)
+                        self.assertIn(f"{name} stderr\n", r.stderr_raw)
+                proc = children[0]
+                killpg.assert_called_once_with(proc.pid, signal.SIGKILL)
+            self.assertLess(time.monotonic() - t0, 3, "timeout cleanup was not bounded")
+            self.assertEqual(calls, [0.15, 0.15])
+            self.assertEqual(proc.returncode, 0, "exited leader not reaped")
+            self.assertTrue(proc.stdout.closed, "retained stdout is open")
+            self.assertTrue(proc.stderr.closed, "retained stderr is open")
+            self.assertEqual(list(Path(self._tmp).glob("*.ids")), [])
+            self.assertIsNone(unrelated.poll(), "runner killed an unrelated session")
+            gc_pid = int(ready.read_text())
+            if escape:
+                self.assertTrue(fixture_running(gc_pid), "runner signalled an escaped session")
+                self.assertEqual(os.getpgid(gc_pid), gc_pid)
+            else:
+                deadline = time.monotonic() + 2
+                while fixture_running(gc_pid) and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertFalse(fixture_running(gc_pid), "owned grandchild survived KILL")
+        finally:
+            # Safety cleanup targets only known test fixtures, never arbitrary
+            # groups.  Do not reuse a reaped/closed leader's PGID on success.
+            for proc in children:
+                if not proc.stdout.closed or proc.returncode is None:
+                    _terminate_owned_pgroup(proc, timeout_exc=subprocess.TimeoutExpired("fixture", 0))
+            if gc_pid is None and ready.exists():
+                gc_pid = int(ready.read_text())
+            if escape and gc_pid is not None and fixture_running(gc_pid):
+                if os.getpgid(gc_pid) == gc_pid:
+                    os.kill(gc_pid, signal.SIGKILL)
+            unrelated.kill()
+            unrelated.wait(timeout=2)
+
 
 # ── TestConfigFlags ───────────────────────────────────────────────────────────
 
@@ -1853,6 +2179,37 @@ class TestCancellationAcGaps(unittest.TestCase):
                                   "stdout.close", "stderr.close"])
         proc.poll.assert_not_called()
         proc.communicate.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "POSIX-only")
+    def test_interrupted_term_or_grace_still_escalates_reaps_and_closes(self):
+        """Shared timeout hardening must not regress TERM cancellation cleanup."""
+        import signal
+        from unittest import mock
+
+        for stage in ("TERM", "grace"):
+            with self.subTest(stage=stage):
+                original = KeyboardInterrupt(f"interrupted {stage}")
+                proc = mock.Mock(pid=123456)
+                events = []
+
+                def kill(pgid, sig):
+                    events.append(sig)
+                    if stage == "TERM" and sig == signal.SIGTERM:
+                        raise original
+
+                proc.wait.side_effect = lambda **kw: events.append("wait")
+                with (mock.patch("tier_a.engine_cli.os.killpg", side_effect=kill),
+                      mock.patch("tier_a.engine_cli.time.sleep",
+                                 side_effect=original if stage == "grace" else None),
+                      mock.patch("tier_a.engine_cli._TERM_GRACE_S", 0.1)):
+                    with self.assertRaises(KeyboardInterrupt) as cm:
+                        _terminate_owned_pgroup(proc)
+                self.assertIs(cm.exception, original)
+                self.assertEqual(events, [signal.SIGTERM, signal.SIGKILL, "wait"])
+                proc.wait.assert_called_once_with(timeout=0.1)
+                proc.communicate.assert_not_called()
+                proc.stdout.close.assert_called_once()
+                proc.stderr.close.assert_called_once()
 
     @unittest.skipUnless(os.name == "posix", "POSIX-only")
     def test_absent_group_is_not_signalled_again(self):
