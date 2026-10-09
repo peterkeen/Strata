@@ -482,8 +482,8 @@ class ParallelService(unittest.TestCase):
         self.assertFalse(any(x.startswith("YIELD ") for x in self.log.read_text().splitlines()))
 
     def test_left_alone_it_goes_back_to_the_solo_path(self):
-        """A request decoding in a slot whose neighbour finished goes back to the solo path (MTP drafts), continued
-        from its slot - only with an engine that keeps the slots' conversations (INFO slot_cache=1)."""
+        """A request decoding in a slot whose neighbour finished goes back to the main GEN path, continued from its
+        slot - only with an engine that keeps the slots' conversations (INFO slot_cache=1)."""
         self.start(2, slot_cache=True)
         res = {}
         long = threading.Thread(target=lambda: res.setdefault("long", self.chat("LONGREPLY please", max_tokens=200)))

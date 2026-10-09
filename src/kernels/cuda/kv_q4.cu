@@ -97,6 +97,8 @@ __device__ __forceinline__ void q4_store(uint8_t* pool, long long row, int b, in
 }
 
 // One block = one 32-value group of one KV head of K (plane 0) or V (plane 1) for token step_idx; 32 threads.
+// KV streaming: the VRAM page only if the backing block is globally resident, the authoritative backing host row
+// when present.
 __global__ void kv_append_q4_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restrict__ v_q4,
                                     const int32_t* __restrict__ table, const int32_t* __restrict__ step,
                                     int step_stride, int planes,
@@ -110,11 +112,14 @@ __global__ void kv_append_q4_kernel(uint8_t* __restrict__ k_q4, uint8_t* __restr
     const float x = (is_v ? vcur : kcur)[step_off + h * head_dim + b * QK4_0 + t];
     uint8_t byte;
     const uint16_t d = q4_group(x, t, byte);
-    const long long page = (long long) table[pos / page_size];
-    if (page >= 0) q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, t, d, byte);
-    if (host.k_q4 != nullptr)
-        q4_store(is_v ? host.v_q4 : host.k_q4, ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size), b, t,
-                 d, byte);
+    // Mapping metadata remains authoritative even if host payload is omitted (HIP DMA-only).
+    const long long logical = pos / page_size;
+    const long long backing = kv_host_backing_page(host, pos < 0 ? -1 : logical);
+    const long long page = kv_host_gpu_page(host, table, logical, backing);
+    if (page >= 0 && (is_v ? v_q4 : k_q4) != nullptr)
+        q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, t, d, byte);
+    if (backing >= 0 && (is_v ? host.v_q4 : host.k_q4) != nullptr)
+        q4_store(is_v ? host.v_q4 : host.k_q4, (backing * kv_heads + h) * page_size + (pos % page_size), b, t, d, byte);
 }
 
 // The prompt path: grid (T, kv_heads, groups), K then V; also into the staging pool (identity layout) when given.
@@ -130,11 +135,18 @@ __global__ void kv_append_q4_batch_kernel(uint8_t* __restrict__ k_q4, uint8_t* _
     const float x = (is_v ? V : K)[t * (kv_heads * head_dim) + h * head_dim + b * QK4_0 + th];
     uint8_t byte;
     const uint16_t d = q4_group(x, th, byte);
-    const long long page = (long long) table[pos / page_size];
-    const long long row_id = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
-    if (page >= 0) q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, th, d, byte);
-    if (host.k_q4 != nullptr) q4_store(is_v ? host.v_q4 : host.k_q4, row_id, b, th, d, byte);
-    if (stage.k_q4 != nullptr) q4_store(is_v ? stage.v_q4 : stage.k_q4, row_id, b, th, d, byte);
+    const long long logical = pos / page_size;
+    const long long backing = kv_host_backing_page(host, pos < 0 ? -1 : logical);
+    const long long page = kv_host_gpu_page(host, table, logical, backing);
+    const long long row_id = (logical * kv_heads + h) * page_size + (pos % page_size);
+    if (page >= 0 && (is_v ? v_q4 : k_q4) != nullptr)
+        q4_store(is_v ? v_q4 : k_q4, (page * kv_heads + h) * page_size + (pos % page_size), b, th, d, byte);
+    if (backing >= 0 && (is_v ? host.v_q4 : host.k_q4) != nullptr)
+        q4_store(is_v ? host.v_q4 : host.k_q4, (backing * kv_heads + h) * page_size + (pos % page_size), b, th, d, byte);
+    // The staging pool is logical identity; stage only rows this sequence actually owns.
+    if (pos >= 0 && (is_v ? stage.v_q4 : stage.k_q4) != nullptr &&
+        (host.logical_pages == nullptr || logical < host.n_logical_pages))
+        q4_store(is_v ? stage.v_q4 : stage.k_q4, row_id, b, th, d, byte);
 }
 
 // Gather step[kStepWidth] cells into FP16 scratch (the non-fused attention paths)

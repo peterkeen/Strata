@@ -257,31 +257,33 @@ public:
 
     // Reserve before allocating a snapshot. held is an incoming image removed
     // with take() but still alive during the exchange; count it against RAM too.
-    bool make_room(size_t incoming, size_t held = 0) {
+    // `prefer_covered_ids`/`_imgs` are the incoming chain (see put): when an entry must go, an unpinned
+    // copy that chain covers goes before the oldest-first order, because a client re-renders a reply and
+    // so the superseded copy of the same conversation rarely matches drop_superseded's exact rule -
+    // and taking the oldest entry instead evicts another conversation's only copy. Without the
+    // chain the oldest unpinned entry goes. Pins take priority over coverage (see evict_one).
+    bool make_room(size_t incoming, size_t held = 0,
+                   const std::vector<int32_t>* prefer_covered_ids = nullptr,
+                   const std::vector<ConversationImageKey>* prefer_covered_imgs = nullptr) {
         if (!enabled() || held > budget_ || incoming > budget_ - held) return false;
         if (bytes() > budget_ - held - incoming) reuse_ = {};
         while (!entries_.empty() && (entries_.size() >= slots_ || bytes_ > budget_ - held - incoming)) {
-            // the oldest entry that does not hold a pinned shared prefix leaves; with only pinned ones left the new
-            // image does not fit (the caller skips parking it - the pinned prefix is what the queries come back to)
-            if (!evict_oldest()) return false;
+            // one entry leaves: an unpinned copy the incoming chain covers if there is one, else the oldest that
+            // does not hold a pinned shared prefix; with only pinned ones left the new image does not fit (the caller skips
+            // parking it - the pinned prefix is what the queries come back to)
+            if (!evict_one(prefer_covered_ids, prefer_covered_imgs)) return false;
         }
         return true;
     }
 
-    // The parked conversation that has gone unused the longest.  This is make_room()'s loop body, so
-    // the parking path can also free RAM one entry at a time on demand (see the physical-RAM admission
-    // gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB segments and each segment is its
-    // own allocation, far above glibc's mmap threshold, so dropping an entry returns the whole footprint
-    // to the kernel at once - the next admission check reads it back from /proc/meminfo.
+    // The parked conversation that has gone unused the longest.  This is make_room()'s loop body without
+    // an incoming chain to prefer, so the parking path can also free RAM one entry at a time on demand
+    // (see the physical-RAM admission gate in generate.cpp).  A ConversationBuffer is a list of 16 MiB
+    // segments and each segment is its own allocation, far above glibc's mmap threshold, so dropping an
+    // entry returns the whole footprint to the kernel at once - the next admission check reads it back
+    // from /proc/meminfo.
     // False when none can go (empty, or only entries that hold a pinned shared prefix are left).
-    bool evict_oldest() {
-        auto victim = std::find_if(entries_.begin(), entries_.end(), [](const SavedConversation& e) { return !e.pinned(); });
-        if (victim == entries_.end()) return false;
-        bytes_ -= victim->bytes();
-        entries_.erase(victim);
-        ++evictions_;
-        return true;
-    }
+    bool evict_oldest() { return evict_one(nullptr, nullptr); }
 
     // The slot count, so a caller that evicts in a loop has a bound it did not invent.
     size_t slots() const { return slots_; }
@@ -324,13 +326,58 @@ public:
         const size_t n = image.bytes();
         if (!enabled() || held > budget_ || n > budget_ - held) return false;   // make_room's refusal, first
         drop_superseded(image.live.ids, image.live.imgs, image.checkpoints, image.cvec);
-        if (!make_room(n, held)) return false;
+        if (!make_room(n, held, &image.live.ids, &image.live.imgs)) return false;
         entries_.push_back(std::move(image));
         bytes_ += n;
         return true;
     }
 
 private:
+    // A parked copy whose own tail beyond its deepest resume point is longer than this is left to
+    // the oldest-first order: giving it up would make its conversation re-read that whole tail on
+    // the next turn, which can cost more than the eviction it avoids. A client re-renders the last
+    // reply, so a superseded copy's own tail is typically one turn's reply.
+    static constexpr size_t kSupersededTailTokens = 4096;
+
+    // The incoming chain covers everything this entry holds up to the entry's deepest resume point,
+    // even though this chain's own resume points sit a few tokens past it (the client re-rendered
+    // the reply). Such an entry is the superseded copy of this conversation, and it is the one to
+    // give up before another conversation's only copy. Entries without checkpoints are never
+    // covered, and a copy with a long tail of its own is left to the LRU order.
+    bool covered_by(const SavedConversation& e, const std::vector<int32_t>& ids,
+                    const std::vector<ConversationImageKey>& images) const {
+        const ConversationCheckpoint* deepest = nullptr;
+        for (const auto& c : e.checkpoints)
+            if (!deepest || c.ids.size() > deepest->ids.size()) deepest = &c;
+        if (deepest == nullptr || deepest->ids.empty()) return false;
+        if (deepest->imgs != images || deepest->ids.size() >= ids.size()) return false;
+        if (e.live.ids.size() < deepest->ids.size() ||
+            e.live.ids.size() - deepest->ids.size() > kSupersededTailTokens) return false;
+        return std::equal(deepest->ids.begin(), deepest->ids.end(), ids.begin());
+    }
+
+    // Drop one entry: first the oldest unpinned covered copy, else the oldest unpinned entry;
+    // false when none can go. Unlike the fork's covered-before-oldest policy, a pin is never a budget
+    // victim: covered_by proves only token/image coverage, not that the incoming image retains the
+    // pinned checkpoint's running state or pin mark. A sibling query needs that exact resume point,
+    // not just a later checkpoint with the same prefix. If only a pinned copy is covered, this can
+    // evict another conversation's only copy; preserving the shared-prefix pin takes priority.
+    bool evict_one(const std::vector<int32_t>* prefer_covered_ids,
+                   const std::vector<ConversationImageKey>* prefer_covered_imgs) {
+        auto unpinned = [](const SavedConversation& e) { return !e.pinned(); };
+        auto victim = entries_.end();
+        if (prefer_covered_ids != nullptr && prefer_covered_imgs != nullptr)
+            victim = std::find_if(entries_.begin(), entries_.end(), [&](const SavedConversation& e) {
+                return unpinned(e) && covered_by(e, *prefer_covered_ids, *prefer_covered_imgs);
+            });
+        if (victim == entries_.end()) victim = std::find_if(entries_.begin(), entries_.end(), unpinned);
+        if (victim == entries_.end()) return false;
+        bytes_ -= victim->bytes();
+        entries_.erase(victim);
+        ++evictions_;
+        return true;
+    }
+
     size_t budget_ = 0, slots_ = 0, bytes_ = 0, evictions_ = 0, superseded_ = 0;
     std::deque<SavedConversation> entries_; // least recently active first
     ConversationKvReuse reuse_;

@@ -53,27 +53,39 @@ bool image_keys(const std::vector<ConversationImageKey>& images, size_t tokens) 
 }
 
 bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t tokens,
-                        ConversationStateSizes& z, std::string& error) {
+                        ConversationStateSizes& z, std::string& error, bool prepared = true) {
     if (!conversation_session_sizes(g, ss, z, error)) return false;
-    if (ss.max_cells < 0 || tokens > (uint64_t) ss.max_cells || (z.gdn && !ss.gdn_state) ||
+    if (ss.max_cells < 0 || tokens > (uint64_t) ss.max_cells || (prepared && z.gdn && !ss.gdn_state) ||
         (owned_qsa(ss) && !ss.qsa_states)) return fail(error, "invalid session running-state targets");
     for (size_t j = 0; j < owned_qsa(ss); ++j) {
         const auto& st = owned(ss, j);
         const auto block = strata::kernels::qsa_real_shapes().idx_block;
         size_t pooled_bytes = 0;
-        if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos || !st.idx_pooled ||
+        if ((prepared && (!st.idx_tail || !st.idx_dead || !st.idx_block_pos || !st.idx_pooled)) ||
             st.max_cells < 0 || tokens > (uint64_t) st.max_cells ||
-            (tokens && tokens / (uint64_t) block >= (uint64_t) std::max<int64_t>(0, st.idx_pooled_rows)) ||
+            (prepared && tokens && tokens / (uint64_t) block >= (uint64_t) std::max<int64_t>(0, st.idx_pooled_rows)) ||
             !product(pooled_bytes, {tokens / (uint64_t) block + 1, (uint64_t) g.idx_key_dim, sizeof(float)}))
             return fail(error, "invalid indexer running-state target");
     }
     return true;
 }
 
-bool view_validate(const ConversationView& view, const SessionState& ss,
-                   const ModelGeometry& g, std::string& error) {
+bool checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss,
+                         const ModelGeometry& g, std::string& error, bool prepared) {
     ConversationStateSizes z;
-    if (!checkpoint_targets(ss, g, view.ids.size(), z, error)) return false;
+    if (!checkpoint_targets(ss, g, c.ids.size(), z, error, prepared)) return false;
+    const size_t layers = owned_qsa(ss);
+    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
+        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
+        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
+        return fail(error, "invalid checkpoint running-state payload");
+    return true;
+}
+
+bool view_validate(const ConversationView& view, const SessionState& ss,
+                   const ModelGeometry& g, std::string& error, bool prepared = true) {
+    ConversationStateSizes z;
+    if (!checkpoint_targets(ss, g, view.ids.size(), z, error, prepared)) return false;
     if (view.ids.empty() || !image_keys(view.images, view.ids.size()) ||
         std::any_of(view.ids.begin(), view.ids.end(), [](int32_t id) { return id < 0; }))
         return fail(error, "invalid live token/image metadata");
@@ -81,7 +93,7 @@ bool view_validate(const ConversationView& view, const SessionState& ss,
         if (!c.stage_parts.empty() || c.ids.empty() || c.ids.size() > view.ids.size() ||
             !std::equal(c.ids.begin(), c.ids.end(), view.ids.begin()))
             return fail(error, "checkpoint is not a live token prefix");
-        if (!conversation_checkpoint_validate(c, ss, g, error)) return false;
+        if (!checkpoint_validate(c, ss, g, error, prepared)) return false;
         size_t image = 0;
         for (const auto& key : view.images) {
             if ((uint64_t) key.start >= c.ids.size()) break;
@@ -100,6 +112,25 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
     for (size_t n : {ids, images, c.gdn.size(), c.ple.size(), c.tails.size(), c.dead.size(), c.block_pos.size()})
         if (!add(total, n)) return false;
     return true;
+}
+bool snapshot_validate(const SavedConversation& image, const SessionState& ss,
+                       const ModelGeometry& g, const QsaState* draft, std::string& error, bool prepared) {
+    if (!image.live.stage_parts.empty())
+        return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
+    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
+    // An image holds exactly one carve's running state and K/V.
+    if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
+        return fail(error, "snapshot from another session layer range");
+    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
+    if (!view_validate(view, ss, g, error, prepared) ||
+        !checkpoint_validate(image.live, ss, g, error, prepared)) return false;
+    const size_t layers = owned_qsa(ss);
+    if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");
+    const int64_t upto = (int64_t) image.live.ids.size();
+    const auto validate_kv = prepared ? conversation_kv_validate : conversation_kv_validate_image;
+    for (size_t j = 0; j < layers; ++j)
+        if (!validate_kv(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
+    return !draft || validate_kv(image.kv.back(), *draft, g, upto, false, error);
 }
 } // namespace
 
@@ -141,14 +172,7 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& ss, 
 
 bool conversation_checkpoint_validate(const ConversationCheckpoint& c, const SessionState& ss,
                                       const ModelGeometry& g, std::string& error) {
-    ConversationStateSizes z;
-    if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    if (c.gdn.size() != z.gdn || c.ple.size() != (ss.ple_hist ? z.ple : 0) ||
-        c.tails.size() != layers * z.tail || c.dead.size() != layers * z.dead ||
-        c.block_pos.size() != layers * z.block_pos || !image_keys(c.imgs, c.ids.size()))
-        return fail(error, "invalid checkpoint running-state payload");
-    return true;
+    return checkpoint_validate(c, ss, g, error, true);
 }
 
 bool conversation_checkpoint_save(ConversationCheckpoint& c, const SessionState& ss,
@@ -231,7 +255,10 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
     for (size_t i = 0; i < layers; ++i) {
         const bool index = i < owned_qsa(ss);
         const auto& st = index ? owned(ss, i) : *draft;
-        if (!conversation_kv_validate(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
+        // Retained storage is canonical history, not a requirement that this
+        // branch still has the old extent mapped. Only the live capture above
+        // and below needs prepared source mappings.
+        if (!conversation_kv_validate_image(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
         const size_t fresh = conversation_kv_bytes(st, g, int64_t(view.ids.size()), index);
         size_t retained = 0;
         if (!conversation_kv_capture_bytes(reuse.kv[i], st, g, int64_t(view.ids.size()), index, retained, error)) return false;
@@ -325,22 +352,14 @@ bool conversation_session_read_limits(SessionReadLimits& limits, const SessionSt
     return true;
 }
 
+bool conversation_snapshot_validate_image(const SavedConversation& image, const SessionState& ss,
+                                          const ModelGeometry& g, const QsaState* draft, std::string& error) {
+    return snapshot_validate(image, ss, g, draft, error, false);
+}
+
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error) {
-    if (!image.live.stage_parts.empty())
-        return fail(error, "a running checkpoint's stage parts belong in the stage images, not in live.stage_parts");
-    if (image.geometry != geometry_key(g)) return fail(error, "incompatible runtime geometry");
-    // an image holds exactly one carve's running state and K/V: same layer range or nothing
-    if (image.layer_lo != ss.layer_lo || image.layer_hi != ss.layer_hi)
-        return fail(error, "snapshot from another session layer range");
-    const ConversationView view{image.live.ids, image.live.imgs, image.checkpoints, image.cvec};
-    if (!view_validate(view, ss, g, error) || !conversation_checkpoint_validate(image.live, ss, g, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    if (image.kv.size() != layers + (draft ? 1 : 0)) return fail(error, "invalid K/V layer count");
-    const int64_t upto = (int64_t) image.live.ids.size();
-    for (size_t j = 0; j < layers; ++j)
-        if (!conversation_kv_validate(image.kv[j], owned(ss, j), g, upto, true, error)) return false;
-    return !draft || conversation_kv_validate(image.kv.back(), *draft, g, upto, false, error);
+    return snapshot_validate(image, ss, g, draft, error, true);
 }
 
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& ss,
@@ -370,6 +389,11 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
                                 const ModelGeometry& g, const QsaState& draft, std::string& error,
                                 ConversationKvReuse reuse, size_t* reused_bytes) {
     return conversation_snapshot_save(image, view, ss, g, &draft, error, std::move(reuse), reused_bytes);
+}
+bool conversation_snapshot_validate_image(const SavedConversation& image, const SessionState& ss,
+                                          const ModelGeometry& g, const QsaState& draft, std::string& error) {
+    if (!image.stage_images.empty()) return fail(error, "a layer split's image restored as a single session");
+    return conversation_snapshot_validate_image(image, ss, g, &draft, error);
 }
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& ss, const ModelGeometry& g,
                                     const QsaState& draft, std::string& error) {

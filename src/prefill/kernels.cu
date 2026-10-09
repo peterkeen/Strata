@@ -1661,7 +1661,7 @@ __global__ void gate_attn_kernel(const float* __restrict__ a, const float* __res
 }
 
 // one block per (token, kv head, 64-value group); 64 threads. KV streaming: the pool page only if the block is
-// resident (table >= 0), and the host copy and the prompt path's staging pool (both identity layout) when given.
+// globally resident, the authoritative host backing row, and the prompt path's logical identity staging row.
 __global__ void kv_append_kernel(const float* __restrict__ K, const float* __restrict__ V, int64_t pos0,
                                  const int32_t* __restrict__ table, int64_t page_size, uint16_t* k_pool,
                                  uint16_t* v_pool, int8_t* k_q, int8_t* v_q, uint16_t* k_scale, uint16_t* v_scale,
@@ -1672,14 +1672,20 @@ __global__ void kv_append_kernel(const float* __restrict__ K, const float* __res
     const int d = g * 64 + threadIdx.x;
     const float x = (is_v ? V : K)[t * 512 + kvh * 256 + d];
     const int64_t pos = pos0 + t;
-    const int64_t page = table[pos / page_size];
+    const int64_t logical = pos / page_size;
+    const int64_t backing = strata::kernels::kv_host_backing_page(host, pos < 0 ? -1 : logical);
+    const int64_t page = strata::kernels::kv_host_gpu_page(host, table, logical, backing);
     const int64_t row = (page * 2 + kvh) * page_size + pos % page_size;
-    const int64_t row_id = ((pos / page_size) * 2 + kvh) * page_size + pos % page_size;
-    if (k_pool != nullptr) {
+    const int64_t row_host = (backing * 2 + kvh) * page_size + pos % page_size;
+    const int64_t row_id = (logical * 2 + kvh) * page_size + pos % page_size;
+    const bool stage_ok = pos >= 0 && (host.logical_pages == nullptr || logical < host.n_logical_pages);
+    if (k_pool != nullptr || host.k_pool != nullptr || stage.k_pool != nullptr) {
         const uint16_t h = hf(x);
-        if (page >= 0) (is_v ? v_pool : k_pool)[row * 256 + d] = h;
-        if (host.k_pool != nullptr) (is_v ? host.v_pool : host.k_pool)[row_id * 256 + d] = h;
-        if (stage.k_pool != nullptr) (is_v ? stage.v_pool : stage.k_pool)[row_id * 256 + d] = h;
+        if (page >= 0 && (is_v ? v_pool : k_pool) != nullptr) (is_v ? v_pool : k_pool)[row * 256 + d] = h;
+        if (backing >= 0 && (is_v ? host.v_pool : host.k_pool) != nullptr)
+            (is_v ? host.v_pool : host.k_pool)[row_host * 256 + d] = h;
+        if (stage_ok && (is_v ? stage.v_pool : stage.k_pool) != nullptr)
+            (is_v ? stage.v_pool : stage.k_pool)[row_id * 256 + d] = h;
         return;
     }
     float a = fabsf(x);
@@ -1692,15 +1698,17 @@ __global__ void kv_append_kernel(const float* __restrict__ K, const float* __res
     const float sf = __half2float(__ushort_as_half(sb));
     int q = 0;
     if (sf > 0.0f) { q = __float2int_rn(x / sf); q = q < -127 ? -127 : (q > 127 ? 127 : q); }
-    if (page >= 0) {
+    if (page >= 0 && (is_v ? v_q : k_q) != nullptr && (is_v ? v_scale : k_scale) != nullptr) {
         (is_v ? v_q : k_q)[row * 256 + d] = (int8_t) q;
         if (threadIdx.x == 0) (is_v ? v_scale : k_scale)[row * 4 + g] = sb;
     }
-    if (host.k_q != nullptr) {
-        (is_v ? host.v_q : host.k_q)[row_id * 256 + d] = (int8_t) q;
-        if (threadIdx.x == 0) (is_v ? host.v_scale : host.k_scale)[row_id * 4 + g] = sb;
+    if (backing >= 0 && (is_v ? host.v_q : host.k_q) != nullptr &&
+        (is_v ? host.v_scale : host.k_scale) != nullptr) {
+        (is_v ? host.v_q : host.k_q)[row_host * 256 + d] = (int8_t) q;
+        if (threadIdx.x == 0) (is_v ? host.v_scale : host.k_scale)[row_host * 4 + g] = sb;
     }
-    if (stage.k_q != nullptr) {
+    if (stage_ok && (is_v ? stage.v_q : stage.k_q) != nullptr &&
+        (is_v ? stage.v_scale : stage.k_scale) != nullptr) {
         (is_v ? stage.v_q : stage.k_q)[row_id * 256 + d] = (int8_t) q;
         if (threadIdx.x == 0) (is_v ? stage.v_scale : stage.k_scale)[row_id * 4 + g] = sb;
     }

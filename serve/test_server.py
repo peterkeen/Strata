@@ -2830,6 +2830,26 @@ class WebApp(unittest.TestCase):
         self.assertNotIn("build_info", props)
         self.assertNotIn("model_path", props)
 
+    def test_multi_slot_reporting_with_a_fake_engine(self):
+        engine = self.svc.engine
+        # A fake engine need not implement solo_active/slots_view or the real engine's scheduler locks.
+        with mock.patch.object(engine, "batch", 2, create=True), \
+                mock.patch.object(engine, "slot_live", [None, {"state": "decoding"}], create=True):
+            try:
+                with self.svc.status_lock:
+                    self.svc.status["busy"] = True
+                self.assertEqual(json.loads(self.get("/props")[2])["total_slots"], 2)
+                self.assertEqual(json.loads(self.get("/slots")[2]),
+                                 [{"id": 0, "n_ctx": CTX, "is_processing": False},
+                                  {"id": 1, "n_ctx": CTX, "is_processing": True}])
+                engine.slot_live[1] = None
+                self.assertEqual(json.loads(self.get("/slots")[2]),
+                                 [{"id": 0, "n_ctx": CTX, "is_processing": True},
+                                  {"id": 1, "n_ctx": CTX, "is_processing": False}])
+            finally:
+                with self.svc.status_lock:
+                    self.svc.status["busy"] = False
+
     def test_discovery_does_not_restart_a_dead_engine(self):
         self.svc.engine.alive = lambda: False
         try:
@@ -3910,6 +3930,69 @@ class AmdTelemetry(unittest.TestCase):
             self.tree(d)
             with mock.patch.object(telemetry, "SYSFS", d):
                 self.assertEqual(svc.free_vram_mib(), 26 << 10)
+
+
+class EngineClose(unittest.TestCase):
+    """A process-group shutdown can exit the child before buffered pipe cleanup flushes stdin."""
+
+    def bare(self):
+        engine = StrataEngine("missing-executable", [], lazy=True)
+        proc = mock.Mock()
+        proc.stdin, proc.stdout = io.StringIO(), io.StringIO()
+        proc.poll.return_value = -15                       # already exited after SIGTERM
+        engine.proc, engine.pump = proc, mock.Mock()
+        engine.log = io.StringIO()
+        engine.ended, engine.progress, engine.last = False, (4, 10), {"generated": 2}
+        return engine, proc, engine.log
+
+    def assert_cleanup(self, engine, proc, log):
+        self.assertTrue(log.closed)
+        self.assertIsNone(engine.proc)
+        self.assertTrue(engine.ended)
+        self.assertIsNone(engine.progress)
+        self.assertEqual(engine.last, {})
+        engine.pump.join.assert_called_once_with(timeout=2)
+        proc.wait.assert_not_called()
+        proc.terminate.assert_not_called()
+        proc.kill.assert_not_called()
+
+    def test_exited_child_broken_stdin_still_closes_stdout_and_log(self):
+        engine, proc, log = self.bare()
+        proc.stdin = mock.Mock()
+        proc.stdin.close.side_effect = BrokenPipeError("child already terminated")
+        stdout = proc.stdout
+        engine.close()
+        proc.stdin.close.assert_called_once_with()
+        proc.stdin.write.assert_not_called()
+        proc.stdin.flush.assert_not_called()
+        self.assertTrue(stdout.closed)
+        self.assert_cleanup(engine, proc, log)
+        engine.close()                                    # cleanup remains idempotent
+        proc.stdin.close.assert_called_once_with()
+
+    def test_exited_child_pipe_close_errors_do_not_interrupt_cleanup(self):
+        for pipe_name in ("stdin", "stdout"):
+            for error in (OSError, ValueError):
+                with self.subTest(pipe=pipe_name, error=error.__name__):
+                    engine, proc, log = self.bare()
+                    pipe = mock.Mock()
+                    pipe.close.side_effect = error("pipe is already gone")
+                    setattr(proc, pipe_name, pipe)
+                    other = proc.stdout if pipe_name == "stdin" else proc.stdin
+                    engine.close()
+                    pipe.close.assert_called_once_with()
+                    self.assertTrue(other.closed)
+                    self.assert_cleanup(engine, proc, log)
+
+    def test_exited_child_both_pipe_close_errors_still_close_log_and_clear_markers(self):
+        engine, proc, log = self.bare()
+        proc.stdin, proc.stdout = mock.Mock(), mock.Mock()
+        proc.stdin.close.side_effect = BrokenPipeError("child already terminated")
+        proc.stdout.close.side_effect = ValueError("pipe already closed")
+        engine.close()
+        proc.stdin.close.assert_called_once_with()
+        proc.stdout.close.assert_called_once_with()
+        self.assert_cleanup(engine, proc, log)
 
 
 class SilentEngine(unittest.TestCase):

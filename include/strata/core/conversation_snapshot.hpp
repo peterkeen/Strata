@@ -20,7 +20,12 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& state, const Mo
                           int64_t unchanged_tokens = 0, size_t* reused_bytes = nullptr);
 bool conversation_kv_capture_bytes(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                                    int64_t upto, bool include_index, size_t& bytes, std::string& error);
-// No CUDA calls or destination writes. Used for whole-session prevalidation.
+// Canonical payload/format/logical-extent validation only: no destination
+// buffers, page mappings, CUDA calls, page allocations or writes required.
+bool conversation_kv_validate_image(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
+                                    int64_t upto, bool include_index, std::string& error);
+// Strict prepared-target validation; no CUDA calls or destination writes.
+// Runtime must reserve COW-writable pages for the whole restore extent first.
 bool conversation_kv_validate(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
                               int64_t upto, bool include_index, std::string& error);
 bool conversation_kv_restore(const ConversationKv& image, const QsaState& state, const ModelGeometry& g,
@@ -87,6 +92,13 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
 bool conversation_snapshot_sources(SavedConversation& meta, std::vector<SessionKvSource>& sources,
                                    const ConversationView& view, const SessionState& session,
                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+// Validate canonical metadata and all payloads before parking/preparing a
+// destination. Uses session geometry/carve/format/PLE configuration, not ready
+// destination buffers or mappings. No CUDA, page allocation or writes.
+bool conversation_snapshot_validate_image(const SavedConversation& image, const SessionState& session,
+                                          const ModelGeometry& g, const QsaState& draft, std::string& error);
+// Strict target validation: reserve COW-writable pages starting at logical 0
+// across the entire live extent before validate/restore, including main-only parking.
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState& draft, std::string& error);
 enum class ConversationRestore { restored, invalid, transfer_failed };
@@ -108,6 +120,8 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view, const SessionState& session,
                                 const ModelGeometry& g, const QsaState* draft, std::string& error,
                                 ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+bool conversation_snapshot_validate_image(const SavedConversation& image, const SessionState& session,
+                                          const ModelGeometry& g, const QsaState* draft, std::string& error);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
                                     const ModelGeometry& g, const QsaState* draft, std::string& error);
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,

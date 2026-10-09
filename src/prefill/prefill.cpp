@@ -2593,7 +2593,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     constexpr bool kv_host_dma = false;
 #endif
                     const bool host_by_dma = staged && kv_host_dma;
-                    const strata::kernels::KvHostPools* host_w = host_by_dma ? nullptr : &st.host;
+                    // DMA can omit payload stores, but shared append still needs
+                    // authoritative logical/backing/residency addressing. Its
+                    // reader table is only a temporary, potentially stale view.
+                    auto dma_host = st.host;
+                    if (host_by_dma) {
+                        dma_host.k_pool = dma_host.v_pool = nullptr;
+                        dma_host.k_q = dma_host.v_q = nullptr;
+                        dma_host.k_scale = dma_host.v_scale = nullptr;
+                        dma_host.k_q4 = dma_host.v_q4 = nullptr;
+                    }
+                    const strata::kernels::KvHostPools* host_w = host_by_dma ? &dma_host : &st.host;
                     if (st.kv_hybrid) {   // K8V4: K INT8 unrotated, V rotated Q4_0 (only V and the output rotate)
                         // streamed: each half writes its part of the host copy and of the staging pool
                         strata::kernels::fwht256_inplace_cuda(m.Vc, T * 2, m.cs);
@@ -2619,10 +2629,14 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             kv_append(m.Kc, m.Vc, T, p0, st.page_table, s.page_size, st.kv_int8 ? nullptr : st.k_pool,
                                       st.kv_int8 ? nullptr : st.v_pool, st.k_q, st.v_q, st.k_scale, st.v_scale, m.cs,
                                       host_w, staged ? &m.stage : nullptr);
-                        if (host_by_dma)
+                        if (host_by_dma) {
                             strata::kernels::kv_unstage_to_host(pools_of(m.stage, m.ident_table), st.host,
                                                                 core::qsa_kv_format(st), p0 / s.page_size,
                                                                 (p0 + T + s.page_size - 1) / s.page_size, s, m.cs);
+                            if (st.shared_kv)
+                                strata::kernels::kv_stream_invalidate(st.map, st.host.logical_pages, p0 / s.page_size,
+                                                                     (p0 + T + s.page_size - 1) / s.page_size, m.cs);
+                        }
                     }
                     if (staged) pf_step("reading the prompt (batched, step sync): the K/V append at layer", l);
                     split_q(m.Qf, m.q, T, m.cs);

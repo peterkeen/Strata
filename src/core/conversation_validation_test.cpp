@@ -105,6 +105,7 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     image.kv.reserve((size_t) g.n_qsa_layers() + 1);
     if (!zero_qsa) { image.kv.push_back(first.image(g, true)); image.kv.push_back(last.image(g, true)); }
     image.kv.push_back(draft.image(g, false));
+    check(conversation_snapshot_validate_image(image, ss, g, draft.st, error), "canonical complete image validates without CUDA");
     check(conversation_snapshot_validate(image, ss, g, draft.st, error), "complete image validates without CUDA");
     size_t estimate = 0;
     check(conversation_snapshot_bytes({image.live.ids,image.live.imgs,image.checkpoints,true},ss,g,draft.st,estimate,error),
@@ -116,12 +117,67 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         for (const auto* p : {&first,&last,&draft}) for (const auto& bytes : p->data) if (!pristine(bytes)) return false;
         return true;
     };
+    {
+        auto empty_layers = layers;
+        auto empty_draft = draft.st;
+        auto unprepare = [](QsaState& st) {
+            st.shared_kv = true; st.shared_page_table.clear(); st.page_table = nullptr;
+            st.n_pages = st.n_slots = 0; st.host = {}; st.map = {};
+            st.k_pool = st.v_pool = st.k_scale = st.v_scale = nullptr;
+            st.k_q = st.v_q = nullptr; st.k_q4 = st.v_q4 = nullptr;
+            st.idx_tail = st.idx_dead = st.idx_pooled = nullptr; st.idx_block_pos = nullptr;
+            st.idx_pooled_rows = 0;
+        };
+        for (auto& st : empty_layers) unprepare(st);
+        unprepare(empty_draft);
+        SessionState metadata = ss;
+        metadata.gdn_state = nullptr;
+        metadata.qsa_states = zero_qsa ? nullptr : empty_layers.data();
+#if defined(CONVERSATION_TEST_TRANSFERS)
+        const int calls = copy_calls, syncs = sync_calls;
+#endif
+        check(conversation_snapshot_validate_image(image, metadata, g, empty_draft, error),
+              "canonical validation succeeds without KV mappings, pools, recurrence or indexer targets");
+        check(conversation_snapshot_validate_image(image, metadata, g, &empty_draft, error),
+              "pointer canonical validation preserves complete draft metadata");
+        check(!conversation_snapshot_validate(image, metadata, g, empty_draft, error),
+              "prepared validation still rejects missing destinations");
+        check(conversation_snapshot_restore(image, metadata, g, empty_draft, error) == ConversationRestore::invalid,
+              "unprepared complete restore rejected before writes");
+        auto main_only = image;
+        main_only.kv.pop_back();
+        check(conversation_snapshot_validate_image(main_only, metadata, g, nullptr, error),
+              "main-only parking image validates before preparing destination mappings");
+        check(!conversation_snapshot_validate_image(main_only, metadata, g, empty_draft, error),
+              "main-only image is not a complete MTP image");
+        check(!conversation_snapshot_validate_image(image, metadata, g, nullptr, error),
+              "complete MTP image is not a main-only parking image");
+        main_only.stage_images.emplace_back();
+        check(!conversation_snapshot_validate_image(main_only, metadata, g, empty_draft, error),
+              "whole-session image validation refuses a layer-split container");
+        check(unchanged(), "canonical validation and unprepared restore leave all model buffers untouched");
+#if defined(CONVERSATION_TEST_TRANSFERS)
+        check(copy_calls == calls && sync_calls == syncs, "unprepared image checks make zero CUDA calls");
+#endif
+    }
     auto reject = [&](const std::function<void(SavedConversation&)>& mutate, const char* label) {
         auto bad = image; mutate(bad);
+#if defined(CONVERSATION_TEST_TRANSFERS)
+        const int calls = copy_calls, syncs = sync_calls;
+#endif
+        check(!conversation_snapshot_validate_image(bad,ss,g,draft.st,error), "malformed canonical metadata rejected before preparation");
         check(conversation_snapshot_restore(bad,ss,g,draft.st,error) == ConversationRestore::invalid,label);
         check(unchanged(), "invalid restore did not touch any layer or running-state buffer");
+#if defined(CONVERSATION_TEST_TRANSFERS)
+        check(copy_calls == calls && sync_calls == syncs, "malformed full image rejected with zero CUDA calls");
+#endif
     };
     reject([](auto& s){s.kv.back().k.pop_back();}, "late draft corruption rejected before first layer write");
+    reject([](auto& s){s.kv.back().format += 16;}, "KV rotation/format mismatch rejected");
+    reject([](auto& s){s.kv.back().cells -= 4;}, "wrong logical KV extent rejected");
+    reject([](auto& s){s.kv.back().page_size++;}, "wrong canonical KV page size rejected");
+    reject([](auto& s){s.kv.back().heads++;}, "wrong canonical KV head count rejected");
+    reject([](auto& s){s.kv.back().idx_dim++;}, "wrong canonical indexer geometry rejected");
     reject([](auto& s){s.geometry[16] = 128;}, "different expert geometry rejected");
     reject([](auto& s){s.live.stage_parts.emplace_back();}, "layer-split live state rejected before writes");
     reject([](auto& s){s.checkpoints[0].stage_parts.emplace_back();}, "layer-split checkpoint rejected before writes");
@@ -158,6 +214,41 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         check(!conversation_session_sizes(g,stage,zs,error), "carve past the last QSA ordinal rejected");
         stage.qsa_alloc = 1; stage.gdn_alloc = 7;
         check(!conversation_session_sizes(g,stage,zs,error), "carve past the GDN rows rejected");
+    }
+    {
+        // A shorter live branch maps only two pages. The historical nine-token
+        // retained image has three pages and must not require its old mappings.
+        auto live_layers = layers;
+        auto live_draft = draft.st;
+        for (auto& st : live_layers) { st.shared_kv = true; st.shared_page_table = {17, 19}; }
+        live_draft.shared_kv = true; live_draft.shared_page_table = {17, 19};
+        SessionState branch = ss;
+        branch.qsa_states = zero_qsa ? nullptr : live_layers.data();
+        std::vector<int32_t> ids(image.live.ids.begin(), image.live.ids.begin() + 5);
+        const ConversationView view{ids, image.live.imgs, image.checkpoints, true};
+        ConversationKvReuse reuse{image.kv, 9, 0, {}};
+        size_t peak = 0;
+#if defined(CONVERSATION_TEST_TRANSFERS)
+        const int calls = copy_calls, syncs = sync_calls;
+#endif
+        check(conversation_kv_validate_image(reuse.kv.back(), live_draft, g, 9, false, error),
+              "historical canonical KV validates after branch mapping truncation");
+        check(!conversation_kv_validate(reuse.kv.back(), live_draft, g, 9, false, error),
+              "historical extent is deliberately not a prepared target");
+        check(conversation_snapshot_capture_bytes(reuse, view, branch, g, live_draft, peak, error),
+              "readonly capture admission validates retained canonical history, not obsolete mappings");
+        live_draft.shared_page_table.clear();
+        check(!conversation_snapshot_capture_bytes(reuse, view, branch, g, live_draft, peak, error),
+              "actual live capture still requires its current mappings");
+        for (auto& st : live_layers) st.shared_page_table.push_back(21);
+        check(conversation_snapshot_validate_image(image, branch, g, live_draft, error),
+              "complete canonical image validates while late draft destination has no mappings");
+        check(conversation_snapshot_restore(image, branch, g, live_draft, error) == ConversationRestore::invalid,
+              "late missing draft mapping rejected before any prepared main-layer write");
+        check(unchanged(), "readonly retained admission and unprepared restore never write model buffers");
+#if defined(CONVERSATION_TEST_TRANSFERS)
+        check(copy_calls == calls && sync_calls == syncs, "historical reuse admission makes zero CUDA calls");
+#endif
     }
     auto bad_geometry = g; bad_geometry.ssm_state_size = std::numeric_limits<int64_t>::max();
     check(!conversation_state_sizes(bad_geometry,z,error), "running-state arithmetic overflow rejected");
@@ -205,7 +296,7 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
     SavedConversation full,incremental;
     check(conversation_snapshot_save(full,view,ss,g,draft.st,error), "full capture through host transfer backend");
     const size_t full_copies = copied_bytes;
-    ConversationKvReuse reuse{full.kv,9,9};
+    ConversationKvReuse reuse{full.kv,9,9,{}};
     size_t peak = 0, reused = 0;
     check(conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "incremental capture admission without transfers");
     copied_bytes = 0;
@@ -218,12 +309,12 @@ void fixture(int format, int experts, bool zero_qsa, bool ple) {
         check(incremental.kv[i].k==full.kv[i].k && incremental.kv[i].v==full.kv[i].v &&
               incremental.kv[i].k_scale==full.kv[i].k_scale && incremental.kv[i].v_scale==full.kv[i].v_scale &&
               incremental.kv[i].pooled==full.kv[i].pooled, "incremental and full capture agree across every payload");
-    reuse = {full.kv,9,9};
+    reuse = {full.kv,9,9,{}};
     reuse.kv.back().k.pop_back();
     copy_calls = sync_calls = 0;
     check(!conversation_snapshot_capture_bytes(reuse,view,ss,g,draft.st,peak,error), "malformed retained draft rejected before admission");
     check(!copy_calls && !sync_calls, "invalid retained storage performs no CUDA calls");
-    reuse = {full.kv,9,9};
+    reuse = {full.kv,9,9,{}};
     fail_copy = copy_calls + 1;
     SavedConversation unpublished;
     check(!conversation_snapshot_save(unpublished,view,ss,g,draft.st,error,std::move(reuse)), "incremental capture copy failure is reported");

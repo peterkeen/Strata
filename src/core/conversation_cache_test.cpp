@@ -236,6 +236,106 @@ int main() {
               "an oversized put drops nothing");
     }
     {
+        // Under eviction pressure the copy the incoming chain covers goes first. A client re-renders the
+        // last reply, so the exact drop does not fire for it, and the oldest-first order would take another
+        // conversation's only copy instead - which is what the live 2026-10-06 probe lost.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache cache(1 << 20, 3);                     // three entries, so the fourth evicts one
+        SavedConversation foreign = image({1, 2, 3, 4, 50, 51});
+        foreign.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 50})};
+        check(cache.put(std::move(foreign)), "park the other conversation's only copy first");
+        SavedConversation mine = image({1, 2, 3, 4, 10, 11, 12, 900, 901});
+        mine.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11, 12})};
+        check(cache.put(std::move(mine)), "park the copy whose reply the client will re-render");
+        SavedConversation third = image({1, 2, 3, 4, 70, 71});
+        third.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 70})};
+        check(cache.put(std::move(third)), "park an unrelated conversation");
+        SavedConversation next = image({1, 2, 3, 4, 10, 11, 12, 910, 911, 912});
+        next.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 10, 11, 12, 910})};
+        check(cache.put(std::move(next)), "park the next turn of the re-rendered conversation");
+        check(cache.superseded() == 0 && cache.evictions() == 1, "the exact drop does not fire, one entry goes");
+        const std::vector<int32_t> foreign_next = {1, 2, 3, 4, 50, 51, 52};
+        check(cache.best(foreign_next, {}, true).tokens > 0, "the other conversation's copy survived eviction");
+        const std::vector<int32_t> third_next = {1, 2, 3, 4, 70, 71, 72};
+        check(cache.best(third_next, {}, true).tokens > 0, "the unrelated copy survived eviction too");
+        const std::vector<int32_t> mine_next = {1, 2, 3, 4, 10, 11, 12, 910, 911, 912, 913};
+        check(cache.best(mine_next, {}, true).tokens >= 10, "the newest copy of this conversation is kept");
+        // park_current reserves room before it captures, so that reservation has to use the same
+        // preference: an oldest-first choice there evicts the foreign copy before put() ever sees
+        // the incoming chain (the live 2026-10-06 probe lost its image exactly that way).
+        const std::vector<ConversationImageKey> no_images;
+        const std::vector<int32_t> reserve_for = {1, 2, 3, 4, 10, 11, 12, 910, 911, 912};
+        check(cache.make_room(64, 0, &reserve_for, &no_images), "reserve room for the next turn before capture");
+        check(cache.evictions() == 2, "the reservation evicted a copy");
+        const std::vector<int32_t> foreign_again = {1, 2, 3, 4, 50, 51, 52};
+        check(cache.best(foreign_again, {}, true).tokens > 0, "the reservation did not take the foreign copy");
+    }
+    {
+        // Token coverage does not reproduce a pinned resume point: the new image has only a later
+        // checkpoint. Both pre-capture reservation and put must keep the pin, even at the cost of
+        // the oldest unrelated conversation's only copy (unlike the fork's unqualified preference).
+        for (bool reserve_first : {false, true}) {
+            auto cp = [](std::initializer_list<int32_t> ids, bool pin = false) {
+                ConversationCheckpoint c;
+                c.ids = ids; c.pinned = pin; c.gdn.resize(64, 42);
+                return c;
+            };
+            ConversationCache cache(1 << 20, 2);
+            check(cache.put(image({9, 8, 7})), "park the oldest unrelated copy before the covered pin");
+            auto pinned = image({1, 2, 3, 900});
+            pinned.checkpoints = {cp({1, 2}, true), cp({1, 2, 3})};
+            const size_t pinned_bytes = pinned.bytes();
+            check(cache.put(std::move(pinned)), "park a pinned copy with a short rewritten tail");
+            auto next = image({1, 2, 3, 910, 911});
+            next.checkpoints = {cp({1, 2, 3, 910})};
+            const size_t next_bytes = next.bytes();
+            if (reserve_first) {
+                check(cache.make_room(next_bytes, 0, &next.live.ids, &next.live.imgs),
+                      "reserve against a covered pinned copy");
+                check(cache.size() == 1 && cache.bytes() == pinned_bytes && cache.evictions() == 1,
+                      "reservation evicts the unrelated copy, not the covered pin");
+            }
+            check(cache.put(std::move(next)), "park the covering image without the pinned resume point");
+            check(cache.size() == 2 && cache.bytes() == pinned_bytes + next_bytes &&
+                  cache.evictions() == 1 && cache.superseded() == 0,
+                  "covered pin survives pressure with exact accounting, not exact supersession");
+            check(cache.best(std::vector<int32_t>{9, 8, 7, 6}, {}, true).tokens == 0,
+                  "pin priority deliberately evicts the oldest unrelated conversation");
+            const auto sibling = cache.best(std::vector<int32_t>{1, 2, 8, 9}, {}, true);
+            check(sibling.tokens == 2 && !sibling.live,
+                  "sibling query still finds the exact pinned checkpoint, not the later covered point");
+            auto restored = cache.take(sibling.index);
+            check(restored.pinned() && restored.checkpoints.front().gdn == std::vector<uint8_t>(64, 42),
+                  "taking the pinned image retains its pin mark and running-state payload");
+            check(cache.bytes() == next_bytes && cache.size() == 1,
+                  "taking the pin leaves only the new covering image's bytes");
+        }
+    }
+    {
+        // A covered copy whose own tail is long is left to the oldest-first order: giving it up would
+        // make that conversation re-read the whole tail, which can cost more than this eviction.
+        auto cp = [](std::vector<int32_t> ids) { ConversationCheckpoint c; c.ids = std::move(ids); return c; };
+        ConversationCache keep(1 << 20, 3);
+        SavedConversation gone = image({1, 2, 3, 4, 60, 61});
+        gone.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 60})};
+        check(keep.put(std::move(gone)), "park the copy that will age out");
+        SavedConversation long_tail = image({1, 2, 3, 4, 20});
+        for (int i = 0; i < 5000; ++i) long_tail.live.ids.push_back(1000 + i);
+        long_tail.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 20})};
+        check(keep.put(std::move(long_tail)), "park a covered copy with a long unique tail");
+        SavedConversation filler = image({1, 2, 3, 4, 80, 81});
+        filler.checkpoints = {cp({1, 2, 3, 4}), cp({1, 2, 3, 4, 80})};
+        check(keep.put(std::move(filler)), "park a third conversation");
+        SavedConversation incoming = image({1, 2, 3, 4, 20, 9999});
+        incoming.checkpoints = {cp({1, 2, 3, 4})};
+        check(keep.put(std::move(incoming)) && keep.superseded() == 0, "park over the long-tailed copy");
+        const std::vector<int32_t> aged_next = {1, 2, 3, 4, 60, 61, 62};
+        // Only the checkpoint every entry shares (the root) remains of the evicted copy.
+        check(keep.best(aged_next, {}, true).tokens == 4, "the oldest copy is evicted, not the long-tailed one");
+        const std::vector<int32_t> tail_probe = {1, 2, 3, 4, 20, 1000};
+        check(keep.best(tail_probe, {}, true).tokens > 0, "the long-tailed copy still restores");
+    }
+    {
         ConversationCache disabled(0,4), no_slots(1024,0);
         check(!disabled.enabled() && !no_slots.enabled(), "both disable switches");
         check(!disabled.put(image({1,2,3})) && !no_slots.put(image({1,2,3})), "disabled cache stores nothing");

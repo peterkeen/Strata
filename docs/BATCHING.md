@@ -44,6 +44,33 @@ The engine never refuses a count it cannot run: it says so in its log and runs w
 default (a window holds 8 rows), as many as fit in VRAM, or none (one request at a time) when not two fit. The server reads
 the count the engine reports (`INFO batch_slots=N`), and `GET /v1/status` says it (`concurrency.serving`).
 
+### Elastic shared KV capacity (opt-in)
+
+Add `--kv-unified` to the engine's `args` beside `"parallel": N` (or native `--batch N`). Attention KV pages then come
+from **one shared pool** instead of one pool per slot; recurrent state, PLE history, the QSA indexer and the MTP ring
+stay private to each slot. Cached prefixes share pages with copy-on-write, so two slots reading the same history do not
+store it twice.
+
+The pool has an aggregate host backing of `--max-context` cells **for the whole engine** - it is not divided between
+slots - and `--kv-resident` cells per attention layer stay on the GPU while the rest of each layer streams from pinned
+RAM. `--max-context` is also each request's logical ceiling, so 262144 logical context with 32768 GPU-resident cells
+is a supported configuration, not an approximation.
+
+Admission is incremental: a request reserves its known prompt plus a bounded headroom (256 cells) instead of reserving
+its whole possible output, and every write or copy-on-write extent is preflighted exactly. A headroom shortage does not
+preempt anyone. Real exhaustion releases a safely parked owner and hands the stream back to the frontend, which
+continues the same request through its original plus returned tokens (`pressure` completion); a warm conversation can
+also hand its cache back for a solo/batch transition (`handoff`) instead of replaying its history. Conversation parking
+(`--conversation-cache-mib`, `--conversation-cache-slots`) keeps those idle caches in pinned RAM.
+
+Unified KV requires a single session GPU: layer split and pipeline groups (`--layer-split`, `--batch-groups`) are
+rejected rather than half-supported. It is opt-in and orthogonal to expert streaming and caching.
+
+See [MULTI_SLOT_UNIFIED_KV.md](MULTI_SLOT_UNIFIED_KV.md) for the shared-pool design and
+[INCREMENTAL_UNIFIED_KV.md](INCREMENTAL_UNIFIED_KV.md) for the incremental admission policy, the measured validation
+and the remaining limits. All per-slot memory estimates below describe the default independent-pool mode; with
+`--kv-unified` the KV footprint is one pool plus the resident window, not `N` times a slot's session.
+
 ### What a slot costs, and what setup recommends
 
 Every slot's session takes VRAM that the expert cache would otherwise hold: 0.56 GiB at a 32K context with 8-bit
@@ -63,15 +90,18 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
 ## How the server uses the slots
 
 - **One request alone** runs on the usual solo path (verify windows with MTP drafts): the fastest single stream.
-- **When a second request arrives**, the first is stopped (`STOP`) and continues in a batch slot with its prompt
-  plus what it generated so far - the engine's prompt cache holds exactly that, so nothing is read again - and the
-  new request is admitted next to it. By default, a request in a slot decodes **without MTP drafts** (one token per window).
+- **When a second request arrives**, the first hands off (`HANDOFF` with unified `kv_handoff=1`, otherwise the legacy
+  `STOP`) and continues in a batch slot with its prompt plus what it generated so far. A valid prefix is kept for the
+  admission instead of being treated as a cancellation, so nothing is read again, and the new request is admitted next
+  to it. By default, a request in a slot decodes **without MTP drafts** (one token per window).
   With `--batch-mtp`, each slot verifies one MTP proposal alongside its current token.
 - **A request left alone in a slot** (the others finished, nobody waits) goes back to the solo path: the slot is
-  stopped, the engine copies its sessions back and decodes with MTP drafts again (at most twice per request; with
-  `--prompt-cache 0` it stays in the slot; `STRATA_PARALLEL_SOLO=0` turns it off). The draft layer's own K/V was
-  built for another conversation then, but measured it accepted as many drafts (140 of 172) as a draft layer that
-  read the conversation (140 of 173).
+  handed off (`BHANDOFF` with unified `kv_handoff=1`, otherwise the legacy `BSTOP`), the engine copies its sessions
+  back and decodes with MTP drafts again (at most twice per request; with `--prompt-cache 0` it stays in the slot;
+  `STRATA_PARALLEL_SOLO=0` turns it off). With unified KV the slot clone-back is target-only: private MTP/suffix
+  proposals stay suppressed until a full residual prompt replay rebuilds coherent draft history, so it never uses an
+  unrelated conversation's draft K/V. Without unified KV, the draft layer's own K/V was built for another conversation
+  then, but measured it accepted as many drafts (140 of 172) as a draft layer that read the conversation (140 of 173).
 - **More requests than slots** wait for a free one (`/metrics` -> `live.slots` shows each slot: idle, reading or
   decoding, its tokens and tok/s; `live.running` the requests in flight).
 - **Each admission** reads the request's prompt through the usual prompt path (prompt cache and conversation
@@ -223,8 +253,10 @@ On top of `GEN` / `GENI`:
 | `BGENI <slot> <max_new> [keys] <file> <ids>` | in | the same with images |
 | `BADM <slot> <1/0>` | out | after the admission's `DONE`: 1 = it continues in the slot, 0 = it ended |
 | `BT <slot> <id>` | out | a token of that slot |
-| `BDONE <slot> <generated> <stop/length/cancel> <ms>` | out | the slot is free again (it keeps its conversation) |
-| `BSTOP <slot>` | in | end that slot at its next window |
+| `BDONE <slot> <generated> <stop/length/cancel/pressure/handoff> <ms>` | out | the slot is free again; unified natural completion or handoff may keep an idle cache, while cancellation or pressure releases the backing |
+| `BSTOP <slot>` | in | cancel that slot at its next window; in unified mode it releases active or paused ownership before `BDONE`, and a late stop of an already-finished owner owes no second acknowledgement |
+| `HANDOFF` | in | with `INFO kv_handoff=1`: end solo decode with `DONE ... handoff ...`, keeping a valid completed-prefill cache; an incomplete read still cancels |
+| `BHANDOFF <slot>` | in | with `INFO kv_handoff=1`: end active slot decode with `BDONE ... handoff ...`, keeping a target-only idle cache and checkpoints; a late handoff owes no second acknowledgement |
 | `BYIELD <slot>` | in | the prompt being read gives way at its next chunk boundary; its part read waits in `<slot>` (the admission's own, or a free slot for a solo request) |
 | `YIELDED <slot> <tokens>` | out | before the `DONE cancel` of a read that gave way: the request is sent again later and goes on from there |
 | `INFO ... batch_slots=N` | out | the slots the engine runs (only with `--batch`) |

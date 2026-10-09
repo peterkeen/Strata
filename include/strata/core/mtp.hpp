@@ -31,6 +31,11 @@
 
 namespace strata::core {
 
+// Full-context dense drafts have no residency resolver: -1 requests private, fully-resident K/V.
+inline constexpr int64_t mtp_kv_ring_cells(int64_t window, int64_t max_cells, int max_t) {
+    return (window > 0 && window < max_cells) ? window + 4 * (int64_t) max_t + 64 : -1;
+}
+
 class NativeHead;
 
 class MtpDrafter {
