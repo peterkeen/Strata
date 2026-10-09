@@ -125,6 +125,92 @@ def build_partial_tail_seed(tok, offset_cells: int, context: int, *, output_cap:
                            tuple(user_prefix), tuple(background_cycle), tuple(user_close), tuple(assistant_header))
 
 
+# Branch-continuation candidates for the partial-tail fixtures.  Each candidate is appended AFTER the
+# shared cached prefix, so the shared prefix itself, its exact partial-page offset, the output cap and the
+# eight-token seed precondition are all untouched: only the text the model sees last changes.  The fixture
+# exists to make the restored clone generate a divergent suffix, so the continuation must leave the turn
+# unfinished instead of looking like a completed answer.
+#
+# Measured on the real model (str-ro1.10/1.11, hooks-on binary): `meta-instruction` still returned to EOS
+# after a single token at every partial-page offset, so the branch never grew past depth 1.
+TAIL_SUFFIX_DEFAULT = "new-user-turn"
+TAIL_SUFFIX_CANDIDATES: dict[str, dict] = {
+    "meta-instruction": {
+        "text": ("\nContinue the numbered integer list here, one integer per line, "
+                 "and do not stop early:\n"),
+        "why": "the task10/task11 wording, kept as the measured baseline (relative depth 1 on hardware): an "
+               "explicit instruction appended inside the assistant turn, which the model treated as a finished "
+               "answer and terminated.",
+    },
+    "open-list-primer": {
+        "text": "\n5\n",
+        "why": "a non-terminal assistant primer in the model's own established format (bare integers, one per "
+               "line): the turn is mid-list and incomplete, so the next token continues the list rather than "
+               "closing the turn. Semantically sound because the seed's instruction is an open-ended list.",
+    },
+    "assistant-lead-in": {
+        "text": "\nHere are the next integers in the same format:\n",
+        "why": "an assistant lead-in that promises content and therefore leaves the answer unfinished; it stays "
+               "in the assistant voice, like the primer, but without committing to a specific next number.",
+    },
+    "open-fence": {
+        "text": "\n```text\n",
+        "why": "an unterminated structure: after an opened fence the model must emit at least the following "
+               "lines before it can close the block, which cannot be done in one token.",
+    },
+    "new-user-turn": {
+        "text": ("\n<|im_end|>\n<|im_start|>user\nContinue the list with the next six integers, one per "
+                 "line, and do not stop early.\n<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+        "why": "closes the shared assistant turn and appends a fresh user request plus a complete assistant "
+               "header, so the branch begins a new answering turn instead of trying to finish the previous one. "
+               "The shared prefix and its partial-page offset are unchanged; only the appended prompt text "
+               "differs. This is the strongest candidate because it re-arms the answer phase.",
+        "parse_special": True,
+    },
+}
+# Two different continuations of the same shared prefix for the default smoke's partial-page stages.
+TAIL_SUFFIX_BRANCH_PAIR = ("new-user-turn", "open-list-primer")
+
+
+def tail_suffix_ids(tok, name: str = TAIL_SUFFIX_DEFAULT) -> tuple[int, ...]:
+    """Encode one branch-continuation candidate; fail closed for an unknown or empty one."""
+    require(name in TAIL_SUFFIX_CANDIDATES,
+            f"unknown tail-suffix candidate {name!r}; choose one of {sorted(TAIL_SUFFIX_CANDIDATES)}")
+    candidate = TAIL_SUFFIX_CANDIDATES[name]
+    ids = tuple(tok.encode(candidate["text"], parse_special=bool(candidate.get("parse_special", False))))
+    require(ids, f"tail-suffix candidate {name!r} tokenized to an empty prompt segment")
+    return ids
+
+
+def apply_multi_token_coverage(evidence: dict, depths) -> str:
+    """Mark multi-token divergent-suffix restore RUN only when EVERY branch grew to >= 2 tokens.
+
+    Depth is always recorded, including the honest negative case: a branch that returns to
+    EOS after <= 1 token leaves the coverage UNTESTED and is never credited from fixture
+    wording or from an offline fake.
+    """
+    depths = list(depths)
+    if depths and all(depth >= 2 for depth in depths):
+        status = f"RUN (every partial-tail branch generated >= 2 tokens; depths {depths})"
+    else:
+        status = ("UNTESTED (divergent branch returned to EOS after <= 1 token; shared-prefix reuse and "
+                  f"target parity are still enforced; depths {depths})")
+    evidence.setdefault("coverage", {})["multi_token_divergent_suffix_restore"] = status
+    return status
+
+
+def partial_tail_branches(tok, shared, offset_cells: int, context: int, *, cap: int = 16):
+    """Divergent branch prompts for the partial-page stages: the shared cached prefix plus one
+    catalog continuation each. The prefix and its exact partial-page offset are therefore
+    identical across branches and only the appended prompt text differs."""
+    require(shared and len(shared) % PAGE_CELLS == offset_cells,
+            "partial-page branch fixture requires a shared prefix ending at the requested offset")
+    branches = tuple(list(shared) + list(tail_suffix_ids(tok, name)) for name in TAIL_SUFFIX_BRANCH_PAIR)
+    require(all(len(prompt) + cap + 8 <= context for prompt in branches),
+            "partial-tail divergent branch plus output guard exceeds context")
+    return branches
+
+
 def parse_line(raw):
     """Strict known control records; preserve other native stdout as OTHER."""
     fields = raw.split()
@@ -799,8 +885,7 @@ def run_suite(suite, tok):
         require(len(seed_ref.tokens) == 8, 'seed ended early; cannot establish partial-page reuse')
         shared = seed + seed_ref.tokens[:-1]
         require(len(shared) % PAGE_CELLS == offset, 'incorrect partial-page fixture')
-        branches = [shared + tok.encode(text) for text in ('\nContinue with even numbers:\n',
-                                                          '\nContinue with odd numbers:\n')]
+        branches = partial_tail_branches(tok, shared, offset, context)
         require(all(len(p) + 16 + 8 <= context for p in branches),
                 'partial-tail divergent branch plus output guard exceeds context')
         refs = [suite.solo(f'solo-branch-{offset}-{i}', p, 16) for i, p in enumerate(branches)]
@@ -809,7 +894,8 @@ def run_suite(suite, tok):
         parity(seed_req, seed_ref)
         require(seed_req.badm['continues'], 'seed never populated its slot')
         stage['passed'] = True
-        for i, (prompt, ref) in enumerate(zip(branches, refs)):
+        depths = []
+        for i, (name, prompt, ref) in enumerate(zip(TAIL_SUFFIX_BRANCH_PAIR, branches, refs)):
             req = Request(f'branch-{offset}-{i}', prompt, 16, 1 - i)
             stage = suite.run(f'partial-page-{offset}-branch-{i}', [req])
             parity(req, ref)
@@ -817,8 +903,14 @@ def run_suite(suite, tok):
                     req.admission_done['reused'] >= len(shared), 'partial-page prefix was not actually reused')
             stage['shared_prefix_cells'] = len(shared)
             stage['partial_page_offset'] = offset
+            stage['tail_suffix_candidate'] = name
+            stage['tail_suffix_why'] = TAIL_SUFFIX_CANDIDATES[name]['why']
+            # Recorded, never inferred: the branch depth is what the branch reference actually generated.
+            stage['divergence_depth'] = len(ref.tokens)
+            depths.append(len(ref.tokens))
             stage['passed'] = True
             suite.save()
+        apply_multi_token_coverage(suite.evidence, depths)
 
 
 def main(argv=None):
