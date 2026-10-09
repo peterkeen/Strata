@@ -314,6 +314,8 @@ int64_t qsa_kv_elastic_shrink(int64_t cells, const std::function<void(VmmChunk)>
 /// Physical bytes the elastic pools hold, and what all of them would at the full context.
 uint64_t qsa_kv_elastic_mapped_bytes();
 uint64_t qsa_kv_elastic_full_bytes();
+/// Every mapped chunk of the elastic pools as (handle, pool << 32 | chunk): a debug check for chunks mapped twice.
+std::vector<std::pair<VmmChunk, int64_t>> qsa_kv_elastic_handles();
 int64_t qsa_kv_resident();
 /// Opt-in shared streaming allocation for MAIN (ring_cells == 0) mode-1 owners. Set before sizing/init;
 /// default false preserves legacy allocation. Each layer owns one authoritative pinned pool and one global
@@ -328,7 +330,7 @@ uint64_t qsa_kv_host_bytes();
 /// Plan v0.3 P7: store K/V as INT8 with FP16 scales per 64 values (half the VRAM of FP16). Set before sizing and
 /// initializing the session; default off until gate G-C accepts it.
 void qsa_set_kv_int8(bool enabled);
-/// INT8 K/V through the Hadamard rotation (off by default: STRATA_KV_ROT=1)
+/// INT8 K/V through the Hadamard rotation (on by default in this fork; STRATA_KV_ROT=0: off)
 void qsa_set_kv_int8_rotate(bool enabled);
 bool qsa_kv_int8();
 /// PR #21: store K/V as Q4_0 after a Hadamard rotation (`--kv q4_0`): 576 B per cell, vs 1,056 in INT8.

@@ -1851,6 +1851,116 @@ bool FileExpertSource::map_view(std::string& why) {
 #endif
 }
 
+bool FileExpertSource::begin_startup_unbuffered(std::string& why) {
+#if defined(_WIN32)
+    if (const char* v = std::getenv("STRATA_STARTUP_UNBUFFERED"); v != nullptr && v[0] != '\0' && std::atoi(v) == 0) {
+        why = "STRATA_STARTUP_UNBUFFERED=0";
+        return false;
+    }
+    if (base_ == nullptr || unmapped_ || startup_ub_ || !role_ptr_.empty() || !maps_.empty() || paths_.size() != 1 ||
+        layer_blob_bytes_.empty()) {
+        why = "experts.bin only";
+        return false;
+    }
+    if (!direct_.empty()) { why = "the file tier reads unbuffered already"; return false; }
+    const auto t0 = std::chrono::steady_clock::now();
+    const uint8_t* m = mapped_blob(0, 0);   // the first blob as the mapping reads it, for the check below
+    if (m == nullptr) { why = "the first blob is not mapped"; return false; }
+    const std::vector<uint8_t> ref(m, m + (size_t) layer_blob_bytes_[0]);
+    // NTFS runs the unbuffered reads of a file one at a time while it is mapped or open buffered (drop_mapping).  The
+    // first unbuffered open with no buffered handle left purges the file's cached pages: ~3.5 s after a mapped start had
+    // left ~60 GiB of experts.bin on the standby list, next to nothing after an unbuffered one.  Kept: with a buffered
+    // handle held open instead, the file's data section stays and the reads serialize (the fill 4.1 s against 2.8)
+    UnmapViewOfFile((LPCVOID) base_);
+    unmapped_ = true;
+    if (mapping_ != nullptr) CloseHandle((HANDLE) mapping_);
+    mapping_ = nullptr;
+    if (file_ != nullptr) CloseHandle((HANDLE) file_);
+    file_ = nullptr;
+    std::string fail;
+    if (open_direct(fail)) {
+        // the first blob both ways: a drive that does not read it unbuffered keeps the mapped copy
+        std::vector<uint8_t> probe(ref.size());
+        const Fill f{0, 0, 0, probe.data()};
+        if (read_direct(&f, 1) && std::memcmp(probe.data(), ref.data(), ref.size()) == 0) {
+            startup_ub_ = true;
+            startup_blob_bytes_ = file_blob_bytes_.load();
+            startup_us_ = file_us_.load();
+            char note[96];
+            std::snprintf(note, sizeof note, "the view closed until the RAM copy is built; %.0f ms",
+                          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+            why = note;
+            return true;
+        }
+        fail = "an unbuffered read of the first blob failed or differed from the mapping";
+        for (void* d : direct_) close_direct(d);
+        direct_.clear();
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        stage_blob_ = 0;
+    }
+    std::string again;
+    why = map_view(again) ? fail : fail + "; " + again;
+    return false;
+#else
+    why = "Windows only";
+    return false;
+#endif
+}
+
+bool FileExpertSource::end_startup_unbuffered(std::string& why) {
+    if (!startup_ub_) return true;
+    startup_ub_ = false;
+    // the view first: closing the unbuffered handles beside a buffered one purges nothing
+    if (!map_view(why)) {
+        why += ": the file tier reads it unbuffered";
+        return false;   // as after drop_mapping: every read goes through read_direct
+    }
+    for (void* d : direct_) close_direct(d);
+    direct_.clear();
+    {   // the mapped tier hands out the mapping: the startup's stage buffers go
+        std::lock_guard<std::mutex> lk(stage_mu_);
+        stage_buf_.clear();
+        stage_key_.clear();
+        stage_epoch_.clear();
+        stage_used_.clear();
+        stage_busy_.clear();
+        stage_pf_.clear();
+        stage_of_.clear();
+        stage_blob_ = 0;
+    }
+    file_blob_bytes_.store(startup_blob_bytes_);
+    file_us_.store(startup_us_);
+    return true;
+}
+
+bool FileExpertSource::map_view(std::string& why) {
+#if defined(_WIN32)
+    // open's mapping of experts.bin, again
+    const std::string& path = paths_.front();
+    const int wide = MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
+    std::vector<wchar_t> wpath((size_t) (wide > 0 ? wide : 1), L'\0');
+    if (wide > 0) MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wide);
+    HANDLE f = CreateFileW(wpath.data(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                           nullptr);
+    HANDLE m = f != INVALID_HANDLE_VALUE ? CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+    void* view = m != nullptr ? MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : nullptr;
+    if (view == nullptr) {
+        why = "experts.bin could not be mapped again (error " + std::to_string((unsigned long long) GetLastError()) + ")";
+        if (m != nullptr) CloseHandle(m);
+        if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+        return false;
+    }
+    file_ = f;
+    mapping_ = m;
+    base_ = (const uint8_t*) view;
+    unmapped_ = false;
+    return true;
+#else
+    why = "Windows only";
+    return false;
+#endif
+}
+
 bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
 #if defined(_WIN32)
     // NTFS runs the unbuffered reads of a file one at a time while the file is mapped or cached anywhere (the engine
@@ -2207,7 +2317,11 @@ void RouterLookahead::submit(int64_t layer, const float* x, int64_t n_tok, const
         n_tok_ = std::min<int64_t>(n_tok, 8);
         std::memcpy(x_.data(), x, (size_t) (n_tok_ * n_embd_) * sizeof(float));
         layer_ = layer + 1;
-        host_res_ = host_res;
+        has_res_ = host_res != nullptr;
+        if (has_res_) {   // the rows of layer + 1 .. + depth, as they are now: the table changes while this runs
+            const int64_t l1 = std::min<int64_t>(layer_ + depth_, (int64_t) routers_.size());
+            res_.assign(host_res + (size_t) (layer_ * n_expert_), host_res + (size_t) (l1 * n_expert_));
+        }
         sub_gen_ = gen_.load(std::memory_order_relaxed);
         pending_ = true;
     }
@@ -2315,7 +2429,7 @@ void RouterLookahead::run() {
     std::vector<int64_t> want;
     for (;;) {
         int64_t layer, nt;
-        const int32_t* host_res;
+        const int32_t* host_res;   // res_: layer_'s row first (submit leaves it alone while busy_)
         ForesightSwap* fs;
         uint64_t sgen;
         {
@@ -2326,7 +2440,7 @@ void RouterLookahead::run() {
             busy_ = true;
             layer = layer_;
             nt = n_tok_;
-            host_res = host_res_;
+            host_res = has_res_ ? res_.data() : nullptr;
             fs = fs_;
             sgen = sub_gen_;
         }
@@ -2375,7 +2489,7 @@ void RouterLookahead::run() {
                               [&](int32_t a, int32_t b) { return lt[(size_t) a] > lt[(size_t) b]; });
             for (int j = 0; j < kmax; ++j) {
                 const int64_t e = order[(size_t) j];
-                if (host_res != nullptr && host_res[(size_t) (layer * n_expert_ + e)] >= 0) continue;   // on the GPU
+                if (host_res != nullptr && host_res[(size_t) ((layer - layer0) * n_expert_ + e)] >= 0) continue;   // on the GPU
                 if (j < k_ && std::find(want.begin(), want.end(), e) == want.end()) want.push_back(e);
                 if (stats_on_ && dj == 0)
                     for (int s = 0; s < 3; ++s)
@@ -2392,7 +2506,7 @@ void RouterLookahead::run() {
                                   [&](int32_t a, int32_t b) { return lt[(size_t) a] > lt[(size_t) b]; });
                 for (int j = 0; j < k_; ++j) {
                     const int32_t e = order[(size_t) j];
-                    if (host_res != nullptr && host_res[(size_t) (layer * n_expert_ + e)] >= 0) continue;
+                    if (host_res != nullptr && host_res[(size_t) ((layer - layer0) * n_expert_ + e)] >= 0) continue;
                     auto it = std::find_if(votes.begin(), votes.end(), [&](const auto& v) { return v.second == e; });
                     if (it == votes.end()) votes.emplace_back(64 - j, e);
                     else it->first += 64 - j;
@@ -3474,6 +3588,12 @@ bool FileExpertSource::pcie_layer(int64_t layer) const {
 
 // ================================ THE ADAPTER ================================
 
+bool ExpertDispatch::fetch_can(int64_t layer) const {
+    return fetch_admit > 0 && res_mut != nullptr && !usage.empty() && plan != nullptr && plan->pcie_mode == 2 &&
+           plan->dst2 != nullptr && peer == nullptr && remote_count == 0 && (pcie_num > 0 || pcie_model.on) &&
+           src != nullptr && src->pcie_layer(layer);
+}
+
 void expert_pool_dispatch(void* user, const float* x_f, const int32_t* ids, const float* weights, int64_t n_embd,
                           int64_t k, float* out) {
     (void) weights;   // clause 2: `moe_combine` applies it on the device.  Not an oversight.
@@ -3711,12 +3831,27 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 ++d.tail_experts;
             }
         }
-        const bool pcie_ok = d.pcie_num > 0 && d.src->pcie_layer(d.layers);
-        const int m = pcie_ok ? (nmiss * d.pcie_num) >> 8 : 0;
+        const bool pcie_ok = (d.pcie_num > 0 || d.pcie_model.on) && d.src->pcie_layer(d.layers);
+        const int m = pcie_ok ? d.pcie_model.pick(nmiss, (nmiss * d.pcie_num) >> 8) : 0;
         int miss_rank = 0, groups = 0, entries = 0, fetches = 0;
         GpuPlanSink& P = *d.plan;
         const uint8_t* dma_src[64];
         int64_t pcie_i0[64];
+        // STRATA_ADAPT_FETCH: the share is the layer's most-routed misses, and the ones the tier would swap in are copied
+        // into a slot as they are fetched (ExpertDispatch::fetch_admit)
+        const bool fetch_on = m > 0 && d.fetch_can(d.layers);
+        const float* use = d.usage.empty() ? nullptr : d.usage.data() + (size_t) d.layers * (size_t) d.n_expert;
+        bool pick[kMaxWindowEntries];
+        if (fetch_on) {
+            int mq[kMaxWindowEntries], nm = 0;
+            for (int q = 0; q < nd; ++q) {
+                pick[q] = false;
+                const int32_t e = ids[distinct[q]];
+                if (e >= 0 && e < d.n_expert && d.host_res[(size_t) d.layers * (size_t) d.n_expert + (size_t) e] < 0) mq[nm++] = q;
+            }
+            std::stable_sort(mq, mq + nm, [&](int a, int b) { return use[ids[distinct[a]]] > use[ids[distinct[b]]]; });
+            for (int j = 0; j < m && j < nm; ++j) pick[mq[j]] = true;
+        }
         for (int q = 0; q < nd; ++q) {
             const int64_t i0 = distinct[q];
             const int32_t e = ids[i0];
@@ -3741,7 +3876,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     kd = 0;                        // Foresight: a landed swap-space slot holds it - a GPU group like a hit
                 } else {
                     if (d.fs != nullptr) d.fs->note_miss(d.src, d.layers, e);
-                    if (miss_rank >= nmiss - m && fetches < P.staging_cap && fetches < 64) {
+                    if ((fetch_on ? pick[q] : miss_rank >= nmiss - m) && fetches < P.staging_cap && fetches < 64) {
                         const uint8_t* src = d.src->pinned(d.layers, e) ? d.src->blob(d.layers, e) : nullptr;
                         if (src != nullptr) {
                             kd = 1;
@@ -3780,6 +3915,49 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                     ++entries;
                 }
             ++d.pcie_experts;
+        }
+        if (d.fetch_admit > 0 && P.dst2 != nullptr)
+            for (int q = 0; q < fetches; ++q) P.dst2[q] = 0;   // staging
+        if (fetch_on && fetches > 0 && (size_t) d.layers < d.fetch_avail.size()) d.fetch_avail[(size_t) d.layers] = 1;
+        if (fetch_on && fetches > 0) {
+            // the fetched experts routed enough, most-routed first, each against the next least-routed resident expert
+            // of the layer that the window does not route (its slot is read by nothing until the next window)
+            const size_t lb = (size_t) d.layers * (size_t) d.n_expert;
+            if (d.fetch_mark.size() != (size_t) d.n_expert) d.fetch_mark.assign((size_t) d.n_expert, 0);
+            for (int64_t i = 0; i < n; ++i)
+                if (ids[i] >= 0 && ids[i] < d.n_expert) d.fetch_mark[(size_t) ids[i]] = 1;
+            int cq[64], nc = 0;
+            for (int q = 0; q < fetches; ++q) {
+                const int32_t e = ids[pcie_i0[q]];
+                if (use[e] >= d.fetch_min && (d.in_flight.empty() || d.in_flight[lb + (size_t) e] == 0)) cq[nc++] = q;
+            }
+            std::stable_sort(cq, cq + nc, [&](int a, int b) { return use[ids[pcie_i0[a]]] > use[ids[pcie_i0[b]]]; });
+            int32_t vic[64];
+            int nv = 0;
+            for (int32_t e = 0; e < (int32_t) d.n_expert && nc > 0; ++e) {
+                if (d.res_mut[lb + (size_t) e] < 0 || d.fetch_mark[(size_t) e] != 0) continue;
+                if (nv < nc) vic[nv++] = e;
+                else if (use[e] < use[vic[nv - 1]]) vic[nv - 1] = e;
+                else continue;
+                for (int j = nv - 1; j > 0 && use[vic[j]] < use[vic[j - 1]]; --j) std::swap(vic[j], vic[j - 1]);
+            }
+            for (int j = 0; j < nc && j < nv; ++j) {
+                const int q = cq[j];
+                const int32_t e = ids[pcie_i0[q]], v = vic[j];
+                if (use[e] < use[v] + d.fetch_margin) break;
+                const int32_t slot = d.res_mut[lb + (size_t) v];
+                P.dst2[q] = (unsigned long long) (d.cache_base + (d.cache_slot_off ? (size_t) d.cache_slot_off[slot]
+                                                                                   : (size_t) slot * (size_t) d.cache_blob));
+                d.res_mut[lb + (size_t) v] = -1;   // kNotResident
+                d.res_mut[lb + (size_t) e] = slot;
+                ++d.fetch_admitted;
+                d.res_dirty = true;
+                d.res_dirty_idx.push_back((int32_t) (lb + (size_t) v));
+                d.res_dirty_idx.push_back((int32_t) (lb + (size_t) e));
+                if (d.fetch_log_on) d.fetch_log.emplace_back((int64_t) (lb + (size_t) e), slot);
+            }
+            for (int64_t i = 0; i < n; ++i)
+                if (ids[i] >= 0 && ids[i] < d.n_expert) d.fetch_mark[(size_t) ids[i]] = 0;
         }
         P.start2[fetches] = entries;
         P.counts[0] = groups;
@@ -3824,7 +4002,14 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const bool gpu_zeroes_hits = (d.plan != nullptr && n <= kMaxWindowEntries && n <= d.plan->cap && dec_batch && !device_plan);
     bool any_cpu = false;
     for (int64_t i = 0; i < n; ++i)
-        if (kind[i] == -1) { any_cpu = true; break; }   // -2: skipped (STRATA_ROUTE_TAIL_SKIP), no work
+        if (kind[i] == -1) { any_cpu = true; break; }
+    if (d.dres_check != nullptr && any_cpu) {   // STRATA_ADAPT_FETCH_CHECKRES
+        bool published = false;
+        for (int64_t i = 0; i < n && !published; ++i)
+            published = ids[i] < 0 || ids[i] >= d.n_expert ||
+                        d.dres_check[(size_t) d.layers * (size_t) d.n_expert + (size_t) ids[i]] < 0;
+        if (!published) ++d.stale_x;
+    }
     const auto c1 = std::chrono::steady_clock::now();
     if (any_cpu) {
         // #578 --remote-expert-opt: a token whose experts all run on a GPU (CUDA0 or a helper) needs no CPU activation
@@ -3903,6 +4088,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
             ++d.multi_entries;
         }
     const auto c3 = std::chrono::steady_clock::now();
+    if (d.plan != nullptr) d.plan->cpu_jobs = njobs;
     pt("run", njobs);
     if (njobs > 0) {
         if (native) d.pool->run_split_multi_native(lay.fmt[(size_t) d.layers], d.jobs_multi.data(), njobs);

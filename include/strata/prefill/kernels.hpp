@@ -26,9 +26,11 @@ void gr_mix_r(const float* R, const float* rs, const float* w_norm, const float*
 /// F-2: gr_write, then gr_norm_rs of the next half (its norm weights) over the rows just written - the same bits as
 /// the two calls, without reading R back.
 /// S23 (opt-in STRATA_HC_UPMIX=1): the up projection (lo16 x w_up^T, BF16, FP32 accumulate) with gr_mix_r as its
-/// epilogue - `gated` is never written.  False (nothing launched) off gfx11.
+/// epilogue - `gated` is never written.  gfx11 (no BF16 low image) and, in the fork, CUDA sm_80+ (mma.sync, with
+/// mixed16_lo).  False (nothing launched) elsewhere.
 bool gr_upmix(const uint16_t* lo16, const uint16_t* w_up, const float* R, const float* rs, const float* w_norm,
-              float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream);
+              float* mixed, uint16_t* mixed16, uint16_t* mixed_h, int64_t T, void* stream,
+              uint16_t* mixed16_lo = nullptr);
 void gr_write_norm_rs(float* R, const float* bo, const float* inj, int64_t inj_ld, const float* w_norm_next, float eps,
                       float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr,
                       int64_t ldx = 0);
@@ -87,7 +89,7 @@ void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream);
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
 /// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream);
+                 int64_t T, void* stream, const float* row_sd = nullptr);
 /// --peer-device's prompt share as sums: bo[t, :] = (sum over the k with slot[t, k] < rows_local of w[t, k] *
 /// D[slot[t, k], :], in k order) + peer[t, :] + shared[t, :] * sigmoid(sg[t]).  `peer` (the peer's per-token sums)
 /// may be mapped host memory.
@@ -109,6 +111,13 @@ void moe_combine_peer16(const float* D, const int32_t* slot, const float* w, con
 void sums_to_f16(const float* x, uint16_t* y, int64_t n, void* stream);
 /// dst[0, n) = FP32 of the FP16 src[0, n) (n a multiple of 8, 16-byte aligned; src may be mapped host memory)
 void f16_to_f32_wide(float* dst, const uint16_t* src, int64_t n, void* stream);
+/// moe_combine, then gr_write_norm_rs with its bo, in one kernel that never stores bo: the same R, rs, xn16 and
+/// xn16_lo.  False (nothing launched) where moe_combine would not take its vectorized kernel; the caller then runs
+/// the two.
+bool moe_combine_write_norm_rs(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg,
+                               const float* row_sd, float* R, const float* inj, int64_t inj_ld, const float* w_norm_next,
+                               float eps, float* rs, uint16_t* xn16, int64_t T, void* stream, uint16_t* xn16_lo = nullptr,
+                               int64_t ldx = 0);
 
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).
