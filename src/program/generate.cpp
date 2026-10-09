@@ -58,6 +58,7 @@
 #include "strata/core/verify.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/batch_draft_coherence.hpp"
+#include "strata/core/batch_mtp_policy.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
 #include "strata/program/logits_selection.hpp"
@@ -1986,11 +1987,20 @@ int main(int argc, char** argv) {
     const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
     const bool batch_mtp_asked = o.batch_mtp || (batch_mtp_env != nullptr &&
                                                 batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0');
-    if (o.kv_unified && batch_mtp_asked) {
-        std::fprintf(stderr, "strata generate: --kv-unified does not support --batch-mtp/STRATA_BATCH_MTP=1 "
-                             "(slot draft state is private); use ordinary batch slots\n");
+    const char* batch_mtp_test_schedule = std::getenv("STRATA_BATCH_MTP_TEST_PROPOSALS");
+    const bool batch_mtp_test_requested = batch_mtp_test_schedule != nullptr && batch_mtp_test_schedule[0] != '\0';
+#ifndef STRATA_ENABLE_BATCH_MTP_TEST_HOOK
+    if (batch_mtp_test_requested) {
+        std::fprintf(stderr, "strata generate: STRATA_BATCH_MTP_TEST_PROPOSALS requires a build with "
+                             "STRATA_ENABLE_BATCH_MTP_TEST_HOOK=ON\n");
         return 2;
     }
+#else
+    if (batch_mtp_test_requested && (!o.kv_unified || !batch_mtp_asked)) {
+        std::fprintf(stderr, "strata generate: the batch-MTP test hook requires --kv-unified and --batch-mtp\n");
+        return 2;
+    }
+#endif
 #if defined(STRATA_USE_HIP)
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
         // any engine code reads its switches (they are read at first use), and the user's own settings are kept
@@ -4072,6 +4082,18 @@ int main(int argc, char** argv) {
     const strata::core::WeightRef* wo = wt.find("output.weight");
     if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
     const int64_t n_vocab = wo->ne1;
+#ifdef STRATA_ENABLE_BATCH_MTP_TEST_HOOK
+    strata::core::BatchMtpTestProposals batch_mtp_test_proposals;
+    if (batch_mtp_test_requested) {
+        if (!batch_mtp || !o.kv_unified || !strata::core::parse_batch_mtp_test_proposals(
+                batch_mtp_test_schedule, o.batch, n_vocab, batch_mtp_test_proposals, err)) {
+            std::fprintf(stderr, "strata generate: invalid batch-MTP test proposal schedule: %s\n",
+                         err.empty() ? "hook requires supported unified batch-MTP settings" : err.c_str());
+            return 2;
+        }
+        std::fprintf(stderr, "strata batch_mtp_test_hook enabled: explicit proposal substitutions are test-only\n");
+    }
+#endif
     strata::core::NativeHead native_head;
     if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
         const auto head_t0 = std::chrono::steady_clock::now();
@@ -8338,12 +8360,19 @@ int main(int argc, char** argv) {
             return true;
         };
         // ---- --batch: the slots of the batch windows
+        struct BatchMtpStats {
+            int64_t windows = 0, offered = 0, accepted = 0, rejected = 0, discarded = 0;
+            int64_t fallback_attempts = 0, fallback_incoherent = 0, fallback_not_ready = 0;
+            int64_t fallback_limits = 0, fallback_capacity = 0, fallback_reserve = 0;
+            bool reported = false;
+        };
         struct BSlot {
             bool active = false, stop = false;
             int32_t x = 0;                 ///< the token the next window feeds (not yet in the slot's state)
             std::array<int32_t, strata::kernels::kVerifyMaxT> draft{}; ///< the slot's next MTP proposal
             bool draft_ready = false;
-            strata::core::BatchDraftCoherence draft_state; // private ring provenance; independent of proposal readiness
+            strata::core::BatchDraftCoherence draft_state; // committed target frontier; private ring may hold lookahead
+            BatchMtpStats mtp_stats;
             int64_t p = 0;                 ///< its position
             int64_t produced = 0, max_new = 0;
             Clock::time_point t0;
@@ -8373,6 +8402,20 @@ int main(int argc, char** argv) {
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
+        auto report_batch_mtp_stats = [&](int b) {
+            if (!batch_mtp || b < 0 || b >= int(bs.size())) return;
+            auto& s = bs[(size_t) b].mtp_stats;
+            if (s.reported) return;
+            std::fprintf(stderr, "strata batch_mtp_stats slot=%d windows=%lld offered=%lld accepted=%lld rejected=%lld "
+                                 "discarded=%lld fallback_attempts=%lld fallback_incoherent=%lld fallback_not_ready=%lld "
+                                 "fallback_limits=%lld fallback_capacity=%lld fallback_reserve=%lld\n",
+                         b, (long long) s.windows, (long long) s.offered, (long long) s.accepted,
+                         (long long) s.rejected, (long long) s.discarded, (long long) s.fallback_attempts,
+                         (long long) s.fallback_incoherent, (long long) s.fallback_not_ready,
+                         (long long) s.fallback_limits, (long long) s.fallback_capacity,
+                         (long long) s.fallback_reserve);
+            s.reported = true;
+        };
         using KvReserve = strata::core::SharedKvReserveResult;
         // -1: main is an idle, reclaimable cache; otherwise protect its known
         // prompt or the entire imminent verify write, including rejected rows.
@@ -8467,6 +8510,7 @@ int main(int argc, char** argv) {
             const bool picture = sl.img;
             if (!(keep ? unified_kv->truncate(size_t(b) + 1, int64_t(sl.ids.size()), err)
                        : unified_kv->release(size_t(b) + 1, err))) return false;
+            report_batch_mtp_stats(b);
             err.clear(); // a handled shortage must not poison an interleaved prefill
             if (keep) {
                 sl.active = false; sl.stop = false; sl.partial = false; sl.cached = true;
@@ -8511,6 +8555,9 @@ int main(int argc, char** argv) {
         // the session a request just left behind (its prompt) -> slot b's sessions, on every stage
         auto copy_to_slot = [&](int b, const std::vector<int32_t>& ids, std::string& e) -> bool {
             const int64_t upto = (int64_t) ids.size();
+            const bool exact_main_prefix = ids.size() == live.size() &&
+                std::equal(ids.begin(), ids.end(), live.begin());
+            const bool coherent_main_source = batch_mtp && main_draft_coherent && exact_main_prefix && live_imgs.empty();
             if (batch_mtp) {
                 bs[(size_t) b].draft_ready = false;
                 bs[(size_t) b].draft_state.invalidate();
@@ -8540,7 +8587,7 @@ int main(int argc, char** argv) {
                     if (batch_mtp) {
                         auto& slot = bs[(size_t) b];
                         if (strata::core::batch_draft_copy_to_slot(
-                                {main_draft_coherent, (int64_t) ids.size()}, upto, !live_imgs.empty())) {
+                                {main_draft_coherent, (int64_t) live.size()}, upto, !coherent_main_source)) {
                             strata::core::ConversationKv image;
                             if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
                                 !strata::core::conversation_kv_save(image, mtp.kv_state(), draft_geometry, upto, false, e) ||
@@ -8568,7 +8615,7 @@ int main(int argc, char** argv) {
                 if (cudaDeviceSynchronize() != cudaSuccess) { e = "batch admission: device sync failed"; return false; }
             }
             if (batch_mtp && strata::core::batch_draft_copy_to_slot(
-                    {main_draft_coherent, upto}, upto, !live_imgs.empty())) {
+                    {main_draft_coherent, (int64_t) live.size()}, upto, !coherent_main_source)) {
                 // Admission first builds the solo draft KV; copy it into the slot before drafting.
                 strata::core::ConversationKv image;
                 if (!mtp.idle(e) || !slot_mtp[(size_t) b]->idle(e) ||
@@ -8671,6 +8718,8 @@ int main(int argc, char** argv) {
             int64_t pos[strata::kernels::kVerifyMaxT] = {};
             int first[strata::kernels::kVerifyMaxT] = {}, active[strata::kernels::kVerifyMaxT] = {};
             bool speculative[strata::kernels::kVerifyMaxT] = {};
+            strata::core::BatchMtpFallback fallback[strata::kernels::kVerifyMaxT] = {};
+            strata::core::BatchMtpCommitChoice decision[strata::kernels::kVerifyMaxT] = {};
             static size_t next_slot = 0;
             // A coherent slot uses two rows; incoherent slots remain target-only.
             int A = 0;
@@ -8678,12 +8727,15 @@ int main(int argc, char** argv) {
                 const int b = (int) ((next_slot + offset) % bs.size());
                 if (bs[(size_t) b].active) {
                     auto& sl = bs[size_t(b)];
+                    if (unified_kv && sl.stop) {
+                        if (!finish_shared_slot(b, "cancel")) { std::printf("ERR %s\n", err.c_str()); return false; }
+                        continue;
+                    }
+                    const int64_t limit = sl.p + std::min<int64_t>(sl.max_new - sl.produced, o.max_context - sl.p);
+                    const bool coherent = batch_mtp && sl.draft_state.matches((int64_t) sl.ids.size());
+                    const bool ready = batch_mtp && sl.draft_ready;
+                    const bool room_for_proposal = S + 2 <= strata::kernels::kVerifyMaxT;
                     if (unified_kv) {
-                        if (sl.stop) {
-                            if (!finish_shared_slot(b, "cancel")) { std::printf("ERR %s\n", err.c_str()); return false; }
-                            continue;
-                        }
-                        const int64_t limit = sl.p + std::min<int64_t>(sl.max_new - sl.produced, o.max_context - sl.p);
                         auto r = reserve_shared(size_t(b) + 1, sl.p, sl.p + 1, limit);
                         if (r == KvReserve::shortage) {
                             if (!reclaim_shared()) { std::printf("ERR %s\n", err.c_str()); return false; }
@@ -8695,12 +8747,20 @@ int main(int argc, char** argv) {
                             continue;
                         }
                     }
-                    const bool offer = batch_mtp && sl.draft_ready &&
-                                       sl.draft_state.matches((int64_t) sl.ids.size());
-                    if (offer && S + 2 > strata::kernels::kVerifyMaxT) continue;
+                    const auto window = strata::core::batch_mtp_choose_window(
+                        coherent, ready, sl.produced, sl.max_new, sl.p, o.max_context, unified_kv != nullptr,
+                        room_for_proposal, [&](int64_t required_end) {
+                            return reserve_shared(size_t(b) + 1, sl.p, required_end, limit);
+                        });
+                    if (window.decision == strata::core::BatchMtpDecision::fatal) {
+                        std::printf("ERR %s\n", err.c_str()); return false;
+                    }
+                    if (window.fallback == strata::core::BatchMtpFallback::reservation) err.clear();
+                    const bool offer = batch_mtp && window.decision == strata::core::BatchMtpDecision::speculative;
                     first[A] = S;
                     active[A] = b;
                     speculative[A] = offer;
+                    fallback[A] = window.fallback;
                     ++A;
                     rows[S] = b;
                     tok[S] = bs[(size_t) b].x;
@@ -8709,6 +8769,13 @@ int main(int argc, char** argv) {
                     if (offer) {
                         rows[S] = b;
                         tok[S] = bs[(size_t) b].draft[0];
+#ifdef STRATA_ENABLE_BATCH_MTP_TEST_HOOK
+                        if (batch_mtp_test_requested) {
+                            const auto forced = batch_mtp_test_proposals.find(
+                                {b, sl.mtp_stats.offered + 1});
+                            if (forced != batch_mtp_test_proposals.end()) tok[S] = forced->second;
+                        }
+#endif
                         pos[S] = bs[(size_t) b].p + 1;
                         ++S;
                     }
@@ -8733,18 +8800,43 @@ int main(int argc, char** argv) {
                 return false;
             }
             const Clock::time_point w1 = Clock::now();
-            // Accept the proposal only when the target picked it and there is room to emit both tokens.
+            // Choose the committed prefix from the actual verifier result; a rejected proposal row
+            // was still target-written and reserved, but never enters recurrent/PLE commit state.
             std::vector<int> keep(bs.size(), 0);
             for (int a = 0; a < A; ++a) {
                 const int b = active[a], i = first[a];
                 const BSlot& sl = bs[(size_t) b];
                 const bool eos = std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) outb[i]) != o.eos_ids.end();
-                keep[b] = speculative[a] && outb[i] == tok[i + 1] && !eos && !sl.stop &&
-                          sl.produced + 2 <= sl.max_new && sl.p + 3 <= o.max_context ? 2 : 1;
+                decision[a] = strata::core::batch_mtp_commit_choice(
+                    speculative[a], outb[i], speculative[a] ? tok[i + 1] : -1, eos, sl.stop,
+                    sl.produced, sl.max_new, sl.p, o.max_context);
+                keep[b] = decision[a].keep;
             }
             if (!(batch_mtp ? ver.commit_slot_prefixes(keep.data(), err) : ver.commit_slots(err))) {
                 std::printf("ERR %s\n", err.c_str());
                 return false;
+            }
+            if (batch_mtp) for (int a = 0; a < A; ++a) {
+                auto& stats = bs[(size_t) active[a]].mtp_stats;
+                ++stats.windows;
+                if (speculative[a]) {
+                    ++stats.offered;
+                    switch (decision[a].outcome) {
+                        case strata::core::BatchMtpOutcome::accepted: ++stats.accepted; break;
+                        case strata::core::BatchMtpOutcome::rejected: ++stats.rejected; break;
+                        case strata::core::BatchMtpOutcome::discarded: ++stats.discarded; break;
+                    }
+                } else {
+                    ++stats.fallback_attempts;
+                    switch (fallback[a]) {
+                        case strata::core::BatchMtpFallback::incoherent: ++stats.fallback_incoherent; break;
+                        case strata::core::BatchMtpFallback::not_ready: ++stats.fallback_not_ready; break;
+                        case strata::core::BatchMtpFallback::limits: ++stats.fallback_limits; break;
+                        case strata::core::BatchMtpFallback::capacity: ++stats.fallback_capacity; break;
+                        case strata::core::BatchMtpFallback::reservation: ++stats.fallback_reserve; break;
+                        case strata::core::BatchMtpFallback::none: break;
+                    }
+                }
             }
             const Clock::time_point w2 = Clock::now();
             auto msd = [](Clock::time_point a0, Clock::time_point b0) { return std::chrono::duration<double, std::milli>(b0 - a0).count(); };
@@ -8778,6 +8870,7 @@ int main(int argc, char** argv) {
                                 sl.draft_ready = false; sl.draft_state.invalidate();
                             }
                         }
+                        report_batch_mtp_stats(b);
                         std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms);
                         break;
                     }
@@ -10321,7 +10414,9 @@ int main(int argc, char** argv) {
                         std::vector<int32_t> pre(ids.begin(), ids.begin() + q);
                         if (can && copy_to_slot(ys, pre, ye)) {
                             BSlot& sl = bs[(size_t) ys];
+                            const bool draft_copied = sl.draft_state.matches((int64_t) pre.size());
                             sl = BSlot{};
+                            if (draft_copied) sl.draft_state.establish((int64_t) pre.size());
                             sl.ids = std::move(pre);
                             sl.cached = true;
                             sl.partial = true;
