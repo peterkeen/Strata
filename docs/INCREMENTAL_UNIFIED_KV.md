@@ -867,8 +867,12 @@ window is at least the context on a small pool, so `-1` applies and the draft K/
 is fully resident; a bounded ring needs an explicit smaller window. Measured
 (RTX 5060 Ti, `--max-context 4096`, `--mtp-window 128`, `max_t = 2`):
 128 + 8 + 64 = **200 cells** requested and 200 cells allocated, with 1536/1540-cell
-prompts and 2048 consumed cells - well beyond the 200-cell ring, so the run
-exercised ring wrap rather than the resident fallback. If the ring cannot get
+prompts and 2048 consumed cells. That the run stayed on the bounded ring is
+**geometry and inference, not a byte-level witness**: the helper's size was 200
+cells, both histories were far longer, no resident-fallback warning appeared, and
+the slots offered real proposals. The diagnostic contract never exposes the ring's
+internal indices, so byte-level ring internals remain unmeasured and need the CUDA
+parity tests (the gate's own evidence note says the same). If the ring cannot get
 pinned RAM the native warns and keeps the draft K/V in VRAM.
 
 ### Main versus per-slot drafters, and what they cost
@@ -905,7 +909,11 @@ ordinary reclaim-then-retry path. Only then does the production policy helper
 exact two-row extent `[p, p+2)`; a shortage becomes
 `BatchMtpFallback::reservation` - a **target-only window with no reclaim retry and
 no pressure escalation**. Only the mandatory row's shortage after its reclaim retry
-reaches `finish_shared_slot(..., "pressure")` and parks an owner.
+reaches `finish_shared_slot(..., "pressure")` and parks an owner. The guarantee is
+about that *shortage* path only: a **successful** optional reservation is an
+ordinary two-row write, so it maps shared pages and can contribute to a later
+mandatory shortage (in this slot or another) which the mandatory path may then
+reclaim or park for.
 
 So a per-slot `fallback_reserve` counter is a real optional-row shortage: not a
 completed response, not a park, and not a token mismatch. Measured (context 4096,
@@ -925,6 +933,25 @@ optional window is not observable. The attribution above comes from the source
 (only the mandatory reservation's shortage retry can reach
 `finish_shared_slot(..., "pressure")`; the optional probe cannot reclaim or park)
 plus the slot's own parked prefix, not from timing.
+
+### A fallback ends speculation for that slot lifecycle (fail-closed)
+
+The effect is not limited to the window that fell back. After any target-only
+window, `batch_draft_after_commit(..., drafter_advanced=false, ...)` invalidates
+the slot's draft coherence (`include/strata/core/batch_draft_coherence.hpp:31-36`,
+called from `src/program/generate.cpp:8888-8894`), and nothing re-establishes it
+until the slot is re-admitted against a matching prefix. Every later window in that
+lifecycle is therefore target-only as well, counted as `fallback_incoherent`.
+Measured in the pressure run below, slot 1: `fallback_reserve=1` together with
+`fallback_incoherent=4` in the same row (`windows=257 offered=252 accepted=251
+rejected=1 fallback_attempts=5`). The counter line is a per-lifecycle total and
+does not timestamp the order, so the ordering is the source rule - once invalidated,
+every later window is `incoherent` - and in the measured row the reservation
+fallback is the transition that starts it. A slot that never had coherence reports
+only `fallback_incoherent` (the task-20 tails clone: 7 of 7 windows). The output stays
+exact (target-only windows still commit verified target tokens, and the tails /
+limits / lifecycle stages matched their solo references exactly), but the slot's
+one-proposal throughput gain is gone for the rest of that lifecycle.
 
 ### The per-slot counter line
 
@@ -959,11 +986,25 @@ One accounting gap is documented rather than papered over: the native emits **no
 per-slot `batch_mtp_stats` row** for a suppressed owner that never ran a verifier
 window (the restore/clone runs on the main path), so the gate witnesses the three
 diagnostics plus the owner's own `DONE` draft counters and the reused-cell count.
-It never requires, fabricates or synthesizes a zero-window row; a zero-offer row is
-tolerated if a future native emits one, and losing any diagnostic fails closed. The
-same run also showed the divergent branch returning to EOS after a single token at
-every offset, so `multi_token_divergent_suffix_restore` remains **UNTESTED**
-(candidate continuations are prepared and await a hardware sweep).
+It never requires, fabricates or synthesizes a zero-window row. When the branch
+does generate enough tokens to run target-only windows, the clone reports its own
+zero-offer row (task20: `windows=7 offered=0 accepted=0 rejected=0
+fallback_incoherent=7`), and the gate accepts that row while still requiring zero
+offers; losing any diagnostic fails closed.
+
+Divergent-branch depth (task20, `--mode tails`, context 1024, offsets 1/2/3, the
+default `--tail-suffix new-user-turn`): the branch reference generated **8 tokens
+at every offset** (branch prompts 140/141/138 cells = 105/106/103 shared + 35
+suffix, cap 8), with the clone still offering **0** proposals and reporting
+`fallback_incoherent=7` for its seven target-only windows. The gate therefore
+credits `multi_token_divergent_suffix_restore = RUN (every partial-tail branch
+generated >= 2 tokens; depths [8, 8, 8])` - the earlier depth-1 result (the
+`meta-instruction` wording) is superseded. Artifact
+`task20-tails-new-user-turn-context1024.json`
+`4dcc919d17dc1f2d6df8019481530224b051c0197ebe1ac5fdff579962202343`
+(`passed=true`, reuse 105/106/103, exact branch parity). This is a terminal
+target-only restore: no coherent-MTP-COW or private-ring-transfer claim follows
+from it.
 
 ### Pressure park, canonical restore, resumed continuation
 
@@ -976,8 +1017,9 @@ re-submitted MAIN continuation then reused the whole consumed prefix exactly
 (`restored 2048 tokens (live) in 14.6 ms`, `actual_reused_cells == expected ==
 2048`, the last returned token unfed), reported `TARGET_ONLY restore` and `T=1`
 suppression, offered **0** MAIN drafts, and reproduced the same-binary solo
-reference exactly. This run is also the ring-wrap evidence above: 200 ring cells
-against a 2048-cell consumed history.
+reference exactly. This run is also the geometry behind the bounded-ring statement
+above: 200 ring cells against a 2048-cell consumed history (inference, not a
+byte-level ring witness).
 
 ### Coherent full-slot hand-off (the transfer that resumes drafts)
 
@@ -1028,7 +1070,9 @@ Correctness gates (context 1024 unless noted; `--batch-mtp` explicit):
 - `lifecycle`: cancel one slot (slot 0 `offered=1 accepted=1`) while its sibling
   completes, then same-slot reuse with exact parity.
 - `tails`: the three target-only diagnostics and zero-offer clone counters at
-  offsets 1/2/3 (above).
+  offsets 1/2/3, reuse 105/106/103 with exact branch parity, and - with the default
+  `--tail-suffix new-user-turn` (task20) - measured branch depths `[8, 8, 8]` at
+  every offset, crediting `multi_token_divergent_suffix_restore = RUN`.
 - pressure / optional / handoff (context 4096): the three subsections above.
 
 ### What was not run, and what is not claimed
@@ -1037,7 +1081,12 @@ Correctness gates (context 1024 unless noted; `--batch-mtp` explicit):
 - Byte-level ring internals and COW page identity: not claimed; the ring witnesses
   are the helper-derived size, the counters and the token parity.
 - Park ordering inside a stage: not observable (terminal-only diagnostics).
-- `multi_token_divergent_suffix_restore`: UNTESTED (depth 1 at every offset).
+- Divergent-suffix depth is RUN for the default `--tail-suffix new-user-turn`
+  only; `open-fence`, `open-list-primer`, `assistant-lead-in` and the
+  `meta-instruction` control were **not** swept on hardware (the sweep stops at the
+  first candidate that clears depth >= 2 at every offset). The default target-only
+  baseline smoke measured 13 tokens for `new-user-turn` and 16 for
+  `open-list-primer`.
 - `coherent_shared_tail_cow_speculation`: UNTESTED - it needs a live/coherent-source
   fixture; the tails path is target-only restore and does not claim COW. The
   coherent *full-slot* transfer above is a different witness.

@@ -33,9 +33,18 @@ runs when all of these hold, and otherwise the engine says why and batches as us
   window, but there is no shared-pool reservation to prove, so the optional-row fallback below does not apply.
 
 Each window reserves its **mandatory** target row first; only then does it ask once for the optional two-row extent
-that carries the proposal. A shortage of that optional row is a target-only window (`fallback_reserve` in the slot's
-counter line) and **never reclaims or parks anyone**; only the mandatory row's shortage, after its own reclaim retry,
-parks an owner.
+that carries the proposal. A **shortage** of that optional row is a target-only window (`fallback_reserve` in the
+slot's counter line) with no reclaim retry and no pressure escalation; only the mandatory row's shortage, after its
+own reclaim retry, parks an owner. That guarantee is about the shortage path only: a *successful* optional
+reservation is an ordinary two-row write, so it maps shared pages and can contribute to a later mandatory shortage
+which that path may then reclaim or park for.
+
+One target-only window also ends speculation for that slot's whole lifecycle: the slot's draft coherence is
+invalidated (`batch_draft_after_commit(..., drafter_advanced=false, ...)`) and every later window is target-only too
+(`fallback_incoherent` in the counter line) until the slot is re-admitted. The output stays exact (target-only rows
+still commit verified target tokens; the tails, limits and lifecycle gates matched their solo references), but the
+one-proposal gain is gone for that lifecycle - measured in the pressure run: slot 1 reported `fallback_reserve=1`
+together with `fallback_incoherent=4`.
 
 Each slot keeps its own **bounded private draft ring**, sized from the MTP window:
 `mtp_kv_ring_cells(window, max_cells, max_t) = window + 4*max_t + 64` when `0 < window < max_cells`, and `-1`
