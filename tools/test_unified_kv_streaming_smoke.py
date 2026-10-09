@@ -373,9 +373,16 @@ class StageTests(unittest.TestCase):
             self.assertEqual(json.loads(suite.output.read_text()), data)
 
     def test_capacity_wait_stop_is_sent_inside_pending_admission(self):
-        active = smoke.Request('active', [1] * 160, 18432, 0)
+        # Incremental admission trims optional headroom. Required extents are
+        # ceil(15361/4) + ceil(12288/4) = 3841 + 3072 = 6913 > 6144 pages.
+        # Each fits alone: 15360+6144+8 and 12288+2+8 <= 24576 cells.
+        active = smoke.Request('active', [1] * 15360, 6144, 0)
         waiter = smoke.Request('waiter', [2] * 12288, 2, 1)
-        scripts = [([active.command(), waiter.command()], ['T 7', 'DONE 1 160 0 0 length', 'BADM 0 1', 'BT 0 8'], ''),
+        pages = lambda cells: (cells + smoke.PAGE - 1) // smoke.PAGE
+        self.assertGreater(pages(len(active.prompt) + 1) + pages(len(waiter.prompt)), 24576 // smoke.PAGE)
+        for req in (active, waiter):
+            self.assertLessEqual(len(req.prompt) + req.cap + 8, 24576)
+        scripts = [([active.command(), waiter.command()], ['T 7', 'DONE 1 15360 0 0 length', 'BADM 0 1', 'BT 0 8'], ''),
                    (['BSTOP 0'], ['BT 0 9', 'BDONE 0 3 cancel 0', 'T 42', 'DONE 1 12288 0 0 length',
                                   'BADM 1 1', 'BT 1 43', 'BDONE 1 2 length 0'], COUNTERS)]
         data = {'commands': [], 'stdout': [], 'stages': []}

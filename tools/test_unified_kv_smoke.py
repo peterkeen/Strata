@@ -128,9 +128,16 @@ class ProtocolTests(unittest.TestCase):
 
 class PressureTests(unittest.TestCase):
     def completed(self, cancelled=False):
-        a = smoke.Request('active', [1] * 40, 384, 0)
+        # Incremental admission trims optional headroom. Required extents are
+        # ceil(321/4) + ceil(256/4) = 81 + 64 = 145 > the pool's 128 pages.
+        # Each request still fits alone: 320+128+8 and 256+2+8 <= 512 cells.
+        a = smoke.Request('active', [1] * 320, 128, 0)
         b = smoke.Request('waiter', [2] * 256, 2, 1)
-        feed(smoke.Protocol([a, b]), ['T 10', 'DONE 1 40 0 0 length', 'BADM 0 1',
+        pages = lambda cells: (cells + smoke.PAGE_CELLS - 1) // smoke.PAGE_CELLS
+        self.assertGreater(pages(len(a.prompt) + 1) + pages(len(b.prompt)), 512 // smoke.PAGE_CELLS)
+        for req in (a, b):
+            self.assertLessEqual(len(req.prompt) + req.cap + 8, 512)
+        feed(smoke.Protocol([a, b]), ['T 10', 'DONE 1 320 0 0 length', 'BADM 0 1',
                                      'BT 0 11', 'BT 0 12',
                                      f'BDONE 0 3 {"cancel" if cancelled else "stop"} 1',
                                      'T 20', 'DONE 1 256 0 0 length', 'BADM 1 1',
@@ -162,10 +169,15 @@ class PressureTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             smoke.verify_pressure(a, b, 512, True)
 
-    def test_small_output_reservation_is_not_the_pressure_fixture(self):
-        a, b = self.completed()
-        a.cap = 128
-        with self.assertRaises(AssertionError):
+    def test_required_extent_larger_than_pool_is_rejected(self):
+        # A small output cap no longer rules out pressure: incremental admission
+        # trims optional headroom, but cannot trim required prompt/decode cells.
+        # Deliberately invalid: prompt 513 needs p+1 = 514 cells, or 129 pages
+        # > the pool's 128, even alone. Its cap of 2 cannot rescue admission.
+        a = smoke.Request('oversized-active', [1] * 513, 2, 0)
+        b = smoke.Request('waiter', [2] * 256, 2, 1)
+        self.assertGreater(len(a.prompt) + 1, 512)
+        with self.assertRaisesRegex(AssertionError, 'request cannot fit alone'):
             smoke.verify_pressure(a, b, 512, False)
 
 
