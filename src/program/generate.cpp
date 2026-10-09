@@ -33,6 +33,7 @@
 #include "strata/core/layer.hpp"
 #include "strata/core/layout.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/shared_kv_runtime.hpp"
 #include "strata/core/weights.hpp"
 #include "strata/kernels/cpu/expert.hpp"
 #include "strata/kernels/cpu/pool.hpp"
@@ -114,6 +115,20 @@
 #include <vector>
 
 namespace {
+// Each verified input can return one output. The final output is the next unfed head;
+// neither an output cap nor EOS permits committing the speculative inputs after it.
+int bounded_window(int proposed, int64_t output_left, int64_t context_left) {
+    if (proposed <= 0 || output_left <= 0 || context_left <= 0) return 0;
+    return (int) std::min<int64_t>({proposed, output_left, context_left});
+}
+template<class IsEos>
+int usable_outputs(const int32_t* outputs, int count, int64_t output_left, IsEos is_eos) {
+    count = bounded_window(count, output_left, count);
+    for (int i = 0; i < count; ++i)
+        if (is_eos(outputs[i])) return i + 1;
+    return count;
+}
+
 // Windows' WDDM driver model: native Windows, or WSL2 (its GPU goes through /dev/dxg to the Windows driver).  There,
 // pinning a large arena into two CUDA contexts leaves WDDM refusing every later allocation (the 5080 + 3090 rig);
 // a Linux driver has no such limit (#253: the 8 GiB cap cost a 4090 + 3060 split 3x of its prompt speed).
@@ -530,6 +545,7 @@ struct Options {
     /// sent as `BGEN <slot> <max_new> ...` reads its prompt and its first token through the usual path, then
     /// continues in slot <slot> of the batch windows (`BT <slot> <id>` lines, then `BDONE <slot> ...`).
     int batch = 0;
+    bool kv_unified = false;          ///< aggregate backing KV capacity, shared by admission and batch slots
     /// With an explicit --layer-split, every GPU loads only its own layers' dense weights instead of the whole
     /// model's: the VRAM they took goes back to the expert cache (opt-in)
     bool trim_stage_weights = false;
@@ -674,7 +690,7 @@ void usage() {
                  "  --kv-resident N      KV streaming: keep N cells of each QSA layer in VRAM (min 20480) and the\n"
                  "                       whole K/V in pinned RAM; the freed VRAM goes to expert slots. 0 (default):\n"
                  "                       all of it in VRAM. A context of N cells or fewer is not streamed\n"
-                 "  --kv-grow            the K/V takes VRAM only for the cells the requests reach and the expert\n"
+                 "  --kv-grow / --kv-elastic  the K/V takes VRAM only for the cells the requests reach and the expert\n"
                  "                       cache holds the rest, giving slots back as the context grows (one GPU, with\n"
                  "                       --expert-profile; STRATA_KV_GROW=1/0 also). Default: the whole --max-context\n"
                  "                       allocated at start\n"
@@ -742,6 +758,8 @@ void usage() {
                  "  --batch N / --slots N  --serve (opt-in): up to N requests decode together in batch slots (2..8\n"
                  "                       normally; --batch-mtp waves more through eight-row windows),\n"
                  "                       each slot with its own session (VRAM like the main one); docs/BATCHING.md\n"
+                 "  --kv-unified         --serve --batch 2..8 --batch-groups 1: share --max-context backing cells\n"
+                 "                       and --kv-resident GPU cache; no layer split, elastic K/V or --batch-mtp\n"
                  "  --batch-mtp          --batch (opt-in, one GPU, needs --mtp and --spec): each slot also verifies one MTP\n"
                  "                       proposal per window (STRATA_BATCH_MTP=1 does the same); needs VRAM per slot\n"
                  "  --batch-groups G     --batch with a layer split: the slots in G groups pipelined through the GPUs\n"
@@ -1686,7 +1704,7 @@ int main(int argc, char** argv) {
         else if (a == "--ple-sync-submit") o.ple_sync_submit = true;
         else if (a == "--kv") o.kv = next("--kv");
         else if (a == "--kv-resident") o.kv_resident = std::atoll(next("--kv-resident"));
-        else if (a == "--kv-grow") o.kv_grow = true;
+        else if (a == "--kv-grow" || a == "--kv-elastic") o.kv_grow = true;
         else if (a == "--no-kv-grow") o.kv_grow = false;
         else if (a == "--stream-token") o.stream_token = true;
         else if (a == "--check-logits") o.check_logits = true;
@@ -1783,6 +1801,7 @@ int main(int argc, char** argv) {
         else if (a == "--prefill-until") o.prefill_until = std::atoll(next("--prefill-until"));
         else if (a == "--dump-final-r") o.dump_final_r = next("--dump-final-r");
         else if (a == "--spec") o.spec = std::atoi(next("--spec"));
+        else if (a == "--kv-unified") o.kv_unified = true;
         else if (a == "--batch") o.batch = std::atoi(next("--batch"));
         else if (a == "--slots") o.batch = std::atoi(next("--slots"));   // the same as --batch
         else if (a == "--trim-stage-weights") o.trim_stage_weights = true;
@@ -1948,6 +1967,28 @@ int main(int argc, char** argv) {
             return 2;
         }
         }
+    }
+    const char* kv_grow_env = std::getenv("STRATA_KV_GROW");
+    const bool kv_grow_asked = kv_grow_env != nullptr && kv_grow_env[0] != '\0'
+                                ? kv_grow_env[0] != '0' : o.kv_grow;
+    if (o.kv_unified && (o.kv_grow || kv_grow_asked)) {
+        std::fprintf(stderr, "strata generate: --kv-unified cannot be combined with --kv-grow/--kv-elastic "
+                             "or STRATA_KV_GROW=1; shared backing and elastic K/V are separate pools\n");
+        return 2;
+    }
+    if (o.kv_unified && (!o.serve || o.batch < 2 || o.batch > strata::kernels::kVerifyMaxT ||
+                         !o.layer_split.empty() || o.batch_groups != 1 || o.batch_groups_auto)) {
+        std::fprintf(stderr, "strata generate: --kv-unified requires --serve --batch 2..8, no --layer-split "
+                             "and --batch-groups 1 (not auto)\n");
+        return 2;
+    }
+    const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
+    const bool batch_mtp_asked = o.batch_mtp || (batch_mtp_env != nullptr &&
+                                                batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0');
+    if (o.kv_unified && batch_mtp_asked) {
+        std::fprintf(stderr, "strata generate: --kv-unified does not support --batch-mtp/STRATA_BATCH_MTP=1 "
+                             "(slot draft state is private); use ordinary batch slots\n");
+        return 2;
     }
 #if defined(STRATA_USE_HIP)
     {   // gfx1151 (Strix Halo): the switches that are exact there are on by default (strata/core/arch_defaults.hpp); before
@@ -2186,6 +2227,7 @@ int main(int argc, char** argv) {
         return 2;
     }
     strata::core::qsa_set_kv_resident(o.kv_resident);
+    strata::core::qsa_set_kv_unified(o.kv_unified);
     // Prompt lookup (the suffix drafter, on by default): the MTP keeps its --spec windows and a lookup window may be
     // up to 2 tokens longer; the draft policy (strata/spec/draft_policy.hpp) takes one only where it pays. Code
     // edits +6-11%, ordinary text unchanged (bench/results/2026-09-27-spec). --suffix-draft 0 turns it off.
@@ -3788,11 +3830,10 @@ int main(int argc, char** argv) {
         // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
         // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
         {
-            const char* ev = std::getenv("STRATA_KV_GROW");
             bool remote = false;
             for (const int r : o.expert_cache_remote) remote = remote || r > 0;
-            const bool asked = ev != nullptr && ev[0] != '\0' ? ev[0] != '0' : o.kv_grow;
-            const bool on = asked && !multi_gpu && o.kv_resident <= 0 &&
+            const bool asked = kv_grow_asked;
+            const bool on = asked && !o.kv_unified && !multi_gpu && o.kv_resident <= 0 &&
                             !o.expert_profile.empty() && !o.resident_cpu_experts && o.expert_cache != 0 && !remote &&
                             strata::core::vmm_available() &&
                             // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
@@ -3866,8 +3907,7 @@ int main(int argc, char** argv) {
     // engine still starts and serves one request at a time.
     // --batch-mtp / STRATA_BATCH_MTP=1 (opt-in): a slot also verifies one MTP proposal per window.  Recommend, never
     // force: when it cannot run it is said and left off (plain batching still starts); default off = exactly 0.1.39.
-    const char* batch_mtp_env = std::getenv("STRATA_BATCH_MTP");
-    bool batch_mtp = o.batch_mtp || (batch_mtp_env != nullptr && batch_mtp_env[0] != '\0' && batch_mtp_env[0] != '0');
+    bool batch_mtp = batch_mtp_asked;
     if (batch_mtp) {
         const char* why = o.batch < 2 ? "it needs --batch 2 or more" : o.mtp.empty() ? "it needs --mtp"
                         : o.spec < 2 ? "it needs --spec T (T >= 2)" : (multi_gpu || split_same || !stages.empty())
@@ -3878,6 +3918,7 @@ int main(int argc, char** argv) {
         }
     }
     std::vector<std::vector<std::unique_ptr<strata::core::SessionState>>> bslot_ss;
+    std::unique_ptr<strata::core::SharedKvRuntime> unified_kv;
     if (o.batch != 0) {
         const int cap = strata::kernels::kVerifyMaxT;
         const char* off = !o.serve ? "it needs --serve" : o.batch < 2 ? "it needs 2 or more slots"
@@ -3920,12 +3961,13 @@ int main(int argc, char** argv) {
             const int64_t lo = k == 0 ? 0 : stages[k - 1]->lb;
             const int64_t hi = k == 0 ? (multi_gpu ? split_at[0] : -1) : stages[k - 1]->le;
             const strata::core::OnDevice on_k(dev);
-            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi);
+            const auto* share_kv = o.kv_unified ? &ss : nullptr;
+            const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, share_kv);
             if (k == 0) bytes0 = bytes;
             for (int b = 0; b < fit; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
-                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi) == 0) {
+                if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi, share_kv) == 0) {
                     cudaGetLastError();
                     if (buf != nullptr) cudaFree(buf);
                     size_t fb = 0, tb = 0;
@@ -3960,6 +4002,24 @@ int main(int argc, char** argv) {
                                  "expert cache would otherwise hold\n", o.batch,
                          (double) bytes0 * o.batch / 1073741824.0);
         }
+    }
+
+    if (o.kv_unified) {
+        if (o.batch < 2) {
+            std::fprintf(stderr, "strata generate: --kv-unified cannot run the slots; refusing independent/solo fallback\n");
+            return 1;
+        }
+        std::vector<strata::core::SessionState*> sessions{&ss};
+        for (auto& slot : bslot_ss[0]) sessions.push_back(slot.get());
+        unified_kv = std::make_unique<strata::core::SharedKvRuntime>(g, std::move(sessions));
+        if (!unified_kv->ensure(0, 0, strata::kernels::kVerifyMaxT, err)) {
+            std::fprintf(stderr, "strata generate: unified KV initialization failed: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "strata generate: unified KV: %lld total backing cells shared by admission and %d slots, "
+                             "%lld GPU-resident cells per layer%s\n",
+                     (long long) unified_kv->capacity_cells(), o.batch,
+                     (long long) unified_kv->resident_cells(), unified_kv->streamed() ? " (host-backed)" : "");
     }
 
     // Secure MTP's CUDA0 allocations before the large host arena is registered with both CUDA contexts.
@@ -5866,7 +5926,7 @@ int main(int argc, char** argv) {
         int64_t grows = 0, trims = 0, fresh = 0, evicted = 0, refilled = 0;
     } kvg;
     auto kvg_start = [&](int64_t top) {
-        kvg.on = strata::core::qsa_kv_elastic() && xcache.vmm_range() != nullptr && d_res != nullptr &&
+        kvg.on = !o.kv_unified && strata::core::qsa_kv_elastic() && xcache.vmm_range() != nullptr && d_res != nullptr &&
                  !host_res.empty() && srcp != nullptr && top > kvg.floor;
         if (!kvg.on) return;
         kvg.top = kvg.lo = top;
@@ -5884,7 +5944,7 @@ int main(int argc, char** argv) {
     // Room for `cells` cells (rounded up to a step).  `quiesce` must leave nothing running on the device and land
     // the adaptive tier's swaps (a swap in flight could still be writing a slot given up here).
     auto kvg_ensure = [&](int64_t cells, const std::function<void()>& quiesce) -> bool {
-        if (!kvg.on || cells <= kvg.cells) return true;
+        if (o.kv_unified || !kvg.on || cells <= kvg.cells) return true;
         const int64_t target = std::min<int64_t>(o.max_context, (cells + kvg.step - 1) / kvg.step * kvg.step);
         const int64_t need = strata::core::qsa_kv_elastic_need(target);
         if (need == 0) { kvg.cells = strata::core::qsa_kv_elastic_cells(); return true; }
@@ -5988,7 +6048,7 @@ int main(int argc, char** argv) {
     // A request that needs far fewer cells than the K/V holds gives the rest back: the slots refill with the
     // profile's hottest experts the GPU does not hold.  Run on a quiet device (as kvg_ensure's `quiesce`).
     auto kvg_trim = [&](int64_t cells, int64_t hold) -> bool {   // `hold`: the cells a parked conversation could need
-        if (!kvg.on) return true;
+        if (o.kv_unified || !kvg.on) return true;
         // #1128: a parked conversation comes back through kvg_ensure's grow, so a K/V that fell to a short request's
         // size is grown again (its experts shuffled again) after every short request in between: the K/V keeps the
         // longest parked conversation's cells while it is parked
@@ -6958,6 +7018,9 @@ int main(int argc, char** argv) {
         std::vector<int32_t> live;
         std::vector<ImgKey> live_imgs, req_imgs;
         bool live_ok = false;
+        // Slots hold target state, not main's private MTP ring. A target-only restore
+        // cannot rebuild that ring without replaying target residuals from token zero.
+        bool main_draft_coherent = true;
         std::vector<ConvCheckpoint> checks;
         uint64_t check_clock = 0;   // the checkpoints' LRU clock; creation and every use advance it
         int64_t tail_ckpt_len = -1;   // --prompt-cache-tail: the length of the one tail checkpoint alive (-1 = none)
@@ -7056,8 +7119,10 @@ int main(int argc, char** argv) {
             const size_t n_st = stages.size();
             // the draft layer's K/V lives on the last stage's GPU (the drafter is loaded there): with a split it is
             // saved with that stage's image, under its device; stage 0's image holds none
-            const strata::core::QsaState* draft0 = n_st > 0 || !use_mtp ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
-            auto draft_of = [&](size_t k) -> const strata::core::QsaState* { return use_mtp && k + 1 == n_st ? &mtp.kv_state() : nullptr; };
+            const strata::core::QsaState* draft0 = n_st > 0 || !use_mtp || !main_draft_coherent ? nullptr : &mtp.kv_state();   // no --mtp: no draft K/V (snapshots accept null)
+            auto draft_of = [&](size_t k) -> const strata::core::QsaState* {
+                return use_mtp && main_draft_coherent && k + 1 == n_st ? &mtp.kv_state() : nullptr;
+            };
             strata::core::ConversationCheckpointSplit cs;
             if (n_st > 0) cs = strata::core::conversation_checkpoints_split(std::move(checks), n_st);   // #752: two-phase; a bad_alloc leaves `checks` whole
             struct MergeBack {
@@ -7115,7 +7180,7 @@ int main(int argc, char** argv) {
             // estimate must stay uncapped: it counts the retained buffers'
             // capacity and directories, and put() charges that same true size -
             // a capped figure would under-evict and overfill the budget.
-            if (!conversations.make_room(estimate, held)) {
+            if (!conversations.make_room(estimate, held, &live, &live_imgs)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (snapshot %zu MiB exceeds available budget)\n",
                              estimate >> 20);
                 return true;
@@ -7178,8 +7243,13 @@ int main(int argc, char** argv) {
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
             } catch (const std::bad_alloc&) {
-                // The active state has not been touched. Continue with normal
-                // prompt processing rather than killing a serving process.
+                // Capture does not modify active state, but an allocation miss must
+                // not hide a simultaneous device failure.
+                const auto status = cudaDeviceSynchronize();
+                if (status != cudaSuccess) {
+                    err = std::string("conversation cache device failure: ") + cudaGetErrorString(status);
+                    return false;
+                }
                 std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
             }
             return true;
@@ -7189,6 +7259,11 @@ int main(int argc, char** argv) {
         auto park_current = [&](size_t held) -> bool {
             try { return park_current_body(held); }
             catch (const std::bad_alloc&) {
+                const auto status = cudaDeviceSynchronize();
+                if (status != cudaSuccess) {
+                    err = std::string("conversation cache device failure: ") + cudaGetErrorString(status);
+                    return false;
+                }
                 std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
                 return true;
             }
@@ -7921,7 +7996,8 @@ int main(int argc, char** argv) {
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
-        std::atomic<bool> stop_req{false};
+        // 0: running, 1: cancellation, 2: internal frontend handoff. STOP always wins.
+        std::atomic<int> stop_req{0};
         std::mutex in_mu;
         std::condition_variable in_cv;
         std::deque<std::string> in_lines;
@@ -7957,7 +8033,12 @@ int main(int argc, char** argv) {
             };
             while (getline_fd(l)) {
                 if (!l.empty() && l.back() == '\r') l.pop_back();
-                if (l == "STOP") { stop_req.store(true); continue; }
+                if (l == "STOP") { stop_req.store(1); continue; }
+                if (l == "HANDOFF" && unified_kv) {
+                    int running = 0;
+                    stop_req.compare_exchange_strong(running, 2);
+                    continue;
+                }
                 std::lock_guard<std::mutex> lk(in_mu);
                 in_lines.push_back(l);
                 in_cv.notify_one();
@@ -7974,7 +8055,7 @@ int main(int argc, char** argv) {
             in_lines.pop_front();
             return true;
         };
-        sp.should_stop = [&] { return stop_req.load(); };
+        sp.should_stop = [&] { return stop_req.load() != 0; }; // partial reads abort for cancel OR handoff
         // STRATA_TRACE=1: one stderr line per step of a request (the log shows where a request stops)
         const bool trace = std::getenv("STRATA_TRACE") != nullptr;
         auto tr = [&](const char* what, long long a = -1, long long b = -1) {
@@ -8043,7 +8124,8 @@ int main(int argc, char** argv) {
                         "expert_slots_primary=%lld expert_cache_primary_mib=%lld spec=%d "
                         "mtp_max=%d lookup=%d vram_free_mib=%lld cvec=%s arena_mib=%lld pool_workers=%d pcie_frac=%.2f "
                         "spec_min_p=%.2f conversation_cache_mib=%lld conversation_cache_slots=%d "
-                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d%s engine=" STRATA_VERSION "\n",
+                        "conversation_cache_min_free_mib=%lld tail_role_token=%lld vram_elastic=%d kv_unified=%d "
+                        "kv_capacity_cells=%lld kv_resident_capacity_cells=%lld%s%s engine=" STRATA_VERSION "\n",
                         (long long) o.max_context, o.kv.c_str(),
                         (long long) (g.n_qsa_layers() > 0 && ss.qsa_states[ss.qsa_primary()].kv_mode == 1
                                          ? ss.qsa_states[ss.qsa_primary()].n_slots * 4 : 0),
@@ -8055,6 +8137,10 @@ int main(int argc, char** argv) {
                         pool.workers(), o.pcie_frac,
                         o.spec_min_p, (long long) o.conversation_cache_mib, o.conversation_cache_slots,
                         (long long) o.conversation_cache_min_free_mib, (long long) o.tail_role_token, xcache.segmented() ? 1 : 0,
+                        o.kv_unified ? 1 : 0, (long long) (unified_kv ? unified_kv->capacity_cells() : 0),
+                        (long long) (unified_kv ? unified_kv->resident_cells() : 0),
+                        unified_kv ? (" kv_handoff=1 kv_incremental=1 kv_reserve_ahead=" +
+                                      std::to_string(strata::core::shared_kv_reserve_ahead)).c_str() : "",
                         o.batch > 0 ? (" batch_slots=" + std::to_string(o.batch) +
                                        " slot_cache=" + std::to_string(o.prompt_cache > 0 ? 1 : 0) +
                                        " batch_groups=" + std::to_string(o.batch_groups)).c_str() : "");
@@ -8273,6 +8359,7 @@ int main(int argc, char** argv) {
             // a prompt read that gave way to a waiting request (BYIELD): `ids` is the part read so far, and the same
             // request continues from it (the read goes on with the same chunks; `from0`: it had started at token 0)
             bool partial = false, partial_from0 = false;
+            int64_t prompt_end = 0;         ///< BYIELD's whole known prompt, not just the part already read
         };
         std::vector<BSlot> bs((size_t) std::max(o.batch, 0));
         // timing of the batch windows since the slots were last all idle (one stderr line then)
@@ -8284,6 +8371,133 @@ int main(int argc, char** argv) {
         int admit_slot = -1;               ///< the slot the request being read will continue in (BGEN)
         long long admit_max_new = 0;
         auto batch_on = [&] { for (const BSlot& b : bs) if (b.active) return true; return false; };
+        using KvReserve = strata::core::SharedKvReserveResult;
+        // -1: main is an idle, reclaimable cache; otherwise protect its known
+        // prompt or the entire imminent verify write, including rejected rows.
+        int64_t main_required_end = -1;
+        size_t parking_held = 0;            // incoming image counts against the parking budget too
+        int64_t restore_deferrals = 0;
+        auto reserve_shared = [&](size_t seq, int64_t begin, int64_t required, int64_t limit,
+                                  bool headroom = true) -> KvReserve {
+            err.clear();
+            const int64_t mapped = int64_t(unified_kv->pages().mapping(seq).size()) *
+                                   strata::kernels::qsa_real_shapes().page_size;
+            const auto result = strata::core::shared_kv_reserve(required, headroom ? mapped : required, limit,
+                [&](int64_t end) { return unified_kv->try_ensure(seq, begin, end, err); });
+            if (result == KvReserve::fatal && err.empty()) err = "unified KV: invalid reservation extent";
+            return result;
+        };
+        auto reclaim_shared = [&]() -> bool {
+            // Optional headroom goes before pressure. Paused frontend owners
+            // keep their whole known prompt; they are not eviction victims.
+            if (main_required_end < 0) {
+                if (!unified_kv->pages().mapping(0).empty()) {
+                    if (!unified_kv->release(0, err)) return false;
+                    live.clear(); live_imgs.clear(); checks.clear(); live_ok = false;
+                    main_draft_coherent = false;
+                    conversations.limit_reuse(0);
+                }
+            } else if (!unified_kv->truncate(0, main_required_end, err)) return false;
+            for (int b = 0; b < int(bs.size()); ++b) {
+                auto& sl = bs[size_t(b)];
+                const size_t seq = size_t(b) + 1;
+                if (sl.active || sl.partial) {
+                    const int64_t required = sl.partial ? sl.prompt_end : sl.p + 1;
+                    if (!unified_kv->truncate(seq, required, err)) return false;
+                } else if (!unified_kv->pages().mapping(seq).empty()) {
+                    if (!unified_kv->release(seq, err)) return false;
+                    sl.cached = false; sl.ids.clear(); sl.checks.clear();
+                }
+            }
+            return true;
+        };
+        auto park_slot_target = [&](int b) -> bool {
+            const auto& sl = bs[size_t(b)];
+            if (!conversations.enabled() || sl.img || sl.ids.empty()) return true;
+            // Slots have no private draft. Capture target-only images explicitly;
+            // the last returned token is unfed and lives in frontend replay history.
+            auto& state = *bslot_ss[0][size_t(b)];
+            const std::vector<ImgKey> no_images;
+            const strata::core::ConversationView view{sl.ids, no_images, sl.checks, sl.cvec};
+            try {
+                size_t estimate = 0;
+                if (!strata::core::conversation_snapshot_bytes(view, state, g, nullptr, estimate, err)) {
+                    std::fprintf(stderr, "strata serve: pressure cache miss: %s; replay tokens\n", err.c_str());
+                    err.clear();
+                    return true;
+                }
+                const uint64_t floor = uint64_t(o.conversation_cache_min_free_mib) * 1024 * 1024;
+                // Reserve with the incoming chain, before capture, so covered
+                // copies go before another conversation's only parked image.
+                if (!conversations.make_room(estimate, parking_held, &sl.ids, &no_images) ||
+                    !strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), estimate, floor)) {
+                    std::fprintf(stderr, "strata serve: pressure cache budget/RAM miss; replay %zu tokens\n", sl.ids.size());
+                    return true;
+                }
+                strata::core::SavedConversation image;
+                // Metadata validation passed: a device transfer failure is fatal.
+                if (!strata::core::conversation_snapshot_save(image, view, state, g, nullptr, err)) return false;
+                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
+                    std::fprintf(stderr, "strata serve: pressure cache RAM floor miss; replay tokens\n");
+                    return true;
+                }
+                const bool stored = conversations.put(std::move(image), parking_held);
+                std::fprintf(stderr, "strata serve: pressure %s target-only %zu tokens; parked=%zu bytes=%zu\n",
+                             stored ? "parked" : "replay", sl.ids.size(), conversations.size(), conversations.bytes());
+            } catch (const std::bad_alloc&) {
+                const auto status = cudaDeviceSynchronize();
+                if (status != cudaSuccess) {
+                    err = std::string("pressure cache device failure: ") + cudaGetErrorString(status);
+                    return false;
+                }
+                std::fprintf(stderr, "strata serve: pressure cache allocation miss; replay tokens\n");
+            }
+            return true;
+        };
+        auto finish_shared_slot = [&](int b, const char* reason) -> bool {
+            auto& sl = bs[size_t(b)];
+            const int64_t produced = sl.produced;
+            const double ms = sl.active ? std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count() : 0;
+            if (std::strcmp(reason, "pressure") == 0 && !park_slot_target(b)) return false;
+            const bool handoff = std::strcmp(reason, "handoff") == 0;
+            const bool keep = handoff && o.prompt_cache > 0 && !sl.img && !sl.ids.empty();
+            const bool picture = sl.img;
+            if (!(keep ? unified_kv->truncate(size_t(b) + 1, int64_t(sl.ids.size()), err)
+                       : unified_kv->release(size_t(b) + 1, err))) return false;
+            err.clear(); // a handled shortage must not poison an interleaved prefill
+            if (keep) {
+                sl.active = false; sl.stop = false; sl.partial = false; sl.cached = true;
+            } else sl = BSlot{};
+            // Publish ownership before acknowledgement; handoff promises held KV.
+            if (handoff && !keep)
+                std::fprintf(stderr, "strata batch: BHANDOFF slot %d keeps nothing (%s); terminal cancel\n",
+                             b, picture ? "a picture slot no token match reclaims" : "prompt cache off");
+            std::printf("BDONE %d %lld %s %.1f\n", b, (long long) produced, handoff && !keep ? "cancel" : reason, ms);
+            std::fflush(stdout);
+            return true;
+        };
+        auto stop_slot = [&](int b) -> bool {
+            if (b < 0 || b >= int(bs.size())) return true;
+            if (unified_kv) {
+                const bool live_admit = b == admit_slot && main_required_end >= 0;
+                if (live_admit) stop_req.store(1);
+                const auto& sl = bs[size_t(b)];
+                // Late BSTOP must not send a second terminal into the next owner's queue.
+                if (!strata::core::shared_kv_stop_ack(sl.active, sl.partial, live_admit)) return true;
+                return finish_shared_slot(b, "cancel");
+            }
+            bs[size_t(b)].stop = true;
+            return true;
+        };
+        auto handoff_slot = [&](int b) -> bool {
+            if (!unified_kv || b < 0 || b >= int(bs.size()) || !bs[size_t(b)].active) return true;
+            return finish_shared_slot(b, "handoff");
+        };
+        auto bad_slot_line = [&](const std::string& l) {
+            // No unsolicited ERR: it would end whichever request owns the queue.
+            std::fprintf(stderr, "strata batch: %s names no batch slot (--batch %d); ignored\n", l.c_str(), int(bs.size()));
+            std::fflush(stderr);
+        };
         auto try_next_line = [&](std::string& out) -> bool {
             std::lock_guard<std::mutex> lk(in_mu);
             if (in_lines.empty()) return false;
@@ -8304,6 +8518,19 @@ int main(int argc, char** argv) {
                 if (!strata::core::conversation_checkpoint_save(ck, from, g, e) ||
                     !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                     return false;
+                if (unified_kv) {
+                    const size_t rows = size_t(upto / strata::kernels::qsa_real_shapes().idx_block);
+                    for (int64_t j = 0; j < from.qsa_alloc; ++j)
+                        if (cudaMemcpy(to.qsa_states[to.qsa_ord0 + j].idx_pooled,
+                                       from.qsa_states[from.qsa_ord0 + j].idx_pooled,
+                                       rows * size_t(g.idx_key_dim) * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                            e = "unified KV admission: copying completed indexer rows failed"; return false;
+                        }
+                    if (!stages.empty()) { e = "unified KV admission: a layer split has no slot transfer"; return false; }
+                    const bool moved = unified_kv->move(0, size_t(b) + 1, e);
+                    if (moved) { conversations.limit_reuse(0); main_draft_coherent = false; }
+                    return moved;
+                }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
@@ -8348,6 +8575,20 @@ int main(int argc, char** argv) {
                         !strata::core::conversation_checkpoint_restore(ck, to, g, e))
                         return false;
                 }
+                if (unified_kv) {
+                    const size_t rows = size_t(upto / strata::kernels::qsa_real_shapes().idx_block);
+                    for (int64_t j = 0; j < from.qsa_alloc; ++j)
+                        if (cudaMemcpy(to.qsa_states[to.qsa_ord0 + j].idx_pooled,
+                                       from.qsa_states[from.qsa_ord0 + j].idx_pooled,
+                                       rows * size_t(g.idx_key_dim) * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess) {
+                            e = "unified KV slot restore: copying completed indexer rows failed"; return false;
+                        }
+                    if (!stages.empty()) { e = "unified KV slot restore: a layer split has no slot transfer"; return false; }
+                    if (!unified_kv->clone_prefix(size_t(b) + 1, 0, upto, e)) return false;
+                    main_draft_coherent = false;
+                    std::fprintf(stderr, "strata serve: TARGET_ONLY slot clone: private MTP proposals suppressed until full replay\n");
+                    return true;
+                }
                 for (int64_t j = 0; j < from.qsa_alloc; ++j) {
                     strata::core::ConversationKv img;
                     if (!strata::core::conversation_kv_save(img, from.qsa_states[from.qsa_ord0 + j], g, upto, true, e))
@@ -8385,6 +8626,24 @@ int main(int argc, char** argv) {
             for (size_t offset = 0; offset < bs.size() && S + (batch_mtp ? 2 : 1) <= strata::kernels::kVerifyMaxT; ++offset) {
                 const int b = (int) ((next_slot + offset) % bs.size());
                 if (bs[(size_t) b].active) {
+                    auto& sl = bs[size_t(b)];
+                    if (unified_kv) {
+                        if (sl.stop) {
+                            if (!finish_shared_slot(b, "cancel")) { std::printf("ERR %s\n", err.c_str()); return false; }
+                            continue;
+                        }
+                        const int64_t limit = sl.p + std::min<int64_t>(sl.max_new - sl.produced, o.max_context - sl.p);
+                        auto r = reserve_shared(size_t(b) + 1, sl.p, sl.p + 1, limit);
+                        if (r == KvReserve::shortage) {
+                            if (!reclaim_shared()) { std::printf("ERR %s\n", err.c_str()); return false; }
+                            r = reserve_shared(size_t(b) + 1, sl.p, sl.p + 1, limit, false);
+                        }
+                        if (r == KvReserve::fatal) { std::printf("ERR %s\n", err.c_str()); return false; }
+                        if (r == KvReserve::shortage) {
+                            if (!finish_shared_slot(b, "pressure")) { std::printf("ERR %s\n", err.c_str()); return false; }
+                            continue;
+                        }
+                    }
                     first[A] = S;
                     active[A++] = b;
                     rows[S] = b;
@@ -8454,9 +8713,17 @@ int main(int argc, char** argv) {
                                     : sl.p + 2 > o.max_context ? "length" : nullptr;
                     if (fin != nullptr) {
                         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - sl.t0).count();
-                        std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms);
                         sl.active = false;
                         sl.cached = o.prompt_cache > 0 && !sl.img;
+                        if (unified_kv) {
+                            const bool keep = sl.cached && std::strcmp(fin, "cancel") != 0;
+                            if (!(keep ? unified_kv->truncate(size_t(b) + 1, int64_t(sl.ids.size()), err)
+                                       : unified_kv->release(size_t(b) + 1, err))) {
+                                std::printf("ERR %s\n", err.c_str()); return false;
+                            }
+                            if (!keep) { sl.cached = false; sl.ids.clear(); sl.checks.clear(); }
+                        }
+                        std::printf("BDONE %d %lld %s %.1f\n", b, (long long) sl.produced, fin, ms);
                         break;
                     }
                     sl.x = y;
@@ -8632,6 +8899,61 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return true;
         };
+        // 1: reserved, 0: shortage/cancel, -1: fatal. Optional image preparation
+        // is exact and never evicts/waits. A real shortage gives active owners a
+        // bounded quantum before pressure-parking one; paused BYIELD owners stay.
+        auto reserve_unified = [&](int64_t begin, int64_t required, int64_t limit, bool wait) -> int {
+            std::vector<int64_t> at_wait;
+            for (const auto& sl : bs) at_wait.push_back(sl.produced);
+            bool reclaimed = false;
+            for (;;) {
+                if (stop_req.load()) return 0;
+                const auto r = reserve_shared(0, begin, required, limit, wait && !reclaimed);
+                if (r == KvReserve::ready) return 1;
+                if (r == KvReserve::fatal) return -1;
+                if (!wait) return 0;
+                if (!reclaimed) {
+                    if (!reclaim_shared()) return -1;
+                    reclaimed = true;
+                    continue;
+                }
+                {
+                    std::lock_guard<std::mutex> lk(in_mu);
+                    for (auto it = in_lines.begin(); it != in_lines.end();) {
+                        if (it->rfind("BSTOP ", 0) == 0 || it->rfind("BHANDOFF ", 0) == 0) {
+                            const bool transfer = it->rfind("BHANDOFF ", 0) == 0;
+                            int b = -1;
+                            if (!strata::core::shared_kv_slot_arg(*it, transfer ? 9 : 6, int(bs.size()), b)) {
+                                bad_slot_line(*it);
+                                it = in_lines.erase(it);
+                                continue;
+                            }
+                            if (!(transfer ? handoff_slot(b) : stop_slot(b))) return -1;
+                            it = in_lines.erase(it);
+                        } else ++it;
+                    }
+                }
+                if (stop_req.load()) return 0;
+                // Owners that finished during the wait have become idle caches:
+                // release those before a victim or a no-active return.
+                if (!reclaim_shared()) return -1;
+                const auto exact = reserve_shared(0, begin, required, limit, false);
+                if (exact == KvReserve::ready) return 1;
+                if (exact == KvReserve::fatal) return -1;
+                int victim = -1;
+                for (int b = 0; b < int(bs.size()); ++b) {
+                    const auto& sl = bs[size_t(b)];
+                    if (sl.active && strata::core::shared_kv_pressure_due(sl.produced, at_wait[size_t(b)]) &&
+                        (victim < 0 || sl.t0 < bs[size_t(victim)].t0)) victim = b;
+                }
+                if (victim >= 0) {
+                    if (!finish_shared_slot(victim, "pressure")) return -1;
+                    continue;
+                }
+                if (!batch_on()) return 0;
+                if (!batch_step()) return -1;
+            }
+        };
         for (;;) {
             if (batch_on() || (piped && pipe_inflight())) {
                 if (!try_next_line(line)) {
@@ -8646,8 +8968,15 @@ int main(int argc, char** argv) {
             // --batch: BSTOP <slot> ends that slot at its next batch window; BGEN <slot> <max_new> ... reads the
             // request's prompt and first token as a GEN 1, then continues it in that slot
             if (line.rfind("BSTOP ", 0) == 0) {
-                const int b = std::atoi(line.c_str() + 6);
-                if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
+                int b = -1;
+                if (!strata::core::shared_kv_slot_arg(line, 6, int(bs.size()), b)) { bad_slot_line(line); continue; }
+                if (!stop_slot(b)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                continue;
+            }
+            if (line.rfind("BHANDOFF ", 0) == 0 && unified_kv) {
+                int b = -1;
+                if (!strata::core::shared_kv_slot_arg(line, 9, int(bs.size()), b)) { bad_slot_line(line); continue; }
+                if (!handoff_slot(b)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                 continue;
             }
             if (line.rfind("BYIELD", 0) == 0) continue;   // for a prompt read that has ended meanwhile
@@ -8660,6 +8989,9 @@ int main(int argc, char** argv) {
                 continue;
             }
             admit_slot = -1;
+            main_required_end = -1;
+            parking_held = 0;
+            bool admit_was_partial = false;
             if (line.rfind("BGEN ", 0) == 0 || line.rfind("BGENI ", 0) == 0) {
                 const bool bimg = line.rfind("BGENI ", 0) == 0;
                 char* e1 = nullptr;
@@ -8673,7 +9005,22 @@ int main(int argc, char** argv) {
                 }
                 admit_slot = (int) b;
                 admit_max_new = mn;
+                if (unified_kv) {
+                    // Resuming consumes this destination's paused claim even if
+                    // a longer matching prefix elsewhere wins cache selection.
+                    admit_was_partial = bs[size_t(b)].partial;
+                    bs[size_t(b)].partial = false;
+                    if (admit_was_partial && !unified_kv->truncate(size_t(b) + 1,
+                            int64_t(bs[size_t(b)].ids.size()), err)) {
+                        std::printf("ERR unified KV resume release: %s\n", err.c_str()); return 1;
+                    }
+                }
                 line = std::string(bimg ? "GENI 1" : "GEN 1") + e2;
+            }
+            if (unified_kv && unified_kv->pages().mapping(0).empty()) {
+                live.clear(); live_imgs.clear(); checks.clear(); live_ok = false;
+                main_draft_coherent = false;
+                conversations.limit_reuse(0);
             }
             // #477: every --expert-profile-save-every minutes, before the next request (at QUIT: after the loop)
             if (!heat.empty() && line != "QUIT" && o.expert_profile_save_min > 0 &&
@@ -8693,7 +9040,7 @@ int main(int argc, char** argv) {
                     strata::core::progress_at("idle");
                 }
             } busy_scope;
-            stop_req.store(false);   // a STOP that arrived between requests is stale
+            stop_req.store(0);       // a STOP that arrived between requests is stale
             err.clear();
             // Disk sessions: SAVE <path> | RESTORE <path>, between requests (the path runs to the end of the line,
             // UTF-8).  The file holds what a parked conversation holds (conversation_file.hpp).  Answers: SAVED /
@@ -9113,7 +9460,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             auto kv_quiesce = [&] { cudaDeviceSynchronize(); apply_pending(true); };
-            if (kvg.on) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
+            if (!unified_kv && kvg.on) {   // the elastic K/V: this prompt's cells (it gives back what it does not need below)
                 // a failed growth may leave the tier half-changed: the engine stops (as for any CUDA failure)
                 if (!kvg_ensure(n + 256, kv_quiesce)) {
                     std::printf("ERR the K/V cannot grow to this prompt: no VRAM is left\n");
@@ -9154,9 +9501,39 @@ int main(int argc, char** argv) {
                         }
                 }
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
+            if (conversations.enabled() && parked.tokens == 0 && conversations.size() > 0 && ids.size() >= 32768)
+                std::fprintf(stderr, "strata serve: conversation cache: no image for a %zu-token prompt "
+                                     "(parked=%zu bytes=%zu evictions=%zu; slot %d holds %zu)\n",
+                             ids.size(), conversations.size(), conversations.bytes(), conversations.evictions(),
+                             slot_source, slot_source >= 0 ? bs[size_t(slot_source)].ids.size() : 0);
             std::optional<strata::core::SavedConversation> incoming;
             if (parked.tokens > std::max(resume, slot_tokens)) incoming.emplace(conversations.take(parked.index));
-            if (incoming) slot_source = -1;
+            const int64_t wanted = std::min<int64_t>(admit_slot >= 0 ? admit_max_new : max_new, o.max_context - n);
+            const int64_t request_limit = n + std::max<int64_t>(wanted, 0);
+            main_required_end = n; // entire known prompt, including its final token
+            parking_held = incoming ? incoming->bytes() : 0;
+            auto reject_unified = [&]() -> bool {
+                if (!unified_kv->release(0, err)) { std::printf("ERR %s\n", err.c_str()); return false; }
+                if (admit_slot >= 0 && !unified_kv->release(size_t(admit_slot) + 1, err)) {
+                    std::printf("ERR %s\n", err.c_str()); return false;
+                }
+                if (admit_slot >= 0) bs[size_t(admit_slot)] = BSlot{};
+                live.clear(); live_imgs.clear(); checks.clear(); live_ok = false;
+                main_draft_coherent = false;
+                main_required_end = -1;
+                conversations.limit_reuse(0);
+                std::printf("DONE 0 %lld 0 0 %s 0 0 0\n", (long long) n, stop_req.load() ? "cancel" : "pressure");
+                if (admit_slot >= 0) std::printf("BADM %d 0\n", admit_slot);
+                std::fflush(stdout);
+                return true;
+            };
+            // Keep the slot alternative until image validation and the optional
+            // private restore reservation succeed; validation needs no mappings.
+            auto image_draft = [&](const strata::core::SavedConversation& image,
+                                   const strata::core::SessionState& state, bool draft_stage)
+                -> const strata::core::QsaState* {
+                return use_mtp && draft_stage && image.kv.size() != size_t(state.qsa_alloc) ? &mtp.kv_state() : nullptr;
+            };
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
             if (incoming && incoming->stage_images.size() != stages.size()) {
@@ -9165,8 +9542,8 @@ int main(int argc, char** argv) {
             }
             if (incoming) for (size_t i = 0; i < stages.size(); ++i) {
                 const strata::core::OnDevice on(stages[i]->dev);
-                if (!strata::core::conversation_snapshot_validate(incoming->stage_images[i], stages[i]->ss, g,
-                        use_mtp && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err)) {   // the draft: the last stage's
+                if (!strata::core::conversation_snapshot_validate_image(incoming->stage_images[i], stages[i]->ss, g,
+                        image_draft(incoming->stage_images[i], stages[i]->ss, i + 1 == stages.size()), err)) {
                     std::fprintf(stderr, "strata serve: conversation cache: discard invalid stage snapshot (%s)\n",
                                  err.c_str());
                     incoming.reset();
@@ -9174,12 +9551,98 @@ int main(int argc, char** argv) {
                     break;
                 }
             }
-            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g,
-                    use_mtp && stages.empty() ? &mtp.kv_state() : nullptr, err)) {
+            if (incoming && !strata::core::conversation_snapshot_validate_image(*incoming, ss, g,
+                    image_draft(*incoming, ss, stages.empty()), err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
                 incoming.reset();
                 err.clear();
             }
+            // Restoring a canonical image writes a wholly private extent. Check
+            // its cost before releasing main or the fitting live/slot alternative.
+            if (incoming && unified_kv) {
+                const int64_t restore_end = std::max<int64_t>(n, int64_t(incoming->live.ids.size()));
+                const size_t demand_pages = unified_kv->page_count(restore_end);
+                size_t available_pages = unified_kv->pages().free_pages_after_release(0);
+                // Reclaim an idle claim only when its parked image covers all but
+                // a cheap tail. Never take the source, destination, picture or paused owner.
+                constexpr int64_t kIdleReclaimTailTokens = 4096;
+                struct IdleClaim { int slot = -1; int64_t covered = 0, held = 0; };
+                std::vector<IdleClaim> idle_claims;
+                for (int b = 0; b < int(bs.size()); ++b) {
+                    if (b == slot_source || b == admit_slot) continue;
+                    const BSlot& sl = bs[size_t(b)];
+                    if (sl.active || sl.partial || sl.img || sl.ids.empty()) continue;
+                    if (unified_kv->pages().mapping(size_t(b) + 1).empty()) continue;
+                    const auto image = conversations.best(sl.ids, {}, sl.cvec);
+                    idle_claims.push_back({b, image.tokens, int64_t(sl.ids.size())});
+                }
+                std::sort(idle_claims.begin(), idle_claims.end(), [](const IdleClaim& x, const IdleClaim& y) {
+                    return x.held - x.covered < y.held - y.covered;
+                });
+                for (const IdleClaim& claim : idle_claims) {
+                    if (demand_pages <= available_pages) break;
+                    if (claim.held - claim.covered > kIdleReclaimTailTokens) continue;
+                    const size_t seq = size_t(claim.slot) + 1;
+                    const size_t freed = unified_kv->pages().exclusive_pages(seq);
+                    if (!unified_kv->release(seq, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                    bs[size_t(claim.slot)].cached = false;
+                    bs[size_t(claim.slot)].ids.clear();
+                    bs[size_t(claim.slot)].checks.clear();
+                    available_pages += freed;
+                    std::fprintf(stderr, "strata serve: conversation cache: reclaimed idle slot %d "
+                                         "(%zu pages) for a canonical restore; it re-reads %lld tokens later\n",
+                                 claim.slot, freed, (long long) (claim.held - claim.covered));
+                }
+                if (demand_pages > available_pages) {
+                    // Keep the fork's bounded deferral policy: only large restores
+                    // and short-lived busy claims with parked coverage qualify.
+                    // The frontend waits for
+                    // owner progress before retrying, rather than spinning here.
+                    constexpr int64_t kRestoreDeferMinTokens = 8192;
+                    constexpr int64_t kRestoreDeferDecodeRatio = 45;
+                    size_t busy_pages = 0;
+                    for (int b = 0; b < int(bs.size()); ++b) {
+                        if (b == slot_source || b == admit_slot) continue;
+                        const BSlot& sl = bs[size_t(b)];
+                        if (!sl.active && !sl.partial) continue;
+                        if (sl.ids.empty() || sl.img) continue;
+                        if (sl.max_new <= 0 || sl.max_new - sl.produced > restore_end / kRestoreDeferDecodeRatio) continue;
+                        const size_t seq = size_t(b) + 1;
+                        if (unified_kv->pages().mapping(seq).empty()) continue;
+                        if (int64_t(sl.ids.size()) - conversations.best(sl.ids, {}, sl.cvec).tokens > kIdleReclaimTailTokens) continue;
+                        busy_pages += unified_kv->pages().exclusive_pages(seq);
+                    }
+                    if (restore_end >= kRestoreDeferMinTokens && busy_pages != 0 &&
+                        available_pages + busy_pages >= demand_pages && conversations.put(std::move(*incoming), 0)) {
+                        incoming.reset();
+                        if (++restore_deferrals == 1 || restore_deferrals % 64 == 0)
+                            std::fprintf(stderr, "strata serve: conversation cache: deferring a %lld-token restore "
+                                                 "(another slot holds %zu pages while its turn finishes; %lld so far)\n",
+                                         (long long) restore_end, busy_pages, (long long) restore_deferrals);
+                        if (!reject_unified()) return 1;
+                        continue;
+                    }
+                    std::string why;
+                    char part[160];
+                    std::snprintf(part, sizeof(part), "main %zu pages exclusive", unified_kv->pages().exclusive_pages(0));
+                    why += part;
+                    for (int b = 0; b < int(bs.size()); ++b) {
+                        const BSlot& sl = bs[size_t(b)];
+                        const size_t seq = size_t(b) + 1;
+                        const int64_t covered = sl.ids.empty() ? 0 : conversations.best(sl.ids, {}, sl.cvec).tokens;
+                        std::snprintf(part, sizeof(part), "; slot %d %s held %zu mapped %zu excl %zu parked %lld%s%s",
+                                      b, sl.active ? "active" : (sl.partial ? "partial" : (sl.cached ? "cached" : "idle")),
+                                      sl.ids.size(), unified_kv->pages().mapping(seq).size(),
+                                      unified_kv->pages().exclusive_pages(seq), (long long) covered,
+                                      b == slot_source ? " [slot_source]" : "", b == admit_slot ? " [admit_slot]" : "");
+                        why += part;
+                    }
+                    std::fprintf(stderr, "strata serve: conversation cache: skip restore (need %zu pages, have %zu; %s); "
+                                         "keep live/slot prefix or prompt replay\n", demand_pages, available_pages, why.c_str());
+                    incoming.reset();
+                }
+            }
+            parking_held = incoming ? incoming->bytes() : 0;
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
             // pin=N: this request resumes exactly at the pinned shared prefix of the conversation the session holds
@@ -9195,9 +9658,31 @@ int main(int argc, char** argv) {
                 std::printf("ERR %s\n", err.c_str());
                 return 1;
             }
+            if (incoming && unified_kv) {
+                // Outgoing capture precedes destructive preparation. A full image
+                // writes from zero, including its live tail past the resume point.
+                if (!unified_kv->release(0, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                live.clear(); live_imgs.clear(); checks.clear(); live_ok = false;
+                conversations.limit_reuse(0);
+                const int64_t restore_end = std::max<int64_t>(n, int64_t(incoming->live.ids.size()));
+                const int r = reserve_unified(0, restore_end, restore_end, false);
+                if (r < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                if (r == 0) {
+                    incoming.reset();
+                    resume = 0;
+                    from_live = false;
+                    err.clear();
+                    if (stop_req.load()) {
+                        if (!reject_unified()) return 1;
+                        continue;
+                    }
+                } else slot_source = -1;
+            } else if (incoming) slot_source = -1;
             if (slot_source >= 0) {
+                conversations.limit_reuse(0); // slot state has different canonical-buffer provenance
                 const auto t0 = Clock::now();
                 if (!copy_from_slot(slot_source, slot_ck, err)) {
+                    if (unified_kv) { std::printf("ERR unified KV slot restore: %s\n", err.c_str()); return 1; }
                     // the main session may be half written: read this prompt from the start
                     std::fprintf(stderr, "strata batch: restoring slot %d failed (%s); reading the prompt\n",
                                  slot_source, err.c_str());
@@ -9211,7 +9696,8 @@ int main(int argc, char** argv) {
                     checks.clear();   // the main session's checkpoints were of the conversation it held before
                     // a read that gave way, the same request again (into its own slot): on with it - its segments and
                     // checkpoints as if it had not stopped
-                    if (slot_ck == nullptr && bs[(size_t) slot_source].partial && admit_slot == slot_source) {
+                    if (slot_ck == nullptr && admit_slot == slot_source &&
+                            (bs[size_t(slot_source)].partial || admit_was_partial)) {
                         resumed_from0 = bs[(size_t) slot_source].partial_from0;
                         for (const ConvCheckpoint& c : bs[(size_t) slot_source].checks) checks.push_back(c);
                         bs[(size_t) slot_source].partial = false;
@@ -9233,14 +9719,14 @@ int main(int argc, char** argv) {
                 }
             }
             // the elastic K/V: a parked conversation is restored whole, and it may be longer than this prompt
-            if (incoming && !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce)) {
+            if (incoming && !unified_kv && !kvg_ensure((int64_t) incoming->live.ids.size() + 256, kv_quiesce)) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
             }
             if (incoming) {
                 const auto t0 = Clock::now();
                 if (strata::core::conversation_snapshot_restore(*incoming, ss, g,
-                        use_mtp && stages.empty() ? &mtp.kv_state() : nullptr, err) !=
+                        image_draft(*incoming, ss, stages.empty()), err) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
                     // permission to decode from a partially restored session.
@@ -9250,7 +9736,7 @@ int main(int argc, char** argv) {
                 for (size_t i = 0; i < stages.size(); ++i) {   // the later stages' parts
                     const strata::core::OnDevice on(stages[i]->dev);
                     if (strata::core::conversation_snapshot_restore(incoming->stage_images[i], stages[i]->ss, g,
-                            use_mtp && i + 1 == stages.size() ? &mtp.kv_state() : nullptr, err) !=
+                            image_draft(incoming->stage_images[i], stages[i]->ss, i + 1 == stages.size()), err) !=
                         strata::core::ConversationRestore::restored) {
                         std::printf("ERR restoring parked conversation (stage CUDA%d): %s\n", stages[i]->dev,
                                     err.c_str());
@@ -9258,7 +9744,11 @@ int main(int argc, char** argv) {
                     }
                     if (cudaDeviceSynchronize() != cudaSuccess) { std::printf("ERR stage sync\n"); return 1; }
                 }
-                if (use_mtp && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
+                main_draft_coherent = !use_mtp || (stages.empty() ? image_draft(*incoming, ss, true) != nullptr
+                    : image_draft(incoming->stage_images.back(), stages.back()->ss, true) != nullptr);
+                if (!main_draft_coherent)
+                    std::fprintf(stderr, "strata serve: TARGET_ONLY restore: private MTP proposals suppressed until full replay\n");
+                if (use_mtp && main_draft_coherent && std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
                     const auto& draft_kv = stages.empty() ? incoming->kv.back() : incoming->stage_images.back().kv.back();
                     const strata::core::OnDevice on_d(stages.empty() ? 0 : stages.back()->dev);
@@ -9296,12 +9786,25 @@ int main(int argc, char** argv) {
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes());
             }
+            parking_held = 0; // the incoming image was restored/released
             if (want_cvec != cvec_cached) {
                 live_ok = false;
                 checks.clear();
                 cvec_cached = want_cvec;
             }
             if (strata::kernels::cvec().loaded()) strata::kernels::cvec_set_enabled(want_cvec);
+            if (unified_kv) {
+                // Drop the obsolete tail; reserve the whole known prompt plus
+                // bounded headroom, not the request's potentially huge output cap.
+                if (!unified_kv->truncate(0, resume, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                const int64_t write_begin = std::getenv("STRATA_CKPT_REREAD") ? 0 : resume;
+                const int r = reserve_unified(write_begin, n, request_limit, true);
+                if (r < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                if (r == 0) {
+                    if (!reject_unified()) return 1;
+                    continue;
+                }
+            }
             // this request rewrites every cell from `resume` on, so a checkpoint past it (or not on this prompt's
             // path) no longer has its cells; the ones kept are prefixes of both the old tokens and the new
             checks.erase(std::remove_if(checks.begin(), checks.end(), [&](const ConvCheckpoint& c) {
@@ -9310,7 +9813,7 @@ int main(int argc, char** argv) {
             live_ok = false;   // until this request has finished, the session is in between
             // the elastic K/V: the outgoing session is parked and this request rewrites every cell from `resume` on,
             // so cells past this prompt's are no longer anyone's - far more than it needs go back to the cache
-            if (kvg.on) {
+            if (!unified_kv && kvg.on) {
                 kv_quiesce();
                 // STRATA_KV_GROW_HOLD=1 (opt-in): keep the K/V as long as the longest parked conversation; default: trim to this request alone, as 0.1.40
                 static const bool hold_on = [] { const char* v = std::getenv("STRATA_KV_GROW_HOLD"); return v != nullptr && std::atoi(v) != 0; }();
@@ -9322,6 +9825,7 @@ int main(int argc, char** argv) {
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
             if (resume == 0) {
+                main_draft_coherent = true; // full residual replay rebuilds the private draft
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
                 for (auto& st : stages) {
@@ -9349,6 +9853,7 @@ int main(int argc, char** argv) {
                         cudaStreamSynchronize(st->stream);
                     }
                     reread_to = resume;
+                    main_draft_coherent = true;
                     std::fprintf(stderr, "strata serve: STRATA_CKPT_REREAD: reading %lld tokens again instead of "
                                          "restoring\n", (long long) resume);
                 } else if (c == nullptr || !checkpoint_restore(*c, ss, g) || c->stage_parts.size() != stages.size() ||
@@ -9365,7 +9870,7 @@ int main(int argc, char** argv) {
             }
             // KV streaming: the drafter's ring may hold cells past `resume` from a longer turn; the main layers'
             // host copies and slots are always current (every writer writes both), so they need nothing
-            if (use_mtp && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
+            if (use_mtp && main_draft_coherent && resume > 0 && reread_to <= 0) mtp.kv_restore(resume);
             tr("request", n, geni ? 1 : 0);
             if (use_mtp) mtp.set_prompt_len(n);
             const int64_t read_from = reread_to > 0 ? 0 : resume;
@@ -9529,6 +10034,10 @@ int main(int argc, char** argv) {
                 for (int64_t q = a; q < b;) {
                     if (stop_req.load()) { e = "cancelled"; return false; }
                     const int T = (int) std::min<int64_t>(S, b - q);
+                    if (unified_kv && reserve_shared(0, q, q + T, n, false) != KvReserve::ready) {
+                        e = "unified KV known-prompt mapping: " + err;
+                        return false;
+                    }
                     for (int t = 0; t < T; ++t) {
                         win[(size_t) t] = (int32_t) cur[(size_t) (q + t)];
                         nxt[(size_t) t] = (int32_t) cur[(size_t) (q + t + 1)];
@@ -9702,6 +10211,11 @@ int main(int argc, char** argv) {
             // the request ends with `YIELDED <slot> <tokens>` + DONE cancel, and the server sends it again later: it
             // continues from the slot with the same chunks.  #656's cooperative preemption, with a slot as the park.
             auto read_part = [&](int64_t a0, int64_t b0, std::string& e) -> bool {
+                if (unified_kv && reserve_shared(0, a0, b0, n, false) != KvReserve::ready) {
+                    batch_fatal = true;
+                    e = "unified KV known-prompt mapping: " + err;
+                    return false;
+                }
                 // (a layer split reads its stages as a pipeline over one run's chunks: in pieces only beside slots)
                 if (o.batch <= 0 || piped || (!stages.empty() && !batch_on())) return sp.run(ids.data() + a0, b0 - a0, a0, e);
                 const int64_t C = std::max<int64_t>(sp.chunk(), 1);
@@ -9715,18 +10229,28 @@ int main(int argc, char** argv) {
                     {   // a BSTOP that came meanwhile ends its slot at its next window; a BYIELD is for this read
                         std::lock_guard<std::mutex> lk(in_mu);
                         for (auto it = in_lines.begin(); it != in_lines.end();) {
-                            if (it->rfind("BSTOP ", 0) == 0) {
-                                const int b = std::atoi(it->c_str() + 6);
-                                if (b >= 0 && b < (int) bs.size()) bs[(size_t) b].stop = true;
+                            if (it->rfind("BSTOP ", 0) == 0 || (unified_kv && it->rfind("BHANDOFF ", 0) == 0)) {
+                                const bool transfer = it->rfind("BHANDOFF ", 0) == 0;
+                                int b = -1;
+                                if (!strata::core::shared_kv_slot_arg(*it, transfer ? 9 : 6, int(bs.size()), b)) {
+                                    bad_slot_line(*it);
+                                    it = in_lines.erase(it);
+                                    continue;
+                                }
+                                if (!(transfer ? handoff_slot(b) : stop_slot(b))) { batch_fatal = true; e = err; return false; }
                                 it = in_lines.erase(it);
                             } else if (it->rfind("BYIELD ", 0) == 0) {
-                                ys = std::atoi(it->c_str() + 7);
+                                if (!strata::core::shared_kv_slot_arg(*it, 7, int(bs.size()), ys)) {
+                                    bad_slot_line(*it);
+                                    ys = -1;
+                                }
                                 it = in_lines.erase(it);
                             } else {
                                 ++it;
                             }
                         }
                     }
+                    if (stop_req.load()) { e = "cancelled"; return false; }
                     if (ys >= 0) {
                         // only where the rest is read the same way after it (more than a chunk and more than a short
                         // read left), text only, and into a slot that is not decoding
@@ -9743,6 +10267,7 @@ int main(int argc, char** argv) {
                             sl.cached = true;
                             sl.partial = true;
                             sl.partial_from0 = read_from == 0 || resumed_from0;
+                            sl.prompt_end = n;
                             sl.cvec = cvec_cached;
                             for (const ConvCheckpoint& c : checks)   // the root / periodic checkpoints of this read
                                 if ((int64_t) c.ids.size() <= q && std::equal(c.ids.begin(), c.ids.end(), ids.begin(),
@@ -9754,6 +10279,11 @@ int main(int argc, char** argv) {
                                                  "holds it (copied in %.1f ms)\n", (long long) q, (long long) n, ys,
                                          std::chrono::duration<double, std::milli>(Clock::now() - ty).count());
                             e = "yield";
+                            return false;
+                        }
+                        if (can && unified_kv) {
+                            batch_fatal = true;
+                            e = "unified KV yield transfer: " + ye;
                             return false;
                         }
                         if (can) bs[(size_t) ys].cached = false;   // half written
@@ -9897,7 +10427,7 @@ int main(int argc, char** argv) {
                     std::fflush(stderr);
                 }
                 if (!sp_ok) {
-                    if (yielded_at < 0 && (batch_fatal || !stop_req.load())) {
+                    if (yielded_at < 0 && (batch_fatal || err != "cancelled" || !stop_req.load())) {
                         std::fprintf(stderr, "strata serve: %s\n", err.c_str());
                         std::printf("ERR %s\n", err.c_str());
                         // #224: a CUDA fault (an illegal address) poisons the context for the whole process, and
@@ -9966,6 +10496,7 @@ int main(int argc, char** argv) {
             consumed.reserve((size_t) (n + max_new + S));
             for (int64_t i = 0; i < n - 1; ++i) consumed.push_back((int32_t) ids[(size_t) i]);
             const char* finish = "length";
+            bool kv_shortage = false;
             const Clock::time_point d0 = Clock::now();
             // STRATA_DECODE_TIMING=1: where a request's decode time goes (one line per request)
             static const bool dec_timing = std::getenv("STRATA_DECODE_TIMING") != nullptr;
@@ -10129,7 +10660,8 @@ int main(int argc, char** argv) {
                     B.seq = A.seq + 1;
                     B.p = A.p + A.T;
                     B.tok[0] = oc[base];
-                    B.T = t_rule(op, base + 1, avail);
+                    B.T = bounded_window(t_rule(op, base + 1, avail), max_new - produced_n - A.T, o.max_context - B.p);
+                    if (B.T == 0) return;
                     for (int i = 1; i < B.T; ++i) {
                         B.tok[i] = oc[base + i];
                         B.prob[i - 1] = op[base + i];
@@ -10238,7 +10770,7 @@ int main(int argc, char** argv) {
                     if (k <= 0 || pl_sbuf[0] != chain0[0]) return;
                     const strata::spec::DraftPolicy::Pick pk = policy.choose(w.T, std::min(k, S - 1), match);
                     if (!pk.lookup) return;
-                    w.T = pk.t;
+                    w.T = bounded_window(pk.t, max_new - produced_n, o.max_context - w.p);
                     for (int i = 1; i < w.T; ++i) {
                         w.tok[i] = pl_sbuf[(size_t) i - 1];
                         w.prob[i - 1] = 1.0f;
@@ -10250,7 +10782,8 @@ int main(int argc, char** argv) {
                         B = PW{};
                         B.seq = A.seq + 1;
                         B.p = A.p + A.T;
-                        B.T = std::min(S, rest);
+                        B.T = bounded_window(std::min(S, rest), max_new - produced_n - A.T, o.max_context - B.p);
+                        if (B.T == 0) return;
                         for (int i = 0; i < B.T; ++i) B.tok[i] = pl_sbuf[(size_t) (A.T - 1 + i)];
                         for (int i = 1; i < B.T; ++i) B.prob[i - 1] = 1.0f;
                         B.p_on = pl_lookup_pon;
@@ -10347,7 +10880,8 @@ int main(int argc, char** argv) {
                                 for (int j = 0; j < k; ++j)
                                     if (mtp.chain_prob()[j] < (float) req_spec_min_p) { decided = true; break; }
                             if (decided) {
-                                A.T = t_rule(mtp.chain_prob(), 0, std::min(k, S_mtp - 1));
+                                A.T = bounded_window(t_rule(mtp.chain_prob(), 0, std::min(k, S_mtp - 1)),
+                                                     max_new - produced_n, o.max_context - A.p);
                                 for (int i = 1; i < A.T; ++i) {
                                     A.tok[i] = mtp.chain_tok()[i - 1];
                                     A.prob[i - 1] = mtp.chain_prob()[i - 1];
@@ -10364,7 +10898,8 @@ int main(int argc, char** argv) {
                         const int32_t* oc = mtp.chain_tok();
                         const float* op = mtp.chain_prob();
                         if (r == 1 && chain_kind == 2 && !early_used) {
-                            A.T = t_rule(op, 0, std::min(chain_n, S_mtp - 1));
+                            A.T = bounded_window(t_rule(op, 0, std::min(chain_n, S_mtp - 1)),
+                                                 max_new - produced_n, o.max_context - A.p);
                             for (int i = 1; i < A.T; ++i) {
                                 A.tok[i] = oc[i - 1];
                                 A.prob[i - 1] = op[i - 1];
@@ -10414,7 +10949,8 @@ int main(int argc, char** argv) {
                     }
                     // ---- stage 0: A (never while a wrong window still holds stage 0's state)
                     if (A.ready && !A.launched && !doomed) {
-                        if (A.p + A.T > o.max_context) { ending = true; continue; }
+                        A.T = bounded_window(A.T, max_new - produced_n, o.max_context - A.p);
+                        if (A.T == 0) { ending = true; continue; }
                         if (ajob) a_gap(0);   // --adapt-async: stage 0 is idle until this launch
                         if (!snap_take(A.seq)) return die("the GDN snapshot failed");
                         if (!V0(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
@@ -10466,6 +11002,9 @@ int main(int argc, char** argv) {
                     chain_kind = 0;
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
+                    a = usable_outputs(outp.data(), a + 1, max_new - produced_n, [&](int32_t token) {
+                        return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) token) != o.eos_ids.end();
+                    }) - 1;
                     if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
                     draft_offered += A.T - 1;
@@ -10485,7 +11024,7 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                     if (eos) finish = "stop";
                     else if (stop_req.load()) finish = "cancel";
-                    const bool last = eos || produced_n >= max_new || stop_req.load();
+                    const bool last = eos || produced_n >= max_new || stop_req.load() || A.p + a + 1 >= o.max_context;
                     const bool on = B.launched && a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
                     if (B.made) {   // the gate's calibration: would B have been on the path, by its estimate p_on
                         const bool would = a == A.T - 1 && B.tok[0] == outp[(size_t) A.T - 1];
@@ -10605,7 +11144,10 @@ int main(int argc, char** argv) {
                     std::fprintf(stderr, "strata pipeline calibration (p_on decile: on/scored):%s\n", cal.c_str());
                 }
             }
+            if (!cancelled && !main_draft_coherent)
+                std::fprintf(stderr, "strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled\n");
             while (!pl_ran && !cancelled && produced_n < max_new) {
+                if (stop_req.load()) { finish = "cancel"; break; }
                 int T = use_mtp ? S_mtp : 1;   // no --mtp: one token a round unless a lookup draft fires
                 if (use_mtp && req_spec_min_p > 0.0) {
                     T = 1;
@@ -10616,7 +11158,7 @@ int main(int argc, char** argv) {
                 // when its expected tokens per ms, from the measured acceptance and window costs, beat the MTP window's
                 bool from_sfx = false;
                 int sfx_match = 0;
-                if (o.suffix_draft > 0 && !first_window) {
+                if (o.suffix_draft > 0 && !first_window && main_draft_coherent) {
                     const int k = sfx.propose(S - 1, sbuf.data());
                     sfx_match = sfx.last_match();
                     if (k > 0 && (!use_mtp || sbuf[0] == drafts[0])) {
@@ -10626,7 +11168,7 @@ int main(int argc, char** argv) {
                 }
                 // --lookup-chain: what followed an earlier occurrence of the context + the MTP's drafts, after them
                 int chain_n = 0, cm = 0;
-                if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S) {
+                if (o.lookup_chain > 0 && !first_window && !from_sfx && T < S && main_draft_coherent) {
                     int csrc = -1;
                     const int nt = chain_tail(sfx, drafts.data(), T - 1, ctail);
                     chain_n = strata::spec::propose_from_sources(lookup_src, ctail.data(), nt, T - 1,
@@ -10639,11 +11181,22 @@ int main(int argc, char** argv) {
                         chain_n = policy.chain(T, p_mtp, chain_n, cm);
                     }
                 }
-                const int T_mtp = T;
-                T += chain_n;
+                if (!main_draft_coherent) T = 1;
+                const int proposed_mtp = T;
+                T = bounded_window(T + chain_n, max_new - produced_n, o.max_context - p);
+                if (T == 0) break;
+                const int T_mtp = std::min(proposed_mtp, T);
+                chain_n = T - T_mtp;
                 const bool timed_round = !first_window;
                 const Clock::time_point round0 = Clock::now();
-                if (p + T > o.max_context) break;
+                if (unified_kv) {
+                    // Preflight ALL verifier rows (rejected drafts still write),
+                    // before launching the writer, not merely before committing.
+                    main_required_end = std::max<int64_t>(n, p + T);
+                    const int r = reserve_unified(p, p + T, request_limit, true);
+                    if (r < 0) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                    if (r == 0) { kv_shortage = true; finish = stop_req.load() ? "cancel" : "pressure"; break; }
+                }
                 window[0] = x;
                 for (int i = 1; i < T_mtp; ++i) window[(size_t) i] = from_sfx ? sbuf[(size_t) i - 1] : drafts[(size_t) i - 1];
                 for (int i = 0; i < chain_n; ++i) window[(size_t) (T_mtp + i)] = cbuf[(size_t) i];
@@ -10671,7 +11224,7 @@ int main(int argc, char** argv) {
                                cudaMemcpyHostToDevice);
                 }
                 // the elastic K/V: the window's cells and the drafter's beyond them
-                if (kvg.on && p + T + 64 > kvg.cells &&
+                if (!unified_kv && kvg.on && p + T + 64 > kvg.cells &&
                     !kvg_ensure(p + T + 64, [&] { cudaDeviceSynchronize(); apply_pending(true); })) {
                     std::printf("ERR the K/V cannot grow: no VRAM is left\n");
                     return 1;
@@ -10701,6 +11254,9 @@ int main(int argc, char** argv) {
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                a = usable_outputs(outv.data(), a + 1, max_new - produced_n, [&](int32_t token) {
+                    return std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) token) != o.eos_ids.end();
+                }) - 1;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)
@@ -10740,9 +11296,9 @@ int main(int argc, char** argv) {
                 const Clock::time_point tw2 = Clock::now();
                 // coupled drafts with penalties: the next window's row-0 history (`consumed` holds this window's
                 // commit, outv[a] is its row 0) - the drafts extend it on the device as the verify rows will
-                if (use_mtp && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
+                if (use_mtp && main_draft_coherent && hist_n > 0 && mtp.coupled() && !eos && produced_n < max_new)
                     mtp.set_draft_history(consumed.data(), (int64_t) consumed.size(), outv[(size_t) a]);
-                const bool drafted = !use_mtp || eos || produced_n >= max_new ||
+                const bool drafted = !use_mtp || !main_draft_coherent || eos || produced_n >= max_new ||
                                      mtp.draft(T, outv.data(), p, a, drafts.data(), err, dprob.data(), (float) req_spec_min_p);
                 {
                     const Clock::time_point tw3 = Clock::now();
@@ -10833,12 +11389,20 @@ int main(int argc, char** argv) {
                     return h;
                 };
                 // the cells [c0, c1) of one int8 K or V pool ([page][kv_head][page_size][head_dim]), bytes per value `w`
-                auto hash_cells = [&](const void* pool, int64_t per_cell, int64_t c0, int64_t c1, uint64_t h) {
+                auto hash_cells = [&](const strata::core::QsaState& state, const void* pool, int64_t per_cell,
+                                      int64_t c0, int64_t c1, uint64_t h) {
                     const int64_t ps = qs.page_size;
                     for (int64_t pg = c0 / ps; pg * ps < c1; ++pg)
                         for (int64_t hd = 0; hd < qs.n_head_kv; ++hd) {
                             const int64_t a = std::max(c0, pg * ps) - pg * ps, e = std::min(c1, (pg + 1) * ps) - pg * ps;
-                            const size_t off = (size_t) (((pg * qs.n_head_kv + hd) * ps + a) * per_cell);
+                            int64_t physical = pg;
+                            if (state.shared_kv) {
+                                if (size_t(pg) >= state.shared_page_table.size() || state.shared_page_table[size_t(pg)] < 0) {
+                                    hash_ok = false; return h;
+                                }
+                                physical = state.shared_page_table[size_t(pg)];
+                            }
+                            const size_t off = (size_t) (((physical * qs.n_head_kv + hd) * ps + a) * per_cell);
                             h = hash_dev((const uint8_t*) pool + off, (size_t) ((e - a) * per_cell), h);
                         }
                     return h;
@@ -10891,10 +11455,10 @@ int main(int argc, char** argv) {
                     h_pool = hash_dev(st.idx_pooled, (size_t) (L / qs.idx_block) * qs.idx_dim * 4, h_pool);
                     h_pool_full = hash_dev(st.idx_pooled, (size_t) (L > 0 ? L / qs.idx_block + 1 : 0) * qs.idx_dim * 4,
                                            h_pool_full);
-                    // KV streaming: the host copy is the identity layout and holds every cell
+                    // Authoritative host bytes; hash_cells translates shared backing pages.
                     for (const auto& [pool, w] : kv_arrays(st)) {
-                        h_kv = hash_cells(pool, w, 0, L, h_kv);
-                        h_stale = hash_cells(pool, w, L, end_cell, h_stale);
+                        h_kv = hash_cells(st, pool, w, 0, L, h_kv);
+                        h_stale = hash_cells(st, pool, w, L, end_cell, h_stale);
                     }
                 }
                 uint64_t h_mtp = 1469598103934665603ull;
@@ -10902,7 +11466,7 @@ int main(int argc, char** argv) {
                     const strata::core::QsaState& ms = mtp.kv_state();
                     const int64_t mL = std::min<int64_t>(L, ms.max_cells);
                     for (const auto& [pool, w] : kv_arrays(ms))
-                        if (pool != nullptr) h_mtp = hash_cells(pool, w, 0, mL, h_mtp);
+                        if (pool != nullptr) h_mtp = hash_cells(ms, pool, w, 0, mL, h_mtp);
                 }
                 if (!hash_ok) {
                     std::printf("ERR reading state fingerprint\n");
@@ -10929,6 +11493,30 @@ int main(int argc, char** argv) {
             //                    not in [lookups])
             //      [lookup-chain accepted] [lookup-chain offered] [suffix accepted] [suffix offered] [windows]
             //      (only with --lookup-chain)
+            // Only a completed prompt/decode cache can be handed off warm.
+            // A shortage owns the disposition even if HANDOFF raced the miss;
+            // park before releasing it, so frontend continuation can restore RAM.
+            const bool shortage_release = kv_shortage && stop_req.load() != 0;
+            if (unified_kv && std::strcmp(finish, "cancel") == 0 && !shortage_release &&
+                    strata::core::shared_kv_handoff_cache(stop_req.load(), !cancelled, live_ok))
+                finish = "handoff";
+            if (unified_kv && (std::strcmp(finish, "pressure") == 0 || std::strcmp(finish, "cancel") == 0)) {
+                if ((std::strcmp(finish, "pressure") == 0 || shortage_release) && !park_current(0)) {
+                    std::printf("ERR pressure parking: %s\n", err.c_str()); return 1;
+                }
+                if (!unified_kv->release(0, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                // Genuine BYIELD retains its destination; ordinary cancellation
+                // and pressure release it before BADM, never resurrecting an owner.
+                if (admit_slot >= 0 && yielded_at < 0) {
+                    if (!unified_kv->release(size_t(admit_slot) + 1, err)) {
+                        std::printf("ERR %s\n", err.c_str()); return 1;
+                    }
+                    bs[size_t(admit_slot)] = BSlot{};
+                }
+                live.clear(); live_imgs.clear(); checks.clear(); live_ok = false;
+                main_draft_coherent = false;
+                conversations.limit_reuse(0);
+            }
             char chain_txt[128] = "";
             if (o.lookup_chain > 0)
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
@@ -10946,7 +11534,13 @@ int main(int argc, char** argv) {
                 bool cont = !cancelled && produced_n == 1 && admit_max_new > 1 && std::strcmp(finish, "length") == 0 &&
                             (int64_t) live.size() == p;
                 const auto tc0 = Clock::now();
+                // MOVE departs main's draft owner: preserve its prompt and
+                // checkpoint image before transferring target ownership to a slot.
+                if (cont && unified_kv && !park_current(0)) {
+                    std::printf("ERR parking unified admission: %s\n", err.c_str()); return 1;
+                }
                 if (cont && !copy_to_slot(admit_slot, live, err)) {
+                    if (unified_kv) { std::printf("ERR unified KV admission transfer: %s\n", err.c_str()); return 1; }
                     std::fprintf(stderr, "strata serve: batch admission failed: %s\n", err.c_str());
                     bs[(size_t) admit_slot].cached = false;   // its sessions may be half written
                     cont = false;
@@ -10986,6 +11580,14 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
                 admit_slot = -1;
             }
+            if (unified_kv && !unified_kv->pages().mapping(0).empty()) {
+                const bool ok = cancelled ? unified_kv->release(0, err)
+                                          : unified_kv->truncate(0, int64_t(live.size()), err);
+                if (!ok) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                if (cancelled) { live.clear(); live_imgs.clear(); checks.clear(); live_ok = false; }
+            }
+            main_required_end = -1;
+            parking_held = 0;
             if (drive.routing != nullptr) std::fflush(drive.routing);   // the routing trace survives a crash and is watchable mid-session
             // "12288 of 98179" when cancelled mid-read (#471), the rate from what was read
             char read_txt[64];
@@ -11752,14 +12354,13 @@ int main(int argc, char** argv) {
                     chain_n = policy.chain(T, p_mtp, chain_n, cm);
                 }
             }
-            const int T_mtp = T;
-            T += chain_n;
+            const int proposed_mtp = T;
+            T = bounded_window(T + chain_n, max_new - (int64_t) produced.size(), o.max_context - p);
+            if (T == 0) break;
+            const int T_mtp = std::min(proposed_mtp, T);
+            chain_n = T - T_mtp;
             const bool timed_round = !first_window;
             ++window_hist[(size_t) T];
-            if (p + T > o.max_context) {
-                std::fprintf(stderr, "strata generate: ran out of context at position %lld\n", (long long) p);
-                return 2;
-            }
             window[0] = x;
             for (int i = 1; i < T; ++i) {
                 const size_t at = produced.size() - 1 + (size_t) i;
@@ -11808,6 +12409,9 @@ int main(int argc, char** argv) {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            a = usable_outputs(outv.data(), a + 1, max_new - (int64_t) produced.size(), [&](int32_t token) {
+                return o.stop_eos && std::find(o.eos_ids.begin(), o.eos_ids.end(), (int64_t) token) != o.eos_ids.end();
+            }) - 1;
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();
