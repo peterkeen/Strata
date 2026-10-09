@@ -20,11 +20,40 @@ asked, with a note when it is more than setup would recommend.
 ```
 
 On one GPU with MTP (`--mtp` and `--spec`), `--batch-mtp` (in the config's `args`, or `STRATA_BATCH_MTP=1` in the
-server's environment) lets each batch slot verify one MTP proposal per window. It is opt-in; without it the batch
-behaviour described below is exactly the one without MTP. It needs VRAM per slot for the draft state and buffers, so
-check the engine's free-memory log before using it on a smaller card. If it cannot run (one slot, no `--mtp`, a layer
-split or helper GPU) the engine says so and batches as usual. RTX PRO 5000 owners measured +31% to +39% total
-throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
+server's environment) lets each batch slot verify **one MTP proposal per window**: the slot's own private drafter
+proposes the token after its current one, and the verifier commits both rows when they agree. It is opt-in; without it
+the batch behaviour described below is exactly the one without MTP, and the solo path is unchanged. It needs VRAM per
+slot for the draft state and its buffers, so check the engine's free-memory log before using it on a smaller card. It
+runs when all of these hold, and otherwise the engine says why and batches as usual:
+
+- `--serve` with `--batch 2..8` (a window holds at most eight rows), `--mtp` and `--spec T` with `T >= 2`;
+- **one GPU**: no `--layer-split` and no helper GPU. It has not been validated with a layer split;
+- `--kv-unified --batch-groups 1` for the shared-pool window reservation described in
+  [INCREMENTAL_UNIFIED_KV.md](INCREMENTAL_UNIFIED_KV.md). Without unified KV a slot still verifies one proposal per
+  window, but there is no shared-pool reservation to prove, so the optional-row fallback below does not apply.
+
+Each window reserves its **mandatory** target row first; only then does it ask once for the optional two-row extent
+that carries the proposal. A shortage of that optional row is a target-only window (`fallback_reserve` in the slot's
+counter line) and **never reclaims or parks anyone**; only the mandatory row's shortage, after its own reclaim retry,
+parks an owner.
+
+Each slot keeps its own **bounded private draft ring**, sized from the MTP window:
+`mtp_kv_ring_cells(window, max_cells, max_t) = window + 4*max_t + 64` when `0 < window < max_cells`, and `-1`
+(private, fully resident draft K/V) otherwise, where `window` is `--mtp-window` (default 32768 cells) and `max_cells`
+the slot's logical context. A default window is at least the context on a small pool, so the resident path applies and
+the bounded ring needs an explicit smaller window. Measured on an RTX 5060 Ti at `--max-context 4096 --mtp-window 128`
+with `max_t = 2`: 200 cells requested and 200 allocated, against 1536/1540-cell prompts and 2048 consumed cells.
+
+The per-slot counter line (stderr, once per slot MTP lifecycle) is:
+
+```
+strata batch_mtp_stats slot=N windows=N offered=N accepted=N rejected=N discarded=N fallback_attempts=N
+    fallback_incoherent=N fallback_not_ready=N fallback_limits=N fallback_capacity=N fallback_reserve=N
+```
+
+`offered == accepted + rejected + discarded`, a target-only window has exactly one reason counter, and `offered`
+counts proposal rows passed to a successful verifier call. RTX PRO 5000 owners measured +31%
+to +39% total throughput with 2 to 4 clients (a RX R9700 run too); it has not been validated with a layer split.
 
 With a layer split, the engine options go into the config's `args`:
 
@@ -100,8 +129,16 @@ about 10-25% speed per request on this card". `--parallel N` is honoured as aske
   back and decodes with MTP drafts again (at most twice per request; with `--prompt-cache 0` it stays in the slot;
   `STRATA_PARALLEL_SOLO=0` turns it off). With unified KV the slot clone-back is target-only: private MTP/suffix
   proposals stay suppressed until a full residual prompt replay rebuilds coherent draft history, so it never uses an
-  unrelated conversation's draft K/V. Without unified KV, the draft layer's own K/V was built for another conversation
-  then, but measured it accepted as many drafts (140 of 172) as a draft layer that read the conversation (140 of 173).
+  unrelated conversation's draft K/V. The engine says so on stderr
+  (`TARGET_ONLY slot clone` / `TARGET_ONLY restore`, then `TARGET_ONLY decode: T=1, MTP/suffix proposals disabled`) and
+  the private ring stays allocated. Measured with `--batch-mtp` (context 4096, 1536-cell prompt, cap 64):
+  `BDONE 0 3 handoff` with a nonterminal 3-token prefix, then a MAIN continuation that reused 1538 of its 1539 prompt
+  cells (1536 + 3, the last returned token unfed), reproduced the same-binary solo token IDs exactly
+  (3 + 61 = 64) and resumed **30 accepted MAIN draft offers** - a coherent full-slot transfer, not a target-only clone.
+  The same run's solo reference reused a turn checkpoint instead of the live slot and stayed target-only (the
+  documented checkpoint behaviour). Without unified KV,
+  the draft layer's own K/V was built for another conversation then, but measured it accepted as many drafts
+  (140 of 172) as a draft layer that read the conversation (140 of 173).
 - **More requests than slots** wait for a free one (`/metrics` -> `live.slots` shows each slot: idle, reading or
   decoding, its tokens and tok/s; `live.running` the requests in flight).
 - **Each admission** reads the request's prompt through the usual prompt path (prompt cache and conversation
@@ -154,7 +191,8 @@ counter-based draw (Philox(seed, position)).
 
 - By default, batch windows carry no MTP drafts: a conversation in a slot decodes one token per window (the solo
   path keeps its drafts, which is why a request alone is not put in a slot, and goes back to it when left alone).
-- Grouped MTP currently uses one proposal per slot and requires one GPU; it does not support a layer split.
+- `--batch-mtp` opts each slot into one MTP proposal per window (above). It is **one proposal, not a chain**, and it
+  still requires one GPU (`--serve`, `--batch 2..8`, `--mtp`, `--spec T >= 2`, no `--layer-split` or helper GPU).
 - Repetition / frequency / presence penalties are not applied in batch windows.
 - A prompt shorter than one chunk is read in one piece (the slots wait for it); a read gives way only at a chunk
   boundary, and not for pictures.
@@ -203,6 +241,34 @@ tok/s, at 0.7 -> 358 tok/s.
 `--trim-stage-weights` alone raised the share of experts held in VRAM on that machine from 76-85 % to 84-100 %
 per card.
 
+### Batch MTP with unified KV (opt-in)
+
+One RTX 5060 Ti, greedy, two concurrent 1024-cell prompts of 320 tokens each (the slot-count control is one stream),
+`--max-context 4096`, `--kv-unified` (4096 cells), 4096 MiB parking, `--spec 2 --mtp-max-t 2`, `--pcie-frac 0`,
+identical expert placement, private subprocesses (not the HTTP server), 3 repetitions per arm in an ABCCBA+ABC order.
+This is a synthetic generation workload, not a quality benchmark:
+
+| Arm | Aggregate wall tok/s | Decode-window tok/s (last BDONE - first BADM) | Sum of per-stream tok/s |
+| --- | ---: | ---: | ---: |
+| (a) two target-only streams, batch MTP off | 18.26 / 18.32 / 18.33 | 24.63 / 24.75 / 24.82 | 31.31 / 31.49 / 31.61 |
+| (b) two streams, `--batch-mtp` | 20.09 / 20.11 / 19.33 | 28.13 / 28.16 / 26.64 | 37.52 / 37.60 / 34.84 |
+| (c) one target-only stream (slot-count control) | 14.33 / 14.31 / 14.35 | 24.17 / 24.09 / 24.24 | - |
+
+`--batch-mtp` was faster in every repetition: **+5.4 % to +9.8 %** aggregate wall throughput and **+7.3 % to +14.2 %**
+on the dual decode window (and +10.2 % to +19.9 % on the sum of per-stream rates). The margin narrows in the third
+repetition of arm (b), which is also the only one with rejections, and is reported as measured rather than averaged
+away. Real proposals in arm (b): 318 offered / 318 accepted / 0 rejected, the same again, and 320 offered / 317
+accepted / 3 rejected - **99.7 % accepted over the arm** - with 2, 2 and 1 target-only windows
+(`fallback_attempts`). Both arms used one proposal per window (no multi-draft comparison). The single-slot control
+shows how little two *target-only* streams buy here (24.6-24.8 against 24.1-24.2 tok/s decode window, about +2 %);
+the MTP arm is what lifts it.
+
+What this A/B does **not** measure: the batch slot sessions' own cost. All three arms run `--batch 2 --kv-unified`,
+so the ~1.00 GiB of VRAM the native reports for the two slot sessions (and the expert-cache reduction it causes) is
+present in every arm. Observed expert cache: 6407 MiB / 2430 slots in arm (a) and (c), 6386 MiB / 2422 slots in arm
+(b), so the MTP feature itself costs ~21 MiB and ~8 expert slots here. No steady batch CPU fraction, COW internals,
+park/restore timing or output quality was measured in this A/B.
+
 ## Together with conversation parking
 
 `--conversation-cache-mib N --conversation-cache-slots K` (DETAILS.md) works with the layer split too: a request
@@ -242,6 +308,25 @@ shared draft-vocabulary head. This compares both slots' output against solo deco
 python3 tools/batch_test.py --exe engine/strata --config strata-<model>.json --batch 2 --n 2 --max-new 64 \
     --extra "--batch-mtp --pcie-frac 0 --adapt-every 1000000"
 ```
+
+The two model-backed gates for the opt-in path drive the engine directly and write a JSON record plus stderr sidecars;
+each refuses an existing output path and reports what it did **not** cover as `UNTESTED`:
+
+```
+# acceptance/rejection/parity with the compile-time test hook (validation build only; never for measurements)
+python3 tools/unified_kv_batch_mtp_smoke.py --exe <hook-on strata> --config <model.json> \
+    --output /tmp/mtp-core.json --mode correctness --context 1024 --gpu 0
+# terminal target-only restore at partial-page offsets 1/2/3 (the same tool also has --mode limits and --mode lifecycle)
+python3 tools/unified_kv_batch_mtp_smoke.py --exe <hook-on strata> --config <model.json> \
+    --output /tmp/mtp-tails.json --mode tails [--tail-suffix new-user-turn] --context 1024 --gpu 0
+# shared-pool pressure park/restore (the same tool also has --gate optional and --gate handoff)
+python3 tools/unified_kv_batch_mtp_pressure_smoke.py --exe <strata> --config <model.json> \
+    --output /tmp/mtp-pressure.json --gate pressure --context 4096 --cache-mib 4096 --mtp-window 128 --gpu 0
+```
+
+Run them on an isolated GPU with the model stopped: each starts its own private process, and `--batch-mtp` must be
+set explicitly (the gates pass `--batch-mtp` plus `STRATA_BATCH_MTP=1`). The measured commands, hashes and results are
+recorded in [INCREMENTAL_UNIFIED_KV.md](INCREMENTAL_UNIFIED_KV.md).
 
 ## Engine protocol (`--serve`)
 

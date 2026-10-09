@@ -42,7 +42,51 @@ parallel/runconfig/setup tests: 23 passed.
   are excluded initially and must be explicitly rejected, not silently disabled.
   This restriction concerns KV streaming, **not expert streaming/caching**.
 - Existing upstream batch limits (no MTP drafts or penalties in batch windows)
-  must be documented; solo requests retain upstream behavior.
+  must be documented; solo requests retain upstream behavior. **Partly superseded**
+  for the opt-in `--batch-mtp` path (one MTP proposal per slot per window); the
+  no-penalties limit still applies. See the batch-MTP milestone below.
+
+## Unified batch-MTP milestone (opt-in, measured 2026-10-09)
+
+Status: **opt-in, off by default, measured on isolated hardware.** `--batch-mtp`
+(or `STRATA_BATCH_MTP=1`) lets each batch slot verify one MTP proposal per window
+on one GPU, with `--serve --batch 2..8 --mtp --spec T >= 2` and no layer split or
+helper GPU; `--kv-unified --batch-groups 1` is the measured configuration. Without
+the flag the batch path and the solo path are unchanged, so this milestone changes
+no default.
+
+Measured (private subprocesses on an RTX 5060 Ti, validation binary
+`e14c60c7…`, config `5dcb8e12…`, runtime unchanged from `ff48f4b7…`): dual-slot
+joint overlap with exact 16/16 token parity and offered 17 / accepted 13 /
+rejected 4 (including a forced accept and a forced reject); the max-new edge and
+the cancel/same-slot-reuse edges; terminal target-only tails at partial-page
+offsets 1/2/3; a shared-pool pressure park of 2048 tokens with an exact 2048-cell
+canonical restore and zero resumed MAIN drafts; the optional-row
+`fallback_reserve` witness (slot 1 `fallback_reserve=1`, one attributed park,
+sibling cancel); and the coherent full-slot `BHANDOFF` transfer (3-token source
+prefix, 1538/1538 unfed-prefix reuse, 30 resumed MAIN draft offers, exact 64-token
+solo parity). Detail, commands and per-gate numbers are in
+[INCREMENTAL_UNIFIED_KV.md](INCREMENTAL_UNIFIED_KV.md).
+
+The private draft ring is bounded by
+`mtp_kv_ring_cells(window, max_cells, max_t) = window + 4*max_t + 64` when
+`0 < window < max_cells`, and `-1` (private, fully resident draft KV) otherwise.
+Measured at `--max-context 4096 --mtp-window 128` with `max_t = 2`: 200 cells
+allocated while the run's prompts were 1536/1540 cells and its consumed history
+2048 cells. Performance is recorded separately: a three-repetition A/B measured an
+aggregate throughput gain of 5.4 % to 9.8 % and a dual-decode-window gain of
+7.3 % to 14.2 % (99.7 % of 956 proposals accepted), with the ~1 GiB slot-session
+cost held constant in every arm and therefore not measured by that A/B.
+
+Historical statements this milestone supersedes: the "no MTP drafts in batch
+windows" limit now applies only without the flag (penalties are still not applied
+in batch windows), and "slot promotion retained upstream's stale MTP-proposal
+history" is superseded by the explicit target-only suppression above. The engine's
+own `--help` line for `--kv-unified` still lists `--batch-mtp` among the options
+it excludes; that string predates this change and no longer matches the measured
+runs (it needs a source edit by the primary). Not claimed: HIP/SYCL builds,
+byte-level ring internals, COW page identity, park ordering, multi-token divergent
+suffix restore (UNTESTED), output quality, and no production deploy or reload.
 
 ## Work units
 
@@ -172,7 +216,9 @@ retained upstream's stale MTP-proposal history, checked by target verification.
 The incremental continuation instead explicitly suppresses MTP/suffix proposals
 after target-only transfers until a full residual replay rebuilds coherent draft
 history, without removing the private ring. Shared transfers discard retained
-canonical-buffer provenance.
+canonical-buffer provenance. The measured batch-MTP milestone (one proposal per
+slot per window, the optional-row fallback and the coherent full-slot transfer) is
+recorded above and in [INCREMENTAL_UNIFIED_KV.md](INCREMENTAL_UNIFIED_KV.md).
 
 Current nibbler evidence, alongside the original milestone artifacts:
 
