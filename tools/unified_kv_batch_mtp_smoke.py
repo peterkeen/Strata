@@ -290,17 +290,13 @@ def fixtures(tok, context: int, cap: int = 16) -> tuple[list[int], list[int]]:
 
 
 def tail_fixtures(tok, context: int, cap: int = 8):
-    prompt = lambda question: tok.encode(f"<|im_start|>user\n{question}<|im_end|>\n"
-                                         "<|im_start|>assistant\n<think>\n\n</think>\n\n", parse_special=True)
-    filler = tok.encode(" alpha beta gamma delta epsilon zeta eta theta")
-    require(filler, "tail fixture tokenizer returned empty IDs")
     outputs = []
     for offset in (1, 2, 3):
-        base = prompt(f"Tail offset {offset}. List numbered integers from 1 onward, one per line; continue for many lines.")
-        target = max(96, len(base))
-        target += (offset - 7 - target) % PAGE
-        seed = base + (filler * ((target - len(base) + len(filler) - 1) // len(filler)))[:target - len(base)]
-        require(len(seed) % PAGE == (offset - 7) % PAGE, "tail seed alignment construction failed")
+        seed_fixture = common.build_partial_tail_seed(tok, offset, context, output_cap=cap, guard_cells=8)
+        seed = seed_fixture.token_ids
+        require(len(seed) == seed_fixture.target_cells and
+                (len(seed) + cap - 1) % PAGE == offset,
+                "batch-MTP tail seed helper returned inconsistent exact token/page sizing")
         outputs.append((offset, seed))
     return outputs
 

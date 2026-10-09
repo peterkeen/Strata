@@ -51,6 +51,23 @@ PAGE_CELLS = 4
 PREFILL_CELLS = 64
 
 
+@dataclass(frozen=True)
+class PartialTailSeed:
+    """Tokenized partial-page seed with its USER/assistant framing boundaries."""
+    token_ids: list[int]
+    offset_cells: int
+    target_cells: int
+    background_start: int
+    background_end: int
+    user_close_start: int
+    user_close_end: int
+    assistant_start: int
+    prefix_ids: tuple[int, ...]
+    background_cycle_ids: tuple[int, ...]
+    user_close_ids: tuple[int, ...]
+    assistant_header_ids: tuple[int, ...]
+
+
 def tokenizer(path):
     # Lazy import keeps protocol/lifecycle unit tests stdlib-only; model runs
     # use the exact existing tokenizer helper (and its regex dependency).
@@ -61,6 +78,51 @@ def tokenizer(path):
 def require(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+def build_partial_tail_seed(tok, offset_cells: int, context: int, *, output_cap: int = 8,
+                            guard_cells: int = 8, minimum_cells: int = 96) -> PartialTailSeed:
+    """Build a correctly framed user-background seed ending at a requested partial page.
+
+    All sizing is in encoded token IDs. Padding is inserted between the USER
+    background prefix and its final instruction/IM_END; the assistant thinking
+    generation header is appended last and is never padded over.
+    """
+    require(offset_cells in (1, 2, 3), "partial-tail offset must be 1, 2, or 3 cells")
+    require(output_cap == 8, "partial-tail seed fixture requires the original eight-token output cap")
+    require(context > 0 and guard_cells >= 0 and minimum_cells > 0, "invalid tail seed capacity settings")
+    user_prefix = tok.encode(
+        "<|im_start|>user\nList numbered integers from 1 through 1000, one integer per line. "
+        "Use the background only as context and follow the final instruction.\nBackground notes:\n",
+        parse_special=True)
+    background_cycle = tok.encode(" alpha beta gamma delta epsilon zeta eta theta", parse_special=False)
+    user_close = tok.encode(
+        "\nEnd of background. Continue the numbered integer list with more valid integers, "
+        "one per line. Do not stop early.\n<|im_end|>", parse_special=True)
+    assistant_header = tok.encode("\n<|im_start|>assistant\n<think>\n\n</think>\n\n", parse_special=True)
+    require(user_prefix and background_cycle and user_close and assistant_header,
+            "tail seed framing/background tokenized to an empty segment")
+    fixed_cells = len(user_prefix) + len(user_close) + len(assistant_header)
+    target = max(minimum_cells, fixed_cells + 1)
+    target += (offset_cells - (output_cap - 1) - target) % PAGE_CELLS
+    background_cells = target - fixed_cells
+    require(background_cells > 0, "tail seed needs positive user-background padding")
+    background = (background_cycle *
+                  ((background_cells + len(background_cycle) - 1) // len(background_cycle)))[:background_cells]
+    tokens = list(user_prefix) + background + list(user_close) + list(assistant_header)
+    background_start = len(user_prefix)
+    background_end = background_start + background_cells
+    user_close_start = background_end
+    user_close_end = user_close_start + len(user_close)
+    assistant_start = user_close_end
+    require(len(tokens) == target, "tail seed token sizing drifted from target")
+    require((len(tokens) + output_cap - 1) % PAGE_CELLS == offset_cells,
+            "tail seed plus shared generated prefix misses requested partial-page offset")
+    require(len(tokens) + output_cap + guard_cells <= context,
+            "tail seed output cap plus native context guard exceeds context")
+    return PartialTailSeed(tokens, offset_cells, target, background_start, background_end,
+                           user_close_start, user_close_end, assistant_start,
+                           tuple(user_prefix), tuple(background_cycle), tuple(user_close), tuple(assistant_header))
 
 
 def parse_line(raw):
@@ -728,17 +790,19 @@ def run_suite(suite, tok):
     # offset. A completed cap-8 slot holds prompt + first seven output tokens.
     # Use the solo result to construct branches, then reseed slot 0 after solo
     # references, ensuring its idle slot is the best prefix source, not session 0.
-    seed_base = chat('List numbered integers from 1 through 1000, one integer per line. Do not stop early.')
     for offset in (1, 2, 3):
-        target = max(96, len(seed_base))
-        target += (offset - 7 - target) % PAGE_CELLS
-        seed = seed_base + (filler * target)[:target - len(seed_base)]
+        seed_layout = build_partial_tail_seed(tok, offset, context, output_cap=8, guard_cells=8)
+        seed = seed_layout.token_ids
+        require(len(seed) == seed_layout.target_cells and seed_layout.offset_cells == offset,
+                'partial-tail seed helper returned inconsistent token sizing')
         seed_ref = suite.solo(f'solo-seed-{offset}', seed, 8)
         require(len(seed_ref.tokens) == 8, 'seed ended early; cannot establish partial-page reuse')
         shared = seed + seed_ref.tokens[:-1]
         require(len(shared) % PAGE_CELLS == offset, 'incorrect partial-page fixture')
         branches = [shared + tok.encode(text) for text in ('\nContinue with even numbers:\n',
                                                           '\nContinue with odd numbers:\n')]
+        require(all(len(p) + 16 + 8 <= context for p in branches),
+                'partial-tail divergent branch plus output guard exceeds context')
         refs = [suite.solo(f'solo-branch-{offset}-{i}', p, 16) for i, p in enumerate(branches)]
         seed_req = Request(f'seed-{offset}', seed, 8, 0)
         stage = suite.run(f'reuse-seed-{offset}', [seed_req])
