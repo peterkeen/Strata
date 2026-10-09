@@ -41,6 +41,18 @@ ALLOC_RE = re.compile(r"unified KV: (\d+) total backing cells shared by admissio
                        r"(\d+) GPU-resident cells per layer( \(host-backed\))?")
 SLOT_COPY_RE = re.compile(r"strata batch: slot (\d+) gave back (\d+) tokens of this conversation "
                           r"\((all it holds|its turn checkpoint)\) in ([\d.]+) ms")
+# A completed source slot invalidates its private MTP provenance, so a restored
+# clone is served target-only until a full replay. Native emits these explicit
+# diagnostics and NO per-slot batch_mtp_stats row for that suppressed clone.
+TARGET_ONLY_CLONE_LINE = ("strata serve: TARGET_ONLY slot clone: "
+                          "private MTP proposals suppressed until full replay")
+TARGET_ONLY_DECODE_RE = re.compile(r"^strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled$")
+TARGET_ONLY_RESTORE_RE = re.compile(
+    r"^strata serve: TARGET_ONLY restore: private MTP proposals suppressed until full replay$")
+STATS_ACCOUNTING_GAP_NOTE = (
+    "native emits no per-slot batch_mtp_stats row for a slot whose private MTP was suppressed before any "
+    "verifier window; the terminal target-only witness is the explicit TARGET_ONLY suppression diagnostics "
+    "plus the clone's own DONE draft counters, never a synthesized zero-window stats row")
 
 require = common.require
 Request = common.Request
@@ -50,7 +62,7 @@ Protocol = common.Protocol
 def parse_mtp_diagnostics(text: str) -> dict:
     """Parse exact native batch-MTP summaries; malformed/duplicate lines fail closed."""
     stats, slot_copies, allocations = [], [], []
-    hook_lines, target_only = [], []
+    hook_lines, target_only, target_only_decode, target_only_restore = [], [], [], []
     for line_no, line in enumerate(text.splitlines(), 1):
         if "strata batch_mtp_stats" in line:
             match = STATS_RE.fullmatch(line.strip())
@@ -72,14 +84,21 @@ def parse_mtp_diagnostics(text: str) -> dict:
                                     "source": match.group(3), "ms": float(match.group(4)), "raw": line})
         if "strata batch_mtp_test_hook enabled:" in line:
             hook_lines.append(line)
-        if "TARGET_ONLY slot clone: private MTP proposals suppressed until full replay" in line:
+        if TARGET_ONLY_CLONE_LINE in line:
             target_only.append(line)
+            continue
+        if TARGET_ONLY_DECODE_RE.match(line.strip()):
+            target_only_decode.append(line)
+            continue
+        if TARGET_ONLY_RESTORE_RE.match(line.strip()):
+            target_only_restore.append(line)
     seen = [item["slot"] for item in stats]
     require(len(seen) == len(set(seen)), "duplicate batch_mtp_stats summary for a slot lifecycle")
     for item in stats:
         validate_stats(item)
     return {"batch_mtp_stats": stats, "allocations": allocations, "slot_copies": slot_copies,
-            "hook_lines": hook_lines, "target_only_suppression": target_only}
+            "hook_lines": hook_lines, "target_only_suppression": target_only,
+            "target_only_decode": target_only_decode, "target_only_restore": target_only_restore}
 
 
 def validate_stats(s: dict) -> dict:
@@ -132,17 +151,101 @@ def require_outcomes(stats, *, offers=False, accepted=False, rejected=False, all
             "fallbacks_by_reason": fallback_counts, "allowed_fallbacks": sorted(allowed_fallbacks)}
 
 
-def verify_target_only_tail_restore(diagnostics: dict) -> dict:
-    """Prove completed-slot partial-tail restore suppresses stale private MTP state."""
-    require(diagnostics.get("target_only_suppression"),
-            "completed-slot clone did not report private-MTP target-only suppression")
+def done_draft_counters(admission: dict | None) -> dict:
+    """Read the DONE-line native draft accepted/offered counters for one request.
+
+    Native DONE is `<generated> <prompt> <prompt ms> <decode ms> <finish>
+    <drafts accepted> <drafts offered> <reused> ...`; the harness must not add a
+    friendlier field to the shared helper, so the raw line is parsed here.
+    """
+    raw = (admission or {}).get("raw")
+    require(isinstance(raw, str) and raw, "missing DONE record for the restored clone")
+    fields = raw.split()
+    require(fields and fields[0] == "DONE" and len(fields) >= 9,
+            f"restored clone DONE record is short/not a DONE line: {raw!r}")
+    try:
+        accepted, offered = int(fields[6]), int(fields[7])
+    except ValueError as exc:
+        raise AssertionError(f"restored clone DONE draft counters are non-numeric: {raw!r}") from exc
+    require(accepted >= 0 and offered >= 0 and accepted <= offered,
+            f"restored clone DONE draft counters are inconsistent: {raw!r}")
+    return {"drafts_accepted": accepted, "drafts_offered": offered, "raw": raw}
+
+
+def verify_target_only_tail_restore(diagnostics: dict, *, admission: dict | None, clone_slot: int,
+                                    source_slot: int, shared_prefix_cells: int) -> dict:
+    """Witness the real native target-only suppression path for a restored clone slot.
+
+    The source slot completed, which deliberately invalidated its private MTP
+    provenance; a restored clone is therefore served target-only until a full
+    replay. Native emits the explicit suppression diagnostics and no per-slot
+    batch_mtp_stats row for that clone, so this gate accepts the diagnostics plus
+    the clone's own DONE counters and reused-cell count. It never requires,
+    fabricates, or synthesizes a zero-window stats row, and it does not claim
+    coherent shared-tail MTP COW/speculation.
+    """
+    diagnostics = diagnostics or {}
+    clone_lines = [line for line in diagnostics.get("target_only_suppression", [])
+                   if TARGET_ONLY_CLONE_LINE in line]
+    decode_lines = list(diagnostics.get("target_only_decode", []))
+    give_back = [item for item in diagnostics.get("slot_copies", []) if item["slot"] == source_slot]
+    missing = []
+    if not clone_lines:
+        missing.append("slot-clone suppression line")
+    if not decode_lines:
+        missing.append("TARGET_ONLY T=1 decode-proposals-disabled line")
+    if not give_back:
+        missing.append(f"source slot {source_slot} give-back line")
+    require(not missing,
+            "target-only clone suppression witness incomplete; missing " + ", ".join(missing))
+    counters = done_draft_counters(admission)
+    require(counters["drafts_offered"] == 0 and counters["drafts_accepted"] == 0,
+            "restored clone DONE reports draft activity (accepted {0} of {1}); proposals were not fully "
+            "suppressed".format(counters["drafts_accepted"], counters["drafts_offered"]))
+    reused = (admission or {}).get("reused")
+    require(isinstance(reused, int) and reused > 0 and reused == shared_prefix_cells,
+            f"restored clone reused cells {reused!r} != expected shared prefix {shared_prefix_cells}")
     stats = diagnostics.get("batch_mtp_stats", [])
-    proof = require_outcomes(stats, allowed_fallbacks=("incoherent", "not_ready", "limits"))
-    require(proof["offered"] == 0,
-            "terminal slot clone unexpectedly offered private MTP proposals before coherent replay")
-    require(proof["fallback_attempts"] > 0 and sum(s["windows"] for s in stats) > 0,
-            "target-only clone path lacks native fallback/window evidence")
-    return proof
+    clone_rows = [row for row in stats if row["slot"] == clone_slot]
+    attributed = [row["raw"] for row in clone_rows
+                  if any(row[k] for k in ("offered", "accepted", "rejected", "discarded"))]
+    require(not attributed,
+            "batch_mtp_stats row attributes proposals to the suppressed clone slot "
+            f"{clone_slot}: {attributed}")
+    return {
+        "native_suppression_diagnostics": {"slot_clone": clone_lines, "target_only_decode": decode_lines,
+                                            "source_give_back": give_back},
+        "clone_slot": clone_slot, "source_slot": source_slot,
+        "stats_row_present": bool(clone_rows),
+        "stats_accounting_gap_note": STATS_ACCOUNTING_GAP_NOTE,
+        "zero_proposals_witnessed": True,
+        "done_draft_counters": counters,
+        "reused_cells": reused, "expected_shared_prefix_cells": shared_prefix_cells,
+        "other_slot_stats_rows": [row["raw"] for row in stats if row["slot"] != clone_slot],
+        "clone_slot_stats_rows": [row["raw"] for row in clone_rows],
+        "proof_kind": ("native TARGET_ONLY suppression diagnostics + clone DONE draft counters and reused "
+                       "cells; terminal target-only restore, not coherent shared-tail MTP COW")}
+
+
+def divergence_record(suffix_ids, reference) -> dict:
+    """Record how far the divergent partial-tail branch actually generated."""
+    require(suffix_ids, "divergent branch suffix tokenized to an empty prompt segment")
+    require(reference is not None and reference.tokens,
+            "divergent branch reference is empty; cannot prove shared-prefix reuse")
+    return {"divergence_prompt_tokens": len(suffix_ids), "divergence_depth": len(reference.tokens),
+            "multi_token_divergent_suffix": len(reference.tokens) >= 2}
+
+
+def apply_divergence_coverage(evidence: dict, records: list[dict]) -> str:
+    """Mark multi-token divergent-suffix restore RUN only when every branch grew."""
+    depths = [record["divergence_depth"] for record in records]
+    if depths and all(depth >= 2 for depth in depths):
+        status = f"RUN (every partial-tail branch generated >= 2 tokens; depths {depths})"
+    else:
+        status = ("UNTESTED (divergent branch returned to EOS after <= 1 token; shared-prefix reuse and "
+                  f"target parity are still enforced; depths {depths})")
+    evidence.setdefault("coverage", {})["multi_token_divergent_suffix_restore"] = status
+    return status
 
 
 def verify_batch_startup(info: dict, context: int, stderr: str) -> dict:
@@ -481,19 +584,27 @@ def run_tails(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_t
             require(len(seed_ref.tokens) == 8, "tail seed must complete its bounded cap")
             shared = seed + seed_ref.tokens[:-1]
             require(len(shared) % PAGE == offset, "shared cached prefix does not end at requested partial-page offset")
-            suffix = tok.encode("\nContinue with further numbered observations.\n")
+            # Explicit continuation instruction, matching the seed's own final
+            # instruction, so the divergent branch is less likely to end its turn
+            # immediately. This changes only appended prompt text; the shared
+            # prefix and its partial-page offset are untouched.
+            suffix = tok.encode("\nContinue the numbered integer list here, one integer per line, "
+                                "and do not stop early:\n")
+            require(suffix, "divergent branch suffix tokenized to an empty prompt segment")
             branch = shared + suffix
             require(len(branch) + 8 + 8 <= context, "partial-tail branch exceeds logical context plus safety margin")
             branch_ref = ref_suite.solo(f"tail-{offset}-branch-reference", branch, 8)
-            prepared.append((offset, seed, seed_ref, shared, branch, branch_ref))
+            require(branch_ref.tokens, "divergent branch reference is empty; cannot prove shared-prefix reuse")
+            prepared.append((offset, seed, seed_ref, shared, branch, branch_ref, suffix))
         ref_success = True
     finally:
         close_engine(ref_engine, ref_proc, ref_success)
     engine, suite, proc, _ = open_engine(evidence, output, cfg, exe, context, gpu, None,
                                           startup_timeout, cleanup_timeout)
     success = False
+    divergence_records = []
     try:
-        for offset, seed, seed_ref, shared, branch, branch_ref in prepared:
+        for offset, seed, seed_ref, shared, branch, branch_ref, suffix in prepared:
             seed_req = Request(f"tail-{offset}-seed", seed, 8, 0)
             seed_req.reference = seed_ref
             seed_stage = suite.run(f"populate-tail-source-{offset}", [seed_req])
@@ -512,17 +623,21 @@ def run_tails(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_t
             require(copies, "native slot-to-main prefix copy did not identify the source slot/prefix")
             require(branch[len(shared):], "branch must write a divergent suffix after the shared cached prefix")
             diagnostics = branch_stage["stderr_diagnostics"]
-            proof = verify_target_only_tail_restore(diagnostics)
-            branch_stage["target_only_restore_witness"] = {
-                "offset_cells": offset, "shared_prefix_cells": len(shared),
-                "reused_cells": branch_req.admission_done["reused"], "source_slot_copy": copies[-1],
-                "divergent_suffix_ids": branch[len(shared):], "proposal_count": proof["offered"],
-                "fallback_counts": proof["fallbacks_by_reason"],
-                "proof_kind": "terminal source slot has invalidated MTP provenance; exact target-only suppression verified"}
+            witness = verify_target_only_tail_restore(
+                diagnostics, admission=branch_req.admission_done, clone_slot=branch_req.slot,
+                source_slot=seed_req.slot, shared_prefix_cells=len(shared))
+            divergence = divergence_record(suffix, branch_ref)
+            divergence_records.append(divergence)
+            witness.update({"offset_cells": offset, "shared_prefix_cells": len(shared),
+                            "source_slot_copy": copies[-1], "divergent_suffix_ids": branch[len(shared):],
+                            "divergence": divergence})
+            branch_stage["target_only_restore_witness"] = witness
+            branch_stage["divergence_depth"] = divergence["divergence_depth"]
             branch_stage["passed"] = True
         success = True
     finally:
         close_engine(engine, proc, success)
+        apply_divergence_coverage(evidence, divergence_records)
 
 
 def run_limits(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_timeout, cleanup_timeout):
@@ -625,6 +740,7 @@ def run_lifecycle(evidence, output, cfg, exe, context, gpu, startup_timeout, sta
 def coverage_for(mode: str) -> dict:
     base = {"correctness": "UNTESTED", "dual_overlap": "UNTESTED",
             "tail_partial_page_restore_suppression_offsets_1_2_3": "UNTESTED",
+            "multi_token_divergent_suffix_restore": "UNTESTED (set only when every partial-tail branch grows)",
             "coherent_shared_tail_cow_speculation": "UNTESTED (requires a separate live/coherent-source fixture)",
             "optional_reservation_fallback_vs_mandatory_pressure": "UNTESTED", "max_new_edge": "UNTESTED",
             "logical_context_edge": "UNTESTED", "cancel_and_same_slot_reuse": "UNTESTED",

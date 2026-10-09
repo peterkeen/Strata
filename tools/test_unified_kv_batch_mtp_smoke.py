@@ -50,6 +50,28 @@ class WordTokenizer:
         return [self.vocab.setdefault(word, len(self.vocab) + 1) for word in text.split()]
 
 
+# Exact native stderr the real model emitted for a terminal suppressed clone
+# (task9 tails run). No batch_mtp_stats row accompanies these lines.
+TARGET_ONLY_SUPPRESSION_STDERR = "\n".join([
+    "strata serve: TARGET_ONLY slot clone: private MTP proposals suppressed until full replay",
+    "strata batch: slot 0 gave back 105 tokens of this conversation (all it holds) in 33.4 ms",
+    "strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled",
+])
+
+
+def restored_clone(slot=1, *, reused=105, accepted=0, offered=0, prompt=113, token=248046):
+    """A batch request that admitted into a slot and EOS-stopped after one target token."""
+    req = common.Request("restored-clone", list(range(prompt)), 8, slot)
+    # DONE <generated> <prompt> <prompt ms> <decode ms> <finish> <accepted> <offered> <reused> ...
+    lines = [f"T {token}",
+             f"DONE 1 {prompt} 234 12 stop {accepted} {offered} {reused} 0 0 0 0.0 98 0",
+             f"BADM {slot} 0"]
+    protocol = common.Protocol([req])
+    for seq, raw in enumerate(lines):
+        protocol.consume(common.parse_line(raw) | {"raw": raw, "seq": seq, "wall_s": seq / 10})
+    return req
+
+
 class DiagnosticTests(unittest.TestCase):
     def test_stats_parse_and_invariants(self):
         parsed = smoke.parse_mtp_diagnostics(mtp_stats(0) + "\n" + mtp_stats(1, windows=3, offered=2,
@@ -91,20 +113,13 @@ class DiagnosticTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "more than one terminal"):
             smoke.require_outcomes(repeated, allowed_fallbacks=("limits",))
 
-    def test_terminal_target_only_tail_restore_rejects_any_offer(self):
-        diagnostics = {"target_only_suppression": ["suppressed until full replay"],
-                       "batch_mtp_stats": smoke.parse_mtp_diagnostics(
-                           mtp_stats(1, windows=3, offered=0, accepted=0, rejected=0,
-                                     fallbacks=3, incoherent=2, limits=1)
-                       )["batch_mtp_stats"]}
-        proof = smoke.verify_target_only_tail_restore(diagnostics)
-        self.assertEqual(proof["offered"], 0)
-        self.assertEqual(proof["fallbacks_by_reason"]["incoherent"], 2)
-        diagnostics["batch_mtp_stats"] = smoke.parse_mtp_diagnostics(
-            mtp_stats(1, windows=3, offered=1, accepted=1, rejected=0, fallbacks=2, incoherent=2)
-        )["batch_mtp_stats"]
-        with self.assertRaisesRegex(AssertionError, "unexpectedly offered"):
-            smoke.verify_target_only_tail_restore(diagnostics)
+    def test_target_only_suppression_and_decode_lines_are_parsed(self):
+        parsed = smoke.parse_mtp_diagnostics(TARGET_ONLY_SUPPRESSION_STDERR)
+        self.assertEqual(len(parsed["target_only_suppression"]), 1)
+        self.assertEqual(len(parsed["target_only_decode"]), 1)
+        self.assertEqual(parsed["batch_mtp_stats"], [])
+        self.assertEqual(parsed["slot_copies"][0]["tokens"], 105)
+
 
     def test_malformed_duplicate_and_inconsistent_counters_fail(self):
         with self.assertRaisesRegex(AssertionError, "malformed"):
@@ -137,6 +152,190 @@ class DiagnosticTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             smoke.require_outcomes(parsed["batch_mtp_stats"], offers=True)
 
+
+class FakeTails:
+    """Drives smoke.run_tails through a fake native process; no GPU/model involved."""
+
+    def __init__(self, branch_tokens=1, inject_offers=False):
+        self.branch_tokens = branch_tokens
+        self.inject_offers = inject_offers
+        self.cache = []
+        self.stages = []
+
+    def _reused(self, prompt):
+        reused = 0
+        for left, right in zip(prompt, self.cache):
+            if left != right:
+                break
+            reused += 1
+        return reused
+
+    def solo(self, name, prompt, cap):
+        count = 8 if "seed" in name else self.branch_tokens
+        ref = common.Request(name, prompt, cap)
+        ref.tokens = [100 + i for i in range(count)]
+        return ref
+
+    def run(self, name, requests):
+        return self._run(name, requests,
+                         inject=self.inject_offers and "partial-tail" in name)
+
+    def _run(self, name, requests, inject=False):
+        for req in requests:
+            tokens = list(req.reference.tokens)
+            reused = self._reused(req.prompt)
+            continues = len(tokens) > 1
+            if continues:
+                admission_finish, badm = "length", f"BADM {req.slot} 1"
+            else:
+                admission_finish = "length" if len(tokens) == req.cap else "stop"
+                badm = f"BADM {req.slot} 0"
+            accepted = offered = 1 if inject else 0
+            lines = [f"T {tokens[0]}",
+                     f"DONE 1 {len(req.prompt)} 10 5 {admission_finish} {accepted} {offered} {reused} 0 0 0 0.0 98 0",
+                     badm]
+            if continues:
+                lines.extend(f"BT {req.slot} {token}" for token in tokens[1:])
+                lines.append(f"BDONE {req.slot} {len(tokens)} "
+                             f"{'length' if len(tokens) == req.cap else 'stop'} 5")
+            protocol = common.Protocol([req])
+            for seq, raw in enumerate(lines):
+                protocol.consume(common.parse_line(raw) | {"raw": raw, "seq": seq, "wall_s": seq / 10})
+            self.cache = list(req.prompt) + tokens[:-1]
+        terminal = "partial-tail" in name
+        text = self._suppression_text(requests[0]) if terminal else ""
+        stage = {"name": name, "requests": [r.record() for r in requests],
+                 "stderr_diagnostics": smoke.parse_mtp_diagnostics(text)}
+        self.stages.append(stage)
+        return stage
+
+    def _suppression_text(self, req):
+        return "\n".join([smoke.TARGET_ONLY_CLONE_LINE,
+                          f"strata batch: slot 0 gave back {req.admission_done['reused']} tokens of this "
+                          "conversation (all it holds) in 33.4 ms",
+                          "strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled"])
+
+    def execute(self, evidence, *, branch_tokens=None, inject_offers=False):
+        if branch_tokens is not None:
+            self.branch_tokens = branch_tokens
+        if inject_offers:
+            self.inject_offers = inject_offers
+        fixtures = [(1, [11, 12, 13, 14, 15, 16])]
+
+        def fake_open_engine(_evidence, _output, _cfg, _exe, _context, _gpu, _hook, _startup, _cleanup):
+            proc = {"stdout": [], "stages": [], "command": [], "env_overrides": {}}
+            return object(), self, proc, Path("/tmp/fake-tails-stderr")
+
+        patchers = [patch.object(smoke, "tokenizer", return_value=WordTokenizer()),
+                    patch.object(smoke, "tail_fixtures", return_value=fixtures),
+                    patch.object(smoke, "open_engine", side_effect=fake_open_engine),
+                    patch.object(smoke, "close_engine")]
+        with patchers[0], patchers[1], patchers[2], patchers[3]:
+            smoke.run_tails(evidence, Path("/tmp/fake-tails.json"), {"tokenizer": "unused", "cwd": "/tmp"},
+                            Path("/tmp/fake-engine"), 1024, "0", 1, 1, 1)
+        return self, self.stages
+
+
+class TargetOnlyRestoreTests(unittest.TestCase):
+    """Production gate path for the terminal suppressed clone (no synthetic stats row)."""
+
+    def witness(self, stderr=TARGET_ONLY_SUPPRESSION_STDERR, *, reused=105, accepted=0, offered=0,
+                shared_prefix=None):
+        req = restored_clone(reused=reused, accepted=accepted, offered=offered)
+        return smoke.verify_target_only_tail_restore(
+            smoke.parse_mtp_diagnostics(stderr), admission=req.admission_done, clone_slot=req.slot,
+            source_slot=0, shared_prefix_cells=reused if shared_prefix is None else shared_prefix)
+
+    def test_accepts_native_suppression_diagnostics_and_zero_offer_done(self):
+        witness = self.witness()
+        self.assertTrue(witness["zero_proposals_witnessed"])
+        self.assertFalse(witness["stats_row_present"])
+        self.assertIn("no per-slot batch_mtp_stats row", witness["stats_accounting_gap_note"])
+        self.assertEqual(witness["done_draft_counters"]["drafts_offered"], 0)
+        self.assertEqual(witness["done_draft_counters"]["drafts_accepted"], 0)
+        self.assertEqual(witness["reused_cells"], 105)
+        self.assertEqual(len(witness["native_suppression_diagnostics"]["slot_clone"]), 1)
+        self.assertEqual(len(witness["native_suppression_diagnostics"]["target_only_decode"]), 1)
+        self.assertEqual(len(witness["native_suppression_diagnostics"]["source_give_back"]), 1)
+        self.assertIn("not coherent shared-tail MTP COW", witness["proof_kind"])
+
+    def test_contradicting_positive_draft_count_fails_closed(self):
+        with self.assertRaisesRegex(AssertionError, "draft activity"):
+            self.witness(accepted=1, offered=1)
+
+    def test_missing_or_short_witness_fails_closed_naming_the_gap(self):
+        no_decode = "\n".join(line for line in TARGET_ONLY_SUPPRESSION_STDERR.splitlines()
+                              if "TARGET_ONLY decode" not in line)
+        with self.assertRaisesRegex(AssertionError, "TARGET_ONLY T=1 decode"):
+            self.witness(stderr=no_decode)
+        no_give_back = "\n".join(line for line in TARGET_ONLY_SUPPRESSION_STDERR.splitlines()
+                                 if "gave back" not in line)
+        with self.assertRaisesRegex(AssertionError, "give-back"):
+            self.witness(stderr=no_give_back)
+        with self.assertRaisesRegex(AssertionError, "slot-clone suppression line"):
+            self.witness(stderr="strata nothing relevant\n")
+        with self.assertRaisesRegex(AssertionError, "reused cells"):
+            self.witness(reused=105, shared_prefix=104)
+
+    def test_unrelated_slot_stats_row_is_not_attributed_to_the_clone(self):
+        stderr = TARGET_ONLY_SUPPRESSION_STDERR + "\n" + mtp_stats(0, windows=4, offered=3, accepted=3,
+                                                                   rejected=0, fallbacks=1, limits=1)
+        witness = self.witness(stderr=stderr)
+        self.assertEqual(len(witness["other_slot_stats_rows"]), 1)
+        self.assertEqual(witness["clone_slot_stats_rows"], [])
+        self.assertFalse(witness["stats_row_present"])
+        # A clone-slot row that attributes proposals is a hard failure.
+        with self.assertRaisesRegex(AssertionError, "attributes proposals to the suppressed clone"):
+            self.witness(stderr=TARGET_ONLY_SUPPRESSION_STDERR + "\n"
+                         + mtp_stats(1, windows=1, offered=1, accepted=1, rejected=0, discarded=0))
+        # A zero-offer clone-slot row (if native ever emitted one) is tolerated, not required.
+        zero_row = self.witness(stderr=TARGET_ONLY_SUPPRESSION_STDERR + "\n"
+                                + mtp_stats(1, windows=1, offered=0, accepted=0, rejected=0,
+                                            fallbacks=1, limits=1))
+        self.assertTrue(zero_row["stats_row_present"])
+        self.assertEqual(zero_row["clone_slot_stats_rows"], [mtp_stats(1, windows=1, offered=0, accepted=0,
+                                                                       rejected=0, fallbacks=1, limits=1)])
+
+    def test_run_tails_end_to_end_fake_native_suppression_witness(self):
+        """Drive the production run_tails gate with a fake native process (no GPU)."""
+        for branch_tokens, expected in ((1, "UNTESTED"), (3, "RUN")):
+            with self.subTest(branch_tokens=branch_tokens):
+                evidence = {"coverage": smoke.coverage_for("tails"), "processes": []}
+                suite, stages = FakeTails().execute(evidence, branch_tokens=branch_tokens)
+                branch_stage = next(stage for stage in stages if stage["name"].startswith("partial-tail"))
+                witness = branch_stage["target_only_restore_witness"]
+                self.assertTrue(witness["zero_proposals_witnessed"])
+                self.assertFalse(witness["stats_row_present"])
+                self.assertEqual(witness["done_draft_counters"]["drafts_offered"], 0)
+                self.assertEqual(witness["clone_slot"], 1)
+                self.assertEqual(witness["source_slot"], 0)
+                self.assertEqual(branch_stage["divergence_depth"], branch_tokens)
+                self.assertIn(expected, evidence["coverage"]["multi_token_divergent_suffix_restore"])
+
+    def test_run_tails_end_to_end_fake_fails_on_contradicting_offers(self):
+        evidence = {"coverage": smoke.coverage_for("tails"), "processes": []}
+        with self.assertRaisesRegex(AssertionError, "draft activity"):
+            FakeTails().execute(evidence, branch_tokens=1, inject_offers=True)
+
+    def test_divergence_depth_recording_and_untested_marking(self):
+        one_token = completed("branch-one", [1, 2], [7], None)
+        grew = completed("branch-grown", [1, 2], [7, 8, 9], None)
+        with self.assertRaisesRegex(AssertionError, "empty prompt segment"):
+            smoke.divergence_record([], grew)
+        with self.assertRaisesRegex(AssertionError, "reference is empty"):
+            smoke.divergence_record([1, 2], common.Request("empty-branch", [1], 2))
+        stunted = smoke.divergence_record([1, 2, 3], one_token)
+        self.assertEqual(stunted, {"divergence_prompt_tokens": 3, "divergence_depth": 1,
+                                   "multi_token_divergent_suffix": False})
+        grown = smoke.divergence_record([1, 2], grew)
+        self.assertEqual(grown["divergence_depth"], 3)
+        self.assertTrue(grown["multi_token_divergent_suffix"])
+        evidence = {}
+        self.assertIn("UNTESTED", smoke.apply_divergence_coverage(evidence, [stunted, grown]))
+        self.assertIn("UNTESTED", evidence["coverage"]["multi_token_divergent_suffix_restore"])
+        evidence = {}
+        self.assertIn("RUN", smoke.apply_divergence_coverage(evidence, [grown, grown]))
+        self.assertIn("UNTESTED", smoke.coverage_for("tails")["multi_token_divergent_suffix_restore"])
 
 class OverlapTests(unittest.TestCase):
     def pair(self, dual=True, serial=False):
@@ -346,7 +545,8 @@ class SettingsTests(unittest.TestCase):
         coverage = smoke.coverage_for("correctness")
         self.assertEqual(coverage["dual_overlap"], "RUN")
         for key in ("tail_partial_page_restore_suppression_offsets_1_2_3",
-                    "coherent_shared_tail_cow_speculation", "optional_reservation_fallback_vs_mandatory_pressure",
+                    "multi_token_divergent_suffix_restore", "coherent_shared_tail_cow_speculation",
+                    "optional_reservation_fallback_vs_mandatory_pressure",
                     "logical_context_edge", "partial_yield", "handoff_full_and_checkpoint",
                     "pressure_park_restore_target_only_suppression"):
             self.assertIn("UNTESTED", coverage[key])
