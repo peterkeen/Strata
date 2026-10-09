@@ -24,89 +24,121 @@ def counter_row(slot=0, windows=129, offered=128, accepted=128, rejected=0, disc
             f"fallback_capacity={capacity} fallback_reserve={reserve}")
 
 
-class FakeWitnessEngine:
-    """Native-protocol stand-in: admission rows, BT rows, then a terminal once BSTOP lands."""
+class FakeDualEngine:
+    """Minimal dual-slot native stand-in for the production optional-witness stage.
 
-    def __init__(self, stderr_path, prompt_len, cap, tokens, *, terminal="cancel", park=False,
-                 rows=None, parks=(), stop_at=None):
+    Each slot admits (T/DONE/BADM), then they advance in rotation. A slot finishes with a scripted
+    ``pressure``/``length`` terminal at a produced count, otherwise it keeps emitting BT rows until the stage
+    sends its BSTOP and then terminates ``cancel``.
+    """
+
+    def __init__(self, stderr_path, prompts, cap, tokens_by_slot, *, rows, parks=(), pressure_at=None,
+                 length_at=None, weights=None):
         self.stderr_path = Path(stderr_path)
         self.stage = "startup"
         self.sent = []
-        self.prompt_len = prompt_len
-        self.cap = cap
-        self.tokens = list(tokens)
-        self.terminal = terminal
-        self.stop_at = stop_at
         self.seq = 0
-        self.produced = 0
-        self._rows = list(rows) if rows is not None else [counter_row()]
+        self.cap = cap
+        self._rows = list(rows)
         self._parks = list(parks)
-        self._park = park
-        self._admission = ["T", "DONE", "BADM"]
-        self._done = False
         self._stderr_written = False
+        self._pressure_at = dict(pressure_at or {})
+        self._length_at = dict(length_at or {})
+        self._slots = {slot: {"prompt_len": len(prompt), "tokens": list(tokens_by_slot[slot]),
+                              "produced": 0, "done": False}
+                       for slot, prompt in prompts.items()}
+        self._admission = []
+        for slot in sorted(self._slots):
+            self._admission.extend([("T", slot), ("DONE", slot), ("BADM", slot)])
+        per_round = {slot: 1 for slot in self._slots}
+        per_round.update(weights or {})
+        self._rotation = []
+        for slot in sorted(per_round):
+            self._rotation.extend([slot] * per_round[slot])
+        self._turn = 0
 
     def _write_stderr(self):
         if self._stderr_written:
             return
-        lines = list(self._rows) + list(self._parks)
-        if self._park and PARK_LINE not in lines:
-            lines.append(PARK_LINE)
         with self.stderr_path.open("a", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
+            handle.write("\n".join(list(self._rows) + list(self._parks)) + "\n")
         self._stderr_written = True
 
     def send(self, *lines, deadline=None):
         self.sent.extend(lines)
 
-    def _bstop_sent(self):
-        return any(line.startswith("BSTOP") for line in self.sent)
+    def _bstop(self, slot):
+        return f"BSTOP {slot}" in self.sent
+
+    def _terminal(self, slot, finish, base):
+        self._slots[slot]["done"] = True
+        self._write_stderr()
+        return {**base, "kind": "BDONE", "slot": slot, "count": self._slots[slot]["produced"],
+                "finish": finish, "decode_ms": 1.0}
 
     def next_event(self, deadline=None):
         self.seq += 1
         base = {"seq": self.seq, "wall_s": float(self.seq)}
         if self._admission:
-            kind = self._admission.pop(0)
+            kind, slot = self._admission.pop(0)
+            state = self._slots[slot]
             if kind == "T":
-                self.produced = 1
-                return {**base, "kind": "T", "token": self.tokens[0]}
+                state["produced"] = 1
+                return {**base, "kind": "T", "token": state["tokens"][0]}
             if kind == "DONE":
-                return {**base, "kind": "DONE", "count": 1, "prompt_count": self.prompt_len,
+                return {**base, "kind": "DONE", "count": 1, "prompt_count": state["prompt_len"],
                         "prompt_ms": 1.0, "decode_ms": 1.0, "finish": "length", "reused": None}
-            return {**base, "kind": "BADM", "slot": 0, "continues": True}
-        if self._done:
-            raise AssertionError("fake native emitted an event after its terminal")
-        if self._bstop_sent() or (self.stop_at is not None and self.produced >= self.stop_at):
-            self._done = True
-            self._write_stderr()
-            return {**base, "kind": "BDONE", "slot": 0, "count": self.produced,
-                    "finish": self.terminal, "decode_ms": 1.0}
-        if self.produced >= len(self.tokens):
-            raise AssertionError("fake native ran out of scripted tokens before any terminal")
-        self.produced += 1
-        return {**base, "kind": "BT", "slot": 0, "token": self.tokens[self.produced - 1]}
+            return {**base, "kind": "BADM", "slot": slot, "continues": True}
+        for _ in range(2 * len(self._rotation)):
+            slot = self._rotation[self._turn % len(self._rotation)]
+            self._turn += 1
+            state = self._slots[slot]
+            if state["done"]:
+                continue
+            if slot in self._pressure_at and state["produced"] >= self._pressure_at[slot]:
+                return self._terminal(slot, "pressure", base)
+            if slot in self._length_at and state["produced"] >= self._length_at[slot]:
+                return self._terminal(slot, "length", base)
+            if self._bstop(slot):
+                return self._terminal(slot, "cancel", base)
+            if state["produced"] >= len(state["tokens"]):
+                raise AssertionError("fake dual native ran out of scripted tokens before a terminal")
+            state["produced"] += 1
+            return {**base, "kind": "BT", "slot": slot, "token": state["tokens"][state["produced"] - 1]}
+        raise AssertionError("fake dual native has no live slot to advance")
 
 
-def run_witness_stage(tmp, *, cap=320, terminal="cancel", park=False, rows=None, parks=(), stop_at=None,
-                      plan=None, prompt_cells=None, reference_tokens=None, stream_tokens=None):
-    """Drive PressureSuite.run_optional_row_fallback (the production gate path) with a fake native."""
-    plan = plan or gate.optional_witness_plan(4096)
-    prompt_cells = prompt_cells or plan["prompt_cells"]
-    prompt = list(range(1, prompt_cells + 1))
-    reference_tokens = reference_tokens or list(range(10_000, 10_000 + cap))
-    stream_tokens = stream_tokens or list(reference_tokens)
+def dual_optional_inputs(*, cap=320, prompt_cells=(1787, 1791), drifting_slot=None, drift_index=200):
+    prompts = {slot: list(range(1, cells + 1)) for slot, cells in enumerate(prompt_cells)}
+    stream = {slot: [10_000 + slot * 1_000 + index for index in range(cap)] for slot in prompts}
+    reference = {slot: list(stream[slot]) for slot in prompts}
+    if drifting_slot is not None:
+        stream[drifting_slot][drift_index] += 7  # observed before the bounded stop point
+    refs = []
+    for slot in sorted(prompts):
+        req = common.Request(f"fake-optional-reference-{slot}", prompts[slot], cap)
+        req.tokens = reference[slot]
+        req.completion = {"kind": "DONE", "finish": "length"}
+        refs.append(req)
+    return prompts, stream, refs
+
+
+def run_dual_optional_stage(tmp, *, cap=320, prompt_cells=(1787, 1791), rows=None, parks=(), pressure_at=None,
+                            length_at=None, drifting_slot=None, plans=None, weights=None):
+    """Drive PressureSuite.run_optional_row_fallback (the production gate path) with a fake dual native."""
+    plans = plans or [gate.optional_slot_boundary(cells) for cells in prompt_cells]
+    prompts, stream, refs = dual_optional_inputs(cap=cap, prompt_cells=prompt_cells, drifting_slot=drifting_slot)
+    if rows is None:
+        rows = [counter_row(slot=0, windows=129, offered=129, accepted=129, attempts=0, reserve=0),
+                counter_row(slot=1, windows=129, offered=128, accepted=128, attempts=1, reserve=1)]
     stderr = Path(tmp) / "witness.stderr"
     stderr.write_text("", encoding="utf-8")
     evidence = {"stdout": [], "commands": [], "stages": [], "processes": []}
-    engine = FakeWitnessEngine(stderr, len(prompt), cap, stream_tokens, terminal=terminal, park=park,
-                               rows=rows, parks=parks, stop_at=stop_at)
+    engine = FakeDualEngine(stderr, prompts, cap, stream, rows=rows, parks=parks,
+                            pressure_at=pressure_at, length_at=length_at, weights=weights)
     output = Path(tmp) / "witness-evidence.json"
-    suite = gate.PressureSuite(engine, evidence, output, 30.0, plan["context_cells"], 0.0, 12345,
-                               stderr_path=stderr)
-    reference = common.Request("fake-optional-reference", prompt, cap)
-    reference.tokens = list(reference_tokens)
-    reference.completion = {"kind": "DONE", "finish": "length"}
-    suite.run_optional_row_fallback(prompt, cap, reference, plan, 30.0)
+    suite = gate.PressureSuite(engine, evidence, output, 30.0, 4096, 0.0, 12345, stderr_path=stderr)
+    suite.run_optional_row_fallback(tuple(prompts[slot] for slot in sorted(prompts)), cap, refs, plans, 30.0)
     return suite, evidence, output
 
 
@@ -145,95 +177,160 @@ class BatchMtpEvidenceTests(unittest.TestCase):
         proof = gate.verify_stats(rows, offer=True)
         self.assertEqual(proof["offered"], 1)
 
-    def test_optional_witness_plan_fills_the_pool_at_a_page_boundary(self):
-        plan = gate.optional_witness_plan(4096)
-        self.assertEqual(plan["prompt_cells"], 1919)
-        self.assertEqual(plan["prompt_page_offset"], gate.PAGE - 1)
-        self.assertEqual(plan["prompt_pages"], 480)
-        self.assertEqual(plan["witness_mapping_cells"], 2176)
-        self.assertEqual(plan["witness_mapping_pages"], 544)
-        self.assertEqual(plan["pages_in_use_at_boundary"], plan["pool_pages"])
-        self.assertEqual(plan["free_pages_at_boundary"], 0)
-        self.assertEqual(plan["spare_pages"], 0)
-        self.assertEqual(plan["boundary_output_count"], 257)
-        self.assertEqual(plan["bstop_output_count"], 258)
-        self.assertEqual(plan["boundary_output_count"], plan["reserve_ahead_cells"] + 1)
-
-    def test_optional_witness_plan_is_derived_per_context_and_rejects_unsplittable_pools(self):
-        for context in (1024, 2048, 4096):
-            plan = gate.optional_witness_plan(context)
-            self.assertEqual(plan["pages_in_use_at_boundary"], plan["pool_pages"])
-            self.assertEqual(plan["free_pages_at_boundary"], 0)
-            self.assertEqual(plan["prompt_page_offset"], gate.PAGE - 1)
-            self.assertEqual(plan["prompt_pages"] + plan["witness_mapping_pages"], plan["pool_pages"])
-        # 1023 pool pages cannot split into two equal prompt/headroom halves.
+    def test_optional_slot_boundary_arithmetic_is_per_prompt(self):
+        first = gate.optional_slot_boundary(1787)
+        second = gate.optional_slot_boundary(1791)
+        self.assertEqual(first["prompt_page_offset"], gate.PAGE - 1)
+        self.assertEqual(first["slot_mapping_end_cells"], 2044)
+        self.assertEqual(first["slot_mapping_pages"], 511)
+        self.assertEqual(second["slot_mapping_end_cells"], 2048)
+        self.assertEqual(second["slot_mapping_pages"], 512)
+        for plan in (first, second):
+            self.assertEqual(plan["boundary_output_count"], plan["reserve_ahead_cells"] + 1)
+            self.assertEqual(plan["boundary_output_count"], 257)
+            self.assertEqual(plan["bstop_output_count"], 258)
         with self.assertRaises(AssertionError):
-            gate.optional_witness_plan(4092)
+            gate.optional_slot_boundary(1788)  # not the last cell of a page
 
-    def test_optional_bstop_trigger_comes_from_the_boundary_arithmetic(self):
-        plan = gate.optional_witness_plan(4096)
-        self.assertFalse(gate.optional_bstop_ready(plan["boundary_output_count"] - 1, plan))
-        self.assertFalse(gate.optional_bstop_ready(plan["boundary_output_count"], plan))
-        self.assertTrue(gate.optional_bstop_ready(plan["bstop_output_count"], plan))
-        self.assertTrue(gate.optional_bstop_ready(plan["bstop_output_count"] + 32, plan))
+    def test_optional_fixture_sizing_is_documented_as_hypothesis_only(self):
+        prompts = (list(range(1, 1788)), list(range(5_000, 6_791)))
+        sizing = gate.optional_fixture_sizing(prompts, 320, 4096)
+        self.assertEqual(sizing["pool_pages"], 1024)
+        self.assertEqual(sizing["slot_mapping_pages_total"], 1023)
+        self.assertFalse(sizing["mapping_pages_exceed_pool"])
+        self.assertTrue(sizing["sizing_is_hypothesis_not_evidence"])
+        with self.assertRaises(AssertionError):
+            gate.optional_fixture_sizing(prompts, 128, 4096)  # cap below the boundary stop point
+        with self.assertRaises(AssertionError):
+            gate.optional_fixture_sizing((prompts[0], prompts[0]), 320, 4096)  # identical prompts
 
-    def test_optional_witness_stage_passes_with_isolated_fallback_and_cancel(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            suite, evidence, _ = run_witness_stage(Path(tmp))
-            stage = evidence["stages"][-1]
-            self.assertTrue(stage["passed"])
-            self.assertEqual(stage["fixture_isolation"], "isolated_optional_witness")
-            self.assertEqual(stage["bt_counts_at_bstop"], {"0": 258})
-            self.assertTrue(stage["pressure_park_absence"]["absent"])
-            self.assertEqual(stage["per_slot_counter_rows"][0]["fallback_reserve"], 1)
-            self.assertTrue(all(check["observed"] for check in stage["witness"]["checks"].values()))
-            self.assertEqual(stage["fixture_arithmetic"]["free_pages_at_boundary"], 0)
-            self.assertEqual([record["slot"] for record in stage["requests"]], [0])
-            self.assertEqual(stage["requests"][0]["completion"]["finish"], "cancel")
+    def test_optional_stop_decision_is_per_slot_and_park_first(self):
+        plans = [gate.optional_slot_boundary(1787), gate.optional_slot_boundary(1791)]
+        requests = [common.Request("a", [1], 320, 0), common.Request("b", [2], 320, 1)]
+        for request in requests:
+            request.badm = {"continues": True}
+        requests[0].tokens.extend(range(plans[0]["boundary_output_count"]))
+        requests[1].tokens.extend(range(plans[1]["bstop_output_count"]))
+        self.assertIsNone(gate.optional_stop_decision(requests, plans))
+        requests[0].tokens.append(9)
+        self.assertEqual(gate.optional_stop_decision(requests, plans), "both_boundaries_crossed_no_park")
+        requests[1].completion = {"kind": "BDONE", "finish": "pressure"}
+        self.assertEqual(gate.optional_stop_decision(requests, plans), "mandatory_park_observed")
 
-    def test_optional_witness_stage_fails_closed_when_a_pressure_park_appears(self):
+    def test_optional_park_attribution_is_derived_from_the_witness_prefix(self):
+        witness = common.Request("witness", list(range(1, 1788)), 320, 1)
+        witness.tokens = list(range(0, 258))
+        park = gate.parse_diagnostics(PARK_LINE)["pressure"][0]
+        attributed = gate.optional_park_attribution(witness, [park])
+        self.assertFalse(attributed["diagnostic_has_slot_field"])
+        self.assertFalse(attributed["ordering_observable"])
+        self.assertEqual(attributed["witness_slot"], 1)
+        self.assertEqual(attributed["witness_consumed_prefix_cells"], 1787 + 258 - 1)
+        self.assertIn("8739-8748", attributed["source"]["batch_mandatory_retry"]["lines"])
+        self.assertIn("no reclaim retry", attributed["source"]["batch_optional_probe"]["fact"])
+        self.assertIn("not observable", attributed["source"]["ordering"]["fact"])
+        self.assertFalse(attributed["attributed_by_token_count"])  # the synthetic park line says 2048 tokens
+        self.assertTrue(gate.optional_park_attribution(witness, [{"tokens": 1787 + 258 - 1}])[
+            "attributed_by_token_count"])
+
+    def test_measured_task12_rows_and_terminals_are_accepted(self):
+        """The exact counter rows and terminals of the task12 dual run must be an accepted shape."""
+        rows = gate.parse_batch_stats(
+            "strata batch_mtp_stats slot=1 windows=129 offered=128 accepted=128 rejected=0 discarded=0 "
+            "fallback_attempts=1 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
+            "fallback_capacity=0 fallback_reserve=1\n"
+            "strata batch_mtp_stats slot=0 windows=130 offered=130 accepted=130 rejected=0 discarded=0 "
+            "fallback_attempts=0 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
+            "fallback_capacity=0 fallback_reserve=0\n")
+        requests = [common.Request("slot0", list(range(1, 1788)), 320, 0),
+                    common.Request("slot1", list(range(1, 1792)), 320, 1)]
+        requests[0].tokens = list(range(0, 261))
+        requests[1].tokens = list(range(0, 258))
+        requests[0].completion = {"kind": "BDONE", "finish": "cancel"}
+        requests[1].completion = {"kind": "BDONE", "finish": "pressure"}
+        diagnostics = gate.parse_diagnostics(
+            "strata serve: pressure parked target-only 2048 tokens; parked=2 bytes=528687156\n")
+        diagnostics["batch_mtp_stats"] = rows
+        result = gate.validate_optional_shapes(requests, diagnostics, "mandatory_park_observed", True, True)
+        self.assertEqual(result["shape"], "mandatory_park_then_cancel")
+        self.assertEqual(result["missed"], [])
+        self.assertTrue(result["park_attribution"]["attributed_by_token_count"])
+        self.assertEqual(result["park_attribution"]["witness_slot"], 1)
+
+    def test_optional_witness_stage_accepts_the_measured_park_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            with self.assertRaises(AssertionError) as caught:
-                run_witness_stage(tmp, terminal="pressure", park=True)
-            message = str(caught.exception)
-            self.assertIn("no_pressure_park", message)
-            self.assertIn("fixture non-isolation", message)
-            stage = json.loads((tmp / "witness-evidence.json").read_text())["stages"][-1]
-            self.assertEqual(stage["fixture_isolation"], "fixture_non_isolation")
-            self.assertFalse(stage["passed"])
+            _, evidence, _ = run_dual_optional_stage(
+                tmp, pressure_at={1: 258}, weights={1: 2},
+                parks=["strata serve: pressure parked target-only 2048 tokens; parked=2 bytes=528687156"])
+            stage = evidence["stages"][-1]
+            self.assertTrue(stage["passed"])
+            self.assertEqual(stage["observed_shape"], "mandatory_park_then_cancel")
+            self.assertEqual(stage["fixture_isolation"], "fixture_isolation_confirmed")
+            self.assertTrue(all(check["observed"] for check in stage["witness"]["checks"].values()))
+            finishes = {record["slot"]: record["completion"]["finish"] for record in stage["requests"]}
+            self.assertEqual(finishes, {0: "cancel", 1: "pressure"})
+            self.assertEqual(stage["per_slot_counter_rows"][1]["fallback_reserve"], 1)
+            self.assertEqual(stage["per_slot_counter_rows"][0]["fallback_reserve"], 0)
+            self.assertEqual(stage["bstop_reason"], "mandatory_park_observed")
+            self.assertEqual(stage["stopped_slots"], [0])
+            self.assertEqual(stage["park_attribution"]["parks"], 1)
+            self.assertTrue(stage["park_attribution"]["attributed_by_token_count"])
+            self.assertFalse(stage["park_ordering_observable"])
+            self.assertIn("source", stage["park_attribution"])
 
-    def test_optional_witness_stage_fails_closed_on_zero_offers_or_a_second_reason(self):
-        cases = (([counter_row(offered=0, accepted=0, windows=1)], "positive_offers"),
-                 ([counter_row(capacity=1, reserve=1, attempts=2, windows=130)], "no_other_fallback_reason"))
-        for rows, missed in cases:
+    def test_optional_witness_stage_accepts_the_no_park_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, evidence, _ = run_dual_optional_stage(Path(tmp))
+            stage = evidence["stages"][-1]
+            self.assertTrue(stage["passed"])
+            self.assertEqual(stage["observed_shape"], "no_park_both_cancel")
+            self.assertEqual(stage["bstop_reason"], "both_boundaries_crossed_no_park")
+            self.assertTrue(stage["pressure_park_absence"]["absent"])
+            finishes = {record["slot"]: record["completion"]["finish"] for record in stage["requests"]}
+            self.assertEqual(finishes, {0: "cancel", 1: "cancel"})
+            self.assertEqual(stage["bt_counts_at_bstop"], {"0": 258, "1": 258})
+
+    def test_optional_witness_stage_rejects_shapes_other_than_the_two_measured_ones(self):
+        clean = counter_row(slot=0, windows=128, offered=128, accepted=128, attempts=0, reserve=0)
+        cases = (
+            ({"rows": [clean, counter_row(slot=1, windows=128, offered=128, accepted=128, attempts=0, reserve=0)],
+              "pressure_at": {1: 258}, "weights": {1: 2}, "parks": [PARK_LINE]},
+             "exactly_one_witness_slot_fallback_reserve"),
+            ({"rows": [clean,
+                        counter_row(slot=1, capacity=1, reserve=1, attempts=2, windows=130)],
+              "pressure_at": {1: 258}, "weights": {1: 2}, "parks": [PARK_LINE]},
+             "witness_slot_no_other_fallback_reason"),
+            ({"rows": [counter_row(slot=0, windows=0, offered=0, accepted=0, attempts=0, reserve=0),
+                        counter_row(slot=1, attempts=1, reserve=1)], "pressure_at": {1: 258},
+              "weights": {1: 2}, "parks": [PARK_LINE]},
+             "positive_offers_per_slot"),
+            ({"rows": [clean, counter_row(slot=1, attempts=1, reserve=1)], "pressure_at": {1: 258},
+              "weights": {1: 2}, "parks": [PARK_LINE, PARK_LINE]},
+             "at_most_one_park"),
+            ({"rows": [clean, counter_row(slot=1, attempts=1, reserve=1)], "length_at": {1: 258},
+              "weights": {1: 2}},
+             "accepted_terminal_shape"),
+        )
+        for kwargs, missed in cases:
             with self.subTest(missed=missed):
                 with tempfile.TemporaryDirectory() as tmp:
+                    tmp = Path(tmp)
                     with self.assertRaises(AssertionError) as caught:
-                        run_witness_stage(Path(tmp), rows=rows)
+                        run_dual_optional_stage(tmp, **kwargs)
                     self.assertIn(missed, str(caught.exception))
                     self.assertIn("fixture non-isolation", str(caught.exception))
-
-    def test_optional_witness_stage_fails_closed_when_the_boundary_window_never_runs(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(AssertionError) as caught:
-                run_witness_stage(Path(tmp), terminal="stop", stop_at=100)
-            message = str(caught.exception)
-            for missed in ("boundary_output_count_reached", "bstop_before_mandatory_shortage",
-                           "healthy_cancel_terminal"):
-                self.assertIn(missed, message)
-            self.assertIn("fixture non-isolation", message)
+                    stage = json.loads((tmp / "witness-evidence.json").read_text())["stages"][-1]
+                    self.assertEqual(stage["fixture_isolation"], "fixture_non_isolation")
+                    self.assertFalse(stage["passed"])
 
     def test_optional_witness_stage_rejects_parity_drift(self):
         with tempfile.TemporaryDirectory() as tmp:
-            plan = gate.optional_witness_plan(4096)
-            clean = [10_000 + index for index in range(plan["bstop_output_count"] + 64)]
-            drifted = list(clean)
-            drifted[200] += 7  # the gate observes this row before its bounded stop point
+            tmp = Path(tmp)
             with self.assertRaises(AssertionError) as caught:
-                run_witness_stage(Path(tmp), plan=plan, reference_tokens=clean, stream_tokens=drifted)
+                run_dual_optional_stage(tmp, drifting_slot=0)
             self.assertIn("parity", str(caught.exception))
-            stage = json.loads((Path(tmp) / "witness-evidence.json").read_text())["stages"][-1]
+            stage = json.loads((tmp / "witness-evidence.json").read_text())["stages"][-1]
             self.assertEqual(stage["fixture_isolation"], "fixture_non_isolation")
 
     def test_pressure_restore_retains_all_ids_but_leaves_last_unfed(self):
