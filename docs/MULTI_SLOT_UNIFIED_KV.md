@@ -84,14 +84,15 @@ Historical statements this milestone supersedes: the "no MTP drafts in batch
 windows" limit now applies only without the flag (penalties are still not applied
 in batch windows), and "slot promotion retained upstream's stale MTP-proposal
 history" is superseded by the explicit target-only suppression above. The engine's
-own `--help` line for `--kv-unified` listed `--batch-mtp` among the options it
-excludes (audit finding M2); the measured runs use both flags together, and that
-string is a separate source-tree correction. Not claimed: HIP/SYCL builds,
-byte-level ring internals, COW page identity, park ordering, output quality, and no
-production deploy or reload. Divergent-suffix depth is RUN for the default
-`--tail-suffix new-user-turn` (depths `[8, 8, 8]`); the other catalog wordings
-(`open-fence`, `open-list-primer`, `assistant-lead-in`, `meta-instruction`) were
-not swept on hardware.
+own `--help` line for `--kv-unified` no longer lists `--batch-mtp` among the options
+it excludes (audit finding M2, usage text only, commit `54ea6f61`): it now says one
+GPU with no layer split or elastic K/V and notes that `--batch-mtp` additionally
+needs `--mtp` and `--spec T >= 2`, which is what the measured runs use. Not claimed:
+HIP/SYCL builds, byte-level ring internals, COW page identity, park ordering,
+output quality, and no production deploy or reload. Divergent-suffix depth is RUN
+for the default `--tail-suffix new-user-turn` (depths `[8, 8, 8]`); the other
+catalog wordings (`open-fence`, `open-list-primer`, `assistant-lead-in`,
+`meta-instruction`) were not swept on hardware.
 
 ## Work units
 
