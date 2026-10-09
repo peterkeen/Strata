@@ -484,3 +484,26 @@ batch MTP), built in `build-deploy-validated` in the host checkout at commit `72
   per-slot counters are positive.
 - Operational note: with the NVFP4 model loaded the host keeps ~32 GiB RAM available with swap
   nearly full, so gate or benchmark runs must unload the model and use an exclusive GPU.
+
+### Full-context throughput after the deployment (2026-10-09)
+
+Measured on the deployed artifact (`engine/strata-nibbler` `25cec204…`) with production unloaded, hook off, at
+`--max-context 262144 --kv int8 --kv-resident 32768 --kv-unified --no-kv-grow --spec 4 --spec-min-p 0.5
+--prefill auto:8192 --batch 2` on the `huihui-nvfp4` pack. Only `--batch-mtp` differs between the two sides; three
+repetitions per arm in alternating order, every repetition reported in the evidence record.
+
+| Arm | MTP on | MTP off | Change |
+| --- | ---: | ---: | ---: |
+| Solo, 125 000-cell prompt, 128 tokens | decode 29.81 tok/s, prefill 1827 tok/s | decode 23.62 tok/s, prefill 1888 tok/s | decode +26.2 %, prefill −3.2 % |
+| Two concurrent 125 000-cell streams | Σ per-stream 38.19, dual-decode window 60.21 tok/s | Σ 29.82, window 47.48 tok/s | +28.0 % / +26.8 % |
+| Short prompt, 256 tokens | decode 30.53 tok/s | decode 23.89 tok/s | +27.8 % |
+| 250 000-cell prompt (one run per side) | decode 29.22 tok/s | decode 23.08 tok/s | +26.6 % |
+
+Draft acceptance is near total on these greedy, predictable prompts (63/63, 63/63 with one 64/63/1, 127/127, 31/31);
+chat workloads will accept fewer. No pressure or park event occurred in any run; expert-cache hit rate during decode
+was 19–21 %. The prefill rate is 3.2 % lower with MTP at 125k because the feature's own VRAM keeps 1845 expert slots
+instead of 1890 and the adaptive prefill chunk is correspondingly smaller. Two dual-arm repetitions were discarded and
+re-run because swap was exhausted mid-run (`SwapFree` 164 MiB); no failed-run number is quoted, and the per-run
+RAM/swap state is in the record. The deployed production config still uses `--max-context 65536`; these runs used
+262144 (the model's window) with the same pack and settings otherwise, so raising the deployed context is a
+configuration change that still needs its own rollout.
