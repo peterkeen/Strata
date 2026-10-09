@@ -179,22 +179,52 @@ def natural_rejection_rows():
         counter_row(slot=1, windows=254, offered=254, accepted=253, rejected=1, attempts=0, reserve=0)))
 
 
+# Provenance of the substitute fixture (read-only inspection of the real artifacts, str-7ze.20):
+# the correctness gate writes its stages under processes[i]["stages"] and leaves the TOP-LEVEL
+# "stages" list EMPTY; the batch process's stage carries the native rows (slot 0 8/7/1,
+# slot 1 9/6/3 -> rejected 4) and its startup_diagnostics carries the hook activation line, while
+# the solo-reference process has two stages and no rows. Observed on
+# /data/llm/Strata-tests/deploy-gates-20261009/gates-correctness-deployhook-context1024.json
+# (sha256 3d1da86b43fe98dcbd130abfcf3ee3ad9582577c9c8a343e4db25d6ee2ccc6cd) and
+# .../gates-correctness-context1024.json (top-level stages 0; process stages 2 + 1).
+CORRECTNESS_HOOK_LINE = "strata batch_mtp_test_hook enabled: explicit proposal substitutions are test-only"
+CORRECTNESS_BATCH_STAGE = "dual-overlap-forced-accept-reject-and-natural-catchup"
+CORRECTNESS_COUNTER_ROWS = ({"slot": 0, "offered": 8, "accepted": 7, "rejected": 1, "discarded": 0},
+                            {"slot": 1, "offered": 9, "accepted": 6, "rejected": 3, "discarded": 0})
+
+
+def correctness_processes(*, rows=None, hook_lines=None):
+    """The processes[*].stages[*] shape the correctness gate emits (see provenance above)."""
+    rows = [dict(row) for row in (CORRECTNESS_COUNTER_ROWS if rows is None else rows)]
+    hook_lines = [CORRECTNESS_HOOK_LINE] if hook_lines is None else list(hook_lines)
+    return [
+        {"stages": [{"name": "solo-target-MTP-reference-0", "passed": True,
+                      "stderr_diagnostics": {"batch_mtp_stats": []}},
+                     {"name": "solo-target-MTP-reference-1", "passed": True,
+                      "stderr_diagnostics": {"batch_mtp_stats": []}}],
+         "startup_diagnostics": {"hook_lines": []}},
+        {"stages": [{"name": CORRECTNESS_BATCH_STAGE, "passed": True,
+                      "stderr_diagnostics": {"batch_mtp_stats": rows}}],
+         "startup_diagnostics": {"hook_lines": hook_lines}},
+    ]
+
+
 def correctness_artifact(**overrides):
-    """Shape of a passed `--mode correctness` artifact (hook-forced rejection)."""
+    """Shape of a passed `--mode correctness` artifact (hook-forced rejection), as the gate writes it."""
     artifact = {
+        "schema": 1,
+        "harness": "unified-kv-batch-mtp",
         "mode": "correctness",
         "passed": True,
+        "context": 1024,
         "exe": "/tmp/fake-strata",
         "config": "/tmp/fake-model.json",
         "coverage": {"correctness": "RUN", "dual_overlap": "RUN"},
         "deterministic_proposal_schedule": {
             "slot0": {"offer": 1, "outcome": "accepted"},
             "slot1": {"offer": 1, "outcome": "rejected"}},
-        "processes": [{"startup_diagnostics": {"hook_lines": [
-            "strata batch_mtp_test_hook enabled: explicit proposal substitutions are test-only"]}}],
-        "stages": [{"stderr_diagnostics": {"batch_mtp_stats": [
-            {"slot": 0, "offered": 8, "accepted": 7, "rejected": 1, "discarded": 0},
-            {"slot": 1, "offered": 9, "accepted": 6, "rejected": 3, "discarded": 0}]}}],
+        "stages": [],  # the real gate leaves the top-level list empty
+        "processes": correctness_processes(),
     }
     artifact.update(overrides)
     return artifact
@@ -667,9 +697,58 @@ class BatchMtpEvidenceTests(unittest.TestCase):
             self.assertIs(witness["substitute"], substitute)
             self.assertTrue(substitute["forced_rejection_is_native"])
             self.assertEqual(substitute["rejected_total"], 4)
+            self.assertEqual(substitute["counter_source"],
+                             "processes[*].stages[*].stderr_diagnostics.batch_mtp_stats")
+            self.assertEqual([(row["slot"], row["rejected"]) for row in substitute["counter_rows"]],
+                             [(0, 1), (1, 3)])
+            self.assertEqual({row["stage"] for row in substitute["counter_rows"]}, {CORRECTNESS_BATCH_STAGE})
             self.assertIn("same --exe and --config paths", substitute["identity_scope"])
             self.assertEqual(len(substitute["sha256"]), 64)
             self.assertTrue(gate.require_rejection_witness({"rejection_witness": witness})["satisfied"])
+
+    def test_rejection_substitute_reads_the_process_scoped_stage_counters(self):
+        """Regression guard: the real gate writes stages under processes[i], not at the top level."""
+        exe, config = Path("/tmp/fake-strata"), Path("/tmp/fake-model.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            # The exact real shape: empty top-level stages, counters in the batch process's stage.
+            real_shape = json.loads(write_correctness_artifact(tmp).read_text())
+            self.assertEqual(real_shape["stages"], [])
+            self.assertEqual(len(real_shape["processes"][1]["stages"]), 1)
+            substitute = gate.validate_rejection_substitute(Path(tmp) / "correctness.json",
+                                                           exe=exe, config=config)
+            self.assertEqual(substitute["rejected_total"], 4)
+            self.assertTrue(substitute["counter_source"].startswith("processes[*].stages[*]"))
+            self.assertEqual(substitute["hook_activation_lines"], [CORRECTNESS_HOOK_LINE])
+        # Removing the process-scoped rows must fail closed: the parser really depends on that scope.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "correctness.json"
+            path.write_text(json.dumps(correctness_artifact(processes=correctness_processes(rows=[]))),
+                            encoding="utf-8")
+            with self.assertRaises(AssertionError) as caught:
+                gate.validate_rejection_substitute(path, exe=exe, config=config)
+            self.assertIn("no rejected proposal", str(caught.exception))
+            self.assertIn("read 0 row(s)", str(caught.exception))
+        # A top-level stage list is still tolerated if a future gate ever emits one (with the
+        # hook diagnostic likewise allowed at the top level instead of per process).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "correctness.json"
+            path.write_text(json.dumps(correctness_artifact(
+                processes=[], startup_diagnostics={"hook_lines": [CORRECTNESS_HOOK_LINE]},
+                stages=[{"name": "batch", "stderr_diagnostics": {
+                    "batch_mtp_stats": [dict(row) for row in CORRECTNESS_COUNTER_ROWS]}}])),
+                encoding="utf-8")
+            substitute = gate.validate_rejection_substitute(path, exe=exe, config=config)
+            self.assertEqual(substitute["rejected_total"], 4)
+            self.assertIn("top-level fallback", substitute["counter_source"])
+            self.assertEqual(substitute["hook_activation_lines"], [CORRECTNESS_HOOK_LINE])
+        # The hook-activation diagnostic stays a per-process read as well.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "correctness.json"
+            path.write_text(json.dumps(correctness_artifact(processes=correctness_processes(hook_lines=[]))),
+                            encoding="utf-8")
+            with self.assertRaises(AssertionError) as caught:
+                gate.validate_rejection_substitute(path, exe=exe, config=config)
+            self.assertIn("hook activation", str(caught.exception))
 
     def test_rejection_substitute_validator_fails_closed_on_an_inconsistent_artifact(self):
         exe, config = Path("/tmp/fake-strata"), Path("/tmp/fake-model.json")
@@ -681,9 +760,9 @@ class BatchMtpEvidenceTests(unittest.TestCase):
             ({"config": "/tmp/other-model.json"}, "different --config"),
             ({"deterministic_proposal_schedule": {"slot1": {"outcome": "accepted"}}},
              "deterministic forced rejection"),
-            ({"processes": [{"startup_diagnostics": {"hook_lines": []}}]}, "hook activation"),
-            ({"stages": [{"stderr_diagnostics": {"batch_mtp_stats": [
-                {"slot": 0, "offered": 8, "accepted": 8, "rejected": 0, "discarded": 0}]}}]},
+            ({"processes": correctness_processes(hook_lines=[])}, "hook activation"),
+            ({"processes": correctness_processes(rows=[{"slot": 0, "offered": 8, "accepted": 8,
+                                                          "rejected": 0, "discarded": 0}])},
              "no rejected proposal"),
         )
         for overrides, message in cases:

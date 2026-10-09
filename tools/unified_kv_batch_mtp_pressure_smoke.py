@@ -136,6 +136,43 @@ NATURAL_REJECTION_ABSENT = "absent (deterministic 100% acceptance on this fixtur
 REJECTION_SUBSTITUTE_MECHANISM = "deterministic_test_hook_rejection_cited_from_correctness_gate"
 
 
+def rejection_substitute_counter_rows(artifact: dict) -> tuple[list[dict], str]:
+    """Collect the substitute's native counters from where the correctness gate writes them.
+
+    The correctness harness records each process's stages at `processes[i]["stages"]` and leaves
+    the top-level `stages` list EMPTY (verified read-only on the real artifacts
+    `gates-correctness-context1024.json` and `gates-correctness-deployhook-context1024.json`,
+    sha256 3d1da86b…: 0 stages at the top level, 2+1 per process, with the 1+3 rejected rows in
+    the batch process's stage). Read that scope first and fall back to a top-level list only when
+    the process scope has no rows, so the substitute cannot silently become unreadable again if
+    either shape changes. Each returned row carries the stage name it came from (audit only).
+    """
+    def collect(stages):
+        return [{**row, "stage": stage.get("name")}
+                for stage in stages or []
+                for row in ((stage.get("stderr_diagnostics") or {}).get("batch_mtp_stats") or [])]
+    scoped = collect([stage for process in artifact.get("processes") or []
+                      for stage in (process.get("stages") or [])])
+    if scoped:
+        return scoped, "processes[*].stages[*].stderr_diagnostics.batch_mtp_stats"
+    top_level = collect(artifact.get("stages"))
+    if top_level:
+        return top_level, ("stages[*].stderr_diagnostics.batch_mtp_stats (top-level fallback; the "
+                           "correctness gate writes its stages per process)")
+    return [], "none (no process-scoped or top-level batch_mtp_stats rows)"
+
+
+def rejection_substitute_hook_lines(artifact: dict) -> list[str]:
+    """The test-hook activation diagnostic. The real gate records it per process
+    (`processes[i]["startup_diagnostics"]["hook_lines"]`); a top-level copy is tolerated the same way
+    the counter read tolerates a top-level stage list. Duplicates are removed."""
+    lines = [line for process in artifact.get("processes") or []
+             for line in ((process.get("startup_diagnostics") or {}).get("hook_lines") or [])]
+    for holder in (artifact.get("startup_diagnostics") or {}, artifact):
+        lines.extend(holder.get("hook_lines") or [])
+    return list(dict.fromkeys(lines))
+
+
 def validate_rejection_substitute(path: Path, *, exe: Path, config: Path) -> dict:
     """Validate the explicit native substitute for a natural rejection.
 
@@ -160,14 +197,15 @@ def validate_rejection_substitute(path: Path, *, exe: Path, config: Path) -> dic
     schedule = artifact.get("deterministic_proposal_schedule") or {}
     require((schedule.get("slot1") or {}).get("outcome") == "rejected",
             "rejection substitute does not record a deterministic forced rejection")
-    hook_lines = [line for process in artifact.get("processes") or []
-                  for line in ((process.get("startup_diagnostics") or {}).get("hook_lines") or [])]
+    hook_lines = rejection_substitute_hook_lines(artifact)
     require(hook_lines, "rejection substitute lacks the test-hook activation diagnostic")
-    rows = [row for stage in artifact.get("stages") or []
-            for row in ((stage.get("stderr_diagnostics") or {}).get("batch_mtp_stats") or [])]
+    rows, counter_source = rejection_substitute_counter_rows(artifact)
     rejected = sum(int(row.get("rejected", 0)) for row in rows)
     require(rejected > 0,
-            "rejection substitute artifact reports no rejected proposal in its native counters")
+            f"rejection substitute artifact reports no rejected proposal in its native counters "
+            f"(read {len(rows)} row(s) from {counter_source})")
+    counter_rows = [{"stage": row.get("stage"), "slot": row.get("slot"), "offered": row.get("offered"),
+                     "accepted": row.get("accepted"), "rejected": row.get("rejected")} for row in rows]
     return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
             "mechanism": REJECTION_SUBSTITUTE_MECHANISM,
             "artifact_passed": True, "artifact_mode": "correctness",
@@ -177,6 +215,8 @@ def validate_rejection_substitute(path: Path, *, exe: Path, config: Path) -> dic
             "exe": str(exe), "config": str(config),
             "deterministic_proposal_schedule": schedule,
             "hook_activation_lines": hook_lines,
+            "counter_source": counter_source,
+            "counter_rows": counter_rows,
             "rejected_total": rejected,
             "forced_rejection_is_native": True,
             "scope": "the hook substitutes only the proposal row; the rejected counter is the real target "
