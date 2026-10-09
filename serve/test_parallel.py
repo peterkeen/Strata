@@ -5,6 +5,7 @@ real StrataEngine and Service, so the server's side is tested without a GPU: req
 wait for a slot, /metrics shows the slots, each request's history row is its own, and a conversation's next turn
 goes back to the slot that holds it."""
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -16,7 +17,8 @@ from pathlib import Path
 from unittest import mock
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, Service, StrataEngine, engine_args, parallel_args, serve
+from serve.server import (BatchMtpStatsLog, ByteTokenizer, Service, StrataEngine, engine_args, parallel_args,
+                          serve)
 
 # The fake engine: one token every STEP seconds per active slot (a "window" serves every active slot at once);
 # GEN (solo) streams T lines; BGEN reads the prompt (one T line, DONE), answers BADM and continues in the slot.
@@ -53,6 +55,13 @@ def reply(ids):            # the rest of the reply after what the prompt already
     return R[k:]
 active = {}          # slot -> [tokens left, max_new, produced]
 stopped = set()      # BSTOPped slots: they end "cancel"
+MTPS = "--mtp-stats" in args       # the real engine's per-slot rows (see mtp_row), off unless asked for
+def mtp_row(b):      # the engine's own line (src/program/generate.cpp:8999), same shape as the production logs
+    windows, offered = 33 + b, 33 + b
+    accepted = 27 + 2 * b
+    return (f"strata batch_mtp_stats slot={b} windows={windows} offered={offered} accepted={accepted} "
+            f"rejected={offered - accepted} discarded=0 fallback_attempts=0 fallback_incoherent=0 "
+            f"fallback_not_ready=0 fallback_limits=0 fallback_capacity=0 fallback_reserve=0")
 def window():        # one batch window: every active slot one token
     if fail and len(active) >= 2:     # as the engine: the reason on stdout, then exit code 1
         print("ERR verify batch: layer 34 never rang (graph finished)", flush=True)
@@ -65,6 +74,8 @@ def window():        # one batch window: every active slot one token
         if t == 257 or produced >= max_new:
             fin = 'stop' if t == 257 else 'cancel' if b in stopped else 'length'
             stopped.discard(b)
+            if MTPS:                        # stderr: the slot's counters land in the server's log before its BDONE
+                print(mtp_row(b), file=sys.stderr, flush=True)
             print(f"BDONE {b} {produced} {fin} 1.0", flush=True)
             del active[b]
         else:
@@ -97,7 +108,9 @@ while True:
             print("ERR refused: images are not enabled", flush=True)
             continue
         if log:
-            log.write(f"{f[0]} {slot} {len(ids)} {max(len(active), 0)}\n"); log.flush()
+            raw = bytes(int(x) & 255 for x in ids)
+            mark = "A" if b"AAAA" in raw else "B" if b"BBBB" in raw else "-"   # which request this admission is
+            log.write(f"{f[0]} {slot} {len(ids)} {max(len(active), 0)} {mark}\n"); log.flush()
         toks = reply(ids)
         stop.clear()
         # the prompt read: CH tokens a chunk, a PP line each; a BYIELD <s> gives way at a chunk boundary
@@ -246,12 +259,15 @@ class PickSlot(unittest.TestCase):
 class ParallelService(unittest.TestCase):
     """The real StrataEngine and Service over HTTP, the fake engine behind them."""
 
-    def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0, more=()):
+    def start(self, slots, fit=None, slot_cache=False, fail=False, reuse=False, says_groups=0, more=(),
+              engine_log=False):
         import serve.server as server
         self.tmp = tempfile.TemporaryDirectory()
         script = Path(self.tmp.name) / "fake_strata.py"
         script.write_text(FAKE_BATCH, encoding="utf-8")
         self.log = Path(self.tmp.name) / "requests.log"
+        # F5: the engine's own stderr log (its per-slot counter rows), the file the server reads its stats from
+        self.engine_log = Path(self.tmp.name) / "engine.log" if engine_log else None
         real = server.subprocess.Popen
         extra = ["--batch", str(slots)] + (["--fit", str(fit)] if fit is not None else []) + ["--log", str(self.log)]
         extra += ["--slotcache"] if slot_cache else []
@@ -261,7 +277,7 @@ class ParallelService(unittest.TestCase):
         extra += list(more)
         with mock.patch.object(server.subprocess, "Popen",
                                lambda cmd, **kw: real([sys.executable, str(script), *cmd[1:]], **kw)):
-            self.engine = StrataEngine("strata", extra)
+            self.engine = StrataEngine("strata", extra, None, str(self.engine_log) if self.engine_log else None)
         tok = ByteTokenizer()
         self.svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / "chat_template.jinja"))
         self.httpd = serve(self.svc, port=0)
@@ -567,6 +583,144 @@ class ParallelService(unittest.TestCase):
         self.assertGreaterEqual(u["input_tokens"], 1, u)
         self.assertEqual(u["input_tokens"] + u["cache_read_input_tokens"], prompt, u)
         self.assertEqual(u["cache_read_input_tokens"], 3, u)    # the first read's reuse, not the continuation's
+
+    def test_two_concurrent_batch_requests_report_their_own_slot_draft_counters(self):
+        """#F5: a slot's own MTP counters are not on its BDONE; the engine prints them to its log
+        (`strata batch_mtp_stats slot=N ...`) just before it.  Each concurrent request must report its OWN
+        slot's offered/accepted drafts - the real production shape (slot0 33/27, slot1 34/29), never 0/0 and
+        never the other slot's row."""
+        self.start(2, engine_log=True, more=["--mtp-stats"])
+        out, errors = {}, []
+
+        def go(tag):
+            try:
+                out[tag] = self.chat(f"{tag * 4} LONGREPLY question", max_tokens=200)
+            except Exception as e:   # noqa: BLE001 - reported below
+                errors.append(e)
+
+        threads = [threading.Thread(target=go, args=(tag,)) for tag in ("A", "B")]
+        for th in threads:
+            th.start()
+            time.sleep(0.15)
+        for th in threads:
+            th.join(30)
+        self.assertEqual(errors, [])
+        slots = {}
+        for line in self.log.read_text().splitlines():
+            if line.startswith("BGEN"):
+                f = line.split()
+                slots[f[4]] = int(f[1])                 # the request's last admission: the slot it finished in
+        self.assertEqual(set(slots), {"A", "B"}, slots)          # both requests ran in a batch slot
+        self.assertEqual(sorted(slots.values()), [0, 1], slots)
+        seen = {}
+        for tag, slot in slots.items():
+            row = self.engine.slot_batch_stats(slot)
+            self.assertIsNotNone(row, "the engine's own counter row must be read from its log")
+            timings = out[tag]["timings"]
+            self.assertEqual((timings["draft_n"], timings["draft_n_accepted"]),
+                             (row["offered"], row["accepted"]), (tag, slot, row))
+            self.assertNotEqual((timings["draft_n"], timings["draft_n_accepted"]), (0, 0))
+            seen[tag] = (timings["draft_n"], timings["draft_n_accepted"])
+        self.assertEqual(sorted(seen.values()), [(33, 27), (34, 29)], (seen, slots))
+        # the per-request history rows and the totals carry the same real numbers
+        with self.svc.status_lock:
+            rows = list(self.svc.history)
+        self.assertEqual(sorted((r["drafts_offered"], r["drafts_accepted"]) for r in rows), [(33, 27), (34, 29)])
+        self.assertEqual((self.svc.totals["drafts_offered"], self.svc.totals["drafts_accepted"]), (67, 56))
+
+    def test_without_a_native_row_the_request_keeps_its_own_admission_value(self):
+        """#F5: no invented numbers.  An engine that prints no per-slot row (no batch MTP at all) leaves the
+        request's own admission-DONE value in place - the pre-fix behaviour, unchanged."""
+        self.start(2)                                   # no --mtp-stats: the log has no rows
+        out = {}
+        threads = [threading.Thread(target=lambda t=t: out.setdefault(t, self.chat(f"{t * 4} question")))
+                   for t in ("A", "B")]
+        for th in threads:
+            th.start()
+            time.sleep(0.15)
+        for th in threads:
+            th.join(30)
+        self.assertEqual(self.engine.slot_batch_stats(0), None)
+        for tag in ("A", "B"):
+            timings = out[tag]["timings"]
+            self.assertEqual((timings["draft_n"], timings["draft_n_accepted"]), (0, 0), (tag, timings))
+
+
+class BatchMtpStatsLogTests(unittest.TestCase):
+    def test_reads_the_engines_own_per_slot_rows_and_keeps_the_newest(self):
+        """#F5 fixture provenance: the row shape is the engine's own fprintf (src/program/generate.cpp:8999) and
+        the values used are the two rows the production concurrent probe recorded (slot0 windows=33 offered=33
+        accepted=27 rejected=6; slot1 windows=34 offered=34 accepted=29 rejected=5)."""
+        rows = BatchMtpStatsLog()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "engine.log"
+            path.write_text("", encoding="utf-8")
+            start = 0
+
+            def write(text):
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(text)
+
+            write("strata batch_mtp_stats slot=0 windows=33 offered=33 accepted=27 rejected=6 discarded=0 "
+                  "fallback_attempts=0 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
+                  "fallback_capacity=0 fallback_reserve=0\n")
+            write("strata serve: an unrelated line the reader must ignore\n")
+            write("strata batch_mtp_stats slot=1 windows=34 offered=34 accepted=29 rejected=5 discarded=0 "
+                  "fallback_attempts=0 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
+                  "fallback_capacity=0 fallback_reserve=0\n")
+            got = rows.poll(str(path), start)
+            self.assertEqual((got[0]["windows"], got[0]["offered"], got[0]["accepted"], got[0]["rejected"]),
+                             (33, 33, 27, 6))
+            self.assertEqual((got[1]["windows"], got[1]["offered"], got[1]["accepted"], got[1]["rejected"]),
+                             (34, 34, 29, 5))
+            # a slot's newer lifecycle replaces its row, the other slot's row stays
+            write("strata batch_mtp_stats slot=0 windows=2 offered=2 accepted=0 rejected=2 discarded=0 "
+                  "fallback_attempts=0 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
+                  "fallback_capacity=0 fallback_reserve=0\n")
+            got = rows.poll(str(path), start)
+            self.assertEqual((got[0]["windows"], got[0]["offered"], got[0]["accepted"]), (2, 2, 0))
+            self.assertEqual(got[1]["offered"], 34)
+            # a line cut in half is read on the next poll, not parsed early
+            write("strata batch_mtp_stats slot=0 windows=7 offered=7 accepted=1 rejected=6 discarded=0 "
+                  "fallback_attempts=0 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
+                  "fallback_capacity=0 fallback_reserve=0")
+            self.assertEqual(rows.poll(str(path), start)[0]["windows"], 2)
+            write("\n")
+            self.assertEqual(rows.poll(str(path), start)[0]["windows"], 7)
+            # another engine run starts from its own offset: the earlier rows are not carried over
+            self.assertEqual(rows.poll(str(path), os.path.getsize(path)), {})
+
+    def test_a_request_never_gets_a_previous_lifecycles_row_and_counts_its_own_once(self):
+        """#F5: rows are per slot lifecycle.  A request must not pick up its predecessor's row, and its own row
+        must be counted exactly once (the release path may see the ack and request end may look again)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "engine.log"
+            log.write_text("", encoding="utf-8")
+            engine = StrataEngine("strata", ["--batch", "2"], None, None, lazy=True)
+            engine.batch = 2
+            engine.log_path, engine.log_start = str(log), 0
+
+            def row(slot, windows, offered, accepted):
+                with open(log, "a", encoding="utf-8") as f:
+                    f.write(f"strata batch_mtp_stats slot={slot} windows={windows} offered={offered} "
+                            f"accepted={accepted} rejected={offered - accepted} discarded=0 fallback_attempts=0 "
+                            f"fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 fallback_capacity=0 "
+                            f"fallback_reserve=0\n")
+
+            row(0, 33, 33, 27)                       # the previous request's row for slot 0
+            engine.forget_request_slot()
+            engine.note_request_slot(0)              # admitted: that row is not this request's
+            engine.last = {"drafts_offered": 0, "drafts_accepted": 0}
+            self.assertIsNone(engine.attribute_slot_mtp_stats(0))
+            engine.finalize_request_mtp()
+            self.assertEqual((engine.last["drafts_offered"], engine.last["drafts_accepted"]), (0, 0))
+            row(0, 34, 34, 29)                       # this request's own lifecycle
+            engine.attribute_slot_mtp_stats(0)       # the decode loop (or the release) sees the ack
+            self.assertEqual((engine.last["drafts_offered"], engine.last["drafts_accepted"]), (34, 29))
+            engine.attribute_slot_mtp_stats(0)       # the same row is not counted twice ...
+            engine.finalize_request_mtp()            # ... not even by the end-of-request look
+            self.assertEqual((engine.last["drafts_offered"], engine.last["drafts_accepted"]), (34, 29))
+            self.assertEqual(engine.last["batch_mtp_windows"], 34)
 
 
 if __name__ == "__main__":

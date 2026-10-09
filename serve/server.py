@@ -538,6 +538,56 @@ class ConvCacheLog:
         return dict(self.state)
 
 
+class BatchMtpStatsLog:
+    """#F5: the engine's per-slot batch-MTP counters, from the log its stderr goes to.
+
+    A batch slot's counters are NOT on its stdout lines: `BDONE <slot> <count> <finish> <ms>` carries no drafts
+    (only the solo/main `DONE` line does).  The engine prints one
+    `strata batch_mtp_stats slot=N windows=N offered=N accepted=N rejected=N discarded=N fallback_attempts=N
+    fallback_incoherent=N fallback_not_ready=N fallback_limits=N fallback_capacity=N fallback_reserve=N`
+    line to stderr immediately before that slot's BDONE, so read the engine's log on from where it was last read
+    (from the start of the engine's current run) and keep the newest row per slot.  A slot serves one request at a
+    time, so its newest row is the one belonging to the request now finishing there."""
+    ROW = re.compile(r"strata batch_mtp_stats slot=(\d+) windows=(\d+) offered=(\d+) accepted=(\d+) rejected=(\d+) "
+                     r"discarded=(\d+) fallback_attempts=(\d+) fallback_incoherent=(\d+) fallback_not_ready=(\d+) "
+                     r"fallback_limits=(\d+) fallback_capacity=(\d+) fallback_reserve=(\d+)")
+    FIELDS = ("slot", "windows", "offered", "accepted", "rejected", "discarded", "fallback_attempts",
+              "fallback_incoherent", "fallback_not_ready", "fallback_limits", "fallback_capacity",
+              "fallback_reserve")
+    READ_MAX = 1 << 20                                  # at most the last MiB of new lines per read
+
+    def __init__(self):
+        self.key, self.pos, self.rows, self.tick = None, 0, {}, 0
+
+    def poll(self, path, start) -> dict:
+        """The newest counter row per slot after the log's new lines; `start` is where the current run began."""
+        if not path or start is None:
+            return self.rows
+        if self.key != (path, start):                   # another start of the engine: its rows start empty
+            self.key, self.pos, self.rows, self.tick = (path, start), start, {}, 0
+        try:
+            size = os.path.getsize(path)
+            if size < self.pos:                         # the log was emptied or replaced
+                self.pos = 0
+            if size - self.pos > self.READ_MAX:
+                self.pos = size - self.READ_MAX
+            with open(path, "rb") as f:
+                f.seek(self.pos)
+                data = f.read(size - self.pos)
+        except OSError:
+            return self.rows
+        end = data.rfind(b"\n") + 1                     # whole lines only: the rest is read next time
+        self.pos += end
+        for line in data[:end].decode("utf-8", "replace").splitlines():
+            m = self.ROW.search(line)
+            if m:
+                self.tick += 1
+                row = {k: int(v) for k, v in zip(self.FIELDS, m.groups())}
+                row["tick"] = self.tick                   # which lifecycle this row is, so one is counted once
+                self.rows[int(m.group(1))] = row
+        return self.rows
+
+
 def conversation_cache_view(info: dict, hist: list, totals: dict, parked: dict) -> dict:
     """#596: the Monitor's Conversation cache card: the parked conversations (the engine's opt-in
     --conversation-cache-mib: budget, slots, what its log says) and how much of the prompts the cache gave back."""
@@ -609,6 +659,8 @@ class StrataEngine:
         paths = {k: v for k, v in zip(args, args[1:]) if k in ("--native", "--pack")}
         self.model_path = paths.get("--native") or paths.get("--pack", "pack/full")
         self.log_path = log
+        self.batch_stats = BatchMtpStatsLog()   # F5: the per-slot counters the engine prints to its log
+        self._batch_stats_lock = threading.Lock()
         self.proc, self.pump, self.log = None, None, None
         self.ended, self.unloaded = True, True
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
@@ -891,6 +943,69 @@ class StrataEngine:
                 self.slot_cv.notify_all()        # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
 
+    def slot_batch_stats(self, slot: int) -> dict | None:
+        """#F5: the newest native batch-MTP counter row for `slot`, or None when this engine printed none.
+
+        Read from the engine's log (never invented): the row is on disk before the slot's BDONE, which is what the
+        request waits for.  None is a real answer - an engine without batch MTP, or a suppressed clone whose MTP
+        never opened a window - and the caller then keeps the request's own admission-DONE value."""
+        with self._batch_stats_lock:
+            rows = self.batch_stats.poll(self.log_path, self.log_start)
+            row = rows.get(int(slot))
+            return dict(row) if row else None
+
+    def request_state(self):
+        """#F5: per-request state for the calling thread (--batch runs several requests at once).  `slot` is the
+        slot this request was admitted to and `mtp_tick` the counter row already counted for it."""
+        tl = self.__dict__.setdefault("_req_tl", threading.local())
+        if not hasattr(tl, "slot"):
+            tl.slot, tl.slot_tick0, tl.mtp_tick = None, 0, 0
+        return tl
+
+    def note_request_slot(self, slot: int) -> None:
+        """#F5: remember which slot this request was admitted to, and which counter rows that slot already had, so
+        its OWN row can still be attributed when the ack arrives after the consumer stopped (a stop token ends the
+        consumer first).  An older request's row is never mistaken for this one."""
+        state = self.request_state()
+        state.slot, state.mtp_tick = int(slot), 0
+        row = self.slot_batch_stats(slot)
+        state.slot_tick0 = row["tick"] if row else 0
+
+    def forget_request_slot(self) -> None:
+        state = self.request_state()
+        state.slot, state.slot_tick0, state.mtp_tick = None, 0, 0
+
+    def attribute_slot_mtp_stats(self, slot: int) -> dict | None:
+        """#F5: add `slot`'s own native counter row to THIS request's figures, once per slot lifecycle.
+
+        Unlike the solo `DONE` line, a slot's `BDONE` carries no draft counters; the engine prints this slot's row
+        to stderr (the log) just before it.  In --batch mode `self.last` is this request's own thread-local dict,
+        so a concurrent request can never read another slot's counters.  No row: the engine reported none (not a
+        batch-MTP run, or a clone whose MTP opened no window) and the request keeps its own admission-DONE value -
+        never an invented zero."""
+        row = self.slot_batch_stats(slot)
+        state = self.request_state()
+        if row is None or not isinstance(self.last, dict):
+            return None
+        if row["tick"] <= state.slot_tick0 or state.mtp_tick == row["tick"]:
+            return None                                      # a previous lifecycle's row, or one already counted
+        state.mtp_tick = row["tick"]
+        self.last = {**self.last,
+                     "drafts_offered": (self.last.get("drafts_offered") or 0) + row["offered"],
+                     "drafts_accepted": (self.last.get("drafts_accepted") or 0) + row["accepted"],
+                     "batch_mtp_slot": row["slot"], "batch_mtp_windows": row["windows"],
+                     "batch_mtp_rejected": row["rejected"],
+                     "batch_mtp_fallback_attempts": row["fallback_attempts"]}
+        return row
+
+    def finalize_request_mtp(self) -> None:
+        """#F5: attribute the request's slot row at the end.  A stop token can end the consumer before the slot's
+        BDONE is queued, while the engine already wrote the row to its log; the request's own thread reads it here
+        so no real counter is lost to that race.  A request that never used a slot (solo) is untouched."""
+        state = self.request_state()
+        if state.slot is not None:
+            self.attribute_slot_mtp_stats(state.slot)
+
     def _parse_done(self, line):
         f = line.split()
         self.last = {"generated": int(f[1]), "prompt_tokens": int(f[2]), "prompt_ms": float(f[3]),
@@ -1150,6 +1265,9 @@ class StrataEngine:
                 except (IndexError, ValueError):
                     tail = []
             if line.startswith("BDONE "):
+                # #F5: the request's slot is terminal here too (a stop token ends the consumer before the slot's
+                # ack).  Attribute the slot's own counters on the request's thread, exactly as the decode loop does.
+                self.attribute_slot_mtp_stats(slot)
                 finish = line.split()[3:4]
                 if finish == ["pressure"] or (finish == ["cancel"] and self._info_true((self.info or {}).get("kv_unified"))):
                     tail = []                         # released backing is not a passive slot cache
@@ -1369,6 +1487,7 @@ class StrataEngine:
         if not self.alive():
             raise EngineDied("the engine is unavailable; this request was not sent")
         self.progress, self.progress_ms, self.reused = None, 0, 0
+        self.forget_request_slot()                       # F5: this request starts with no slot counters counted
         born = self.gen                                 # the engine process this request is sent to
         keys = self.sampling_keys(self._continuation_sampling(sampling))
         incremental = self._info_true((self.info or {}).get("kv_incremental"))
@@ -1516,6 +1635,7 @@ class StrataEngine:
                             **({"pressure_pauses": pressure_pauses} if incremental else {})}
                     self.slot_live[slot] = live
                     self._ctl_born = born
+                    self.note_request_slot(slot)            # F5: this request's slot, for its own counter row
                     self._send(f"{head} {','.join(str(int(t)) for t in prompt)}")
                     paused = None                          # sent the resume: ctl now owns admission cleanup
                     self.slot_held[slot] = []               # the admission overwrites what the slot held
@@ -1613,6 +1733,9 @@ class StrataEngine:
                         if len(f) >= 5 and isinstance(self.last, dict):
                             self.last = {**self.last, "finish": f[3], "decode_ms": float(f[4]),
                                          "generated": int(f[2]) if f[2].isdigit() else self.last.get("generated")}
+                        # #F5: a slot's own MTP counters are not on its BDONE; attribute this slot's row
+                        # (printed by the engine to its log just before the ack) to this request.
+                        self.attribute_slot_mtp_stats(slot)
                         if incremental and f[3:4] == ["pressure"]:
                             # Native has RELEASED backing before this ack. All returned tokens, including the
                             # last unfed one, belong in replay; none belong in slot_held after release.
@@ -3980,6 +4103,11 @@ class Service:
                                 self._say_died(e)
                                 if not leaving and not cancel.is_set():
                                     raise
+                            # #F5: a stop token ends this pass before the slot's BDONE was queued; the engine
+                            # already wrote the slot's counter row to its log, so attribute it to this request.
+                            finalize = getattr(self.engine, "finalize_request_mtp", None)
+                            if finalize is not None:
+                                finalize()
                             segment_done = getattr(self.engine, "last", None)
                             if segment_done is not None and segment_done is not segment_before:
                                 segments.append(dict(segment_done))
