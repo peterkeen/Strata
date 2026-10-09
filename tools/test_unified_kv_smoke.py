@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 import time
@@ -35,6 +36,70 @@ def info(context=512):
 
 def evidence():
     return {'stdout': [], 'commands': [], 'stages': []}
+
+
+class SemanticTokenizer:
+    """Small deterministic tokenizer that preserves special markers for fixture tests."""
+    def __init__(self):
+        self.ids = {}
+        self.pieces = {}
+
+    def encode(self, text, parse_special=False):
+        parts = re.findall(r'<\|[^|]+\|>|\S+', text)
+        ids = []
+        for part in parts:
+            if part not in self.ids:
+                token_id = len(self.ids) + 1
+                self.ids[part] = token_id
+                self.pieces[token_id] = part
+            ids.append(self.ids[part])
+        return ids
+
+
+class PartialTailSeedTests(unittest.TestCase):
+    def test_user_background_padding_preserves_generation_header_and_exact_offsets(self):
+        tok = SemanticTokenizer()
+        for offset in (1, 2, 3):
+            with self.subTest(offset=offset):
+                seed = smoke.build_partial_tail_seed(tok, offset, context=512, output_cap=8, guard_cells=8)
+                tokens = seed.token_ids
+                self.assertEqual(len(tokens), seed.target_cells)
+                fixed_cells = (len(seed.prefix_ids) + len(seed.user_close_ids) + len(seed.assistant_header_ids))
+                target_floor = max(96, fixed_cells + 1)
+                expected_target = target_floor + (offset - 7 - target_floor) % smoke.PAGE_CELLS
+                self.assertEqual(seed.target_cells, expected_target)
+                self.assertEqual((len(tokens) + 7) % smoke.PAGE_CELLS, offset)
+                self.assertEqual(tokens[:seed.background_start], list(seed.prefix_ids))
+                expected_background = (list(seed.background_cycle_ids) *
+                                       ((seed.background_end - seed.background_start +
+                                         len(seed.background_cycle_ids) - 1) //
+                                        len(seed.background_cycle_ids)))[:seed.background_end - seed.background_start]
+                self.assertEqual(tokens[seed.background_start:seed.background_end], expected_background)
+                self.assertEqual(seed.background_end, seed.user_close_start)
+                self.assertEqual(tokens[seed.user_close_start:seed.user_close_end], list(seed.user_close_ids))
+                self.assertEqual(seed.user_close_end, seed.assistant_start)
+                self.assertEqual(tokens[seed.assistant_start:], list(seed.assistant_header_ids))
+                prefix_pieces = [tok.pieces[token_id] for token_id in seed.prefix_ids]
+                close_pieces = [tok.pieces[token_id] for token_id in seed.user_close_ids]
+                assistant_pieces = [tok.pieces[token_id] for token_id in seed.assistant_header_ids]
+                self.assertEqual(prefix_pieces[:2], ['<|im_start|>', 'user'])
+                self.assertIn('<|im_end|>', close_pieces)
+                self.assertLess(close_pieces.index('Do'), close_pieces.index('<|im_end|>'))
+                expected_header = tok.encode("\n<|im_start|>assistant\n<think>\n\n</think>\n\n",
+                                             parse_special=True)
+                self.assertEqual(list(seed.assistant_header_ids), expected_header)
+                self.assertEqual(assistant_pieces[:3], ['<|im_start|>', 'assistant', '<think>'])
+                self.assertIn('</think>', assistant_pieces)
+                self.assertLessEqual(len(tokens) + 8 + 8, 512)
+                branch_len = len(tokens) + 7 + len(tok.encode('Continue with even numbers:'))
+                self.assertLessEqual(branch_len + 16 + 8, 512)
+
+    def test_rejects_invalid_offset_or_context_headroom(self):
+        tok = SemanticTokenizer()
+        with self.assertRaisesRegex(AssertionError, 'offset must be'):
+            smoke.build_partial_tail_seed(tok, 0, context=512)
+        with self.assertRaisesRegex(AssertionError, 'context guard'):
+            smoke.build_partial_tail_seed(tok, 1, context=100)
 
 
 class ParserTests(unittest.TestCase):

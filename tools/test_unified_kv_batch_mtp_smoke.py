@@ -185,6 +185,18 @@ class OverlapTests(unittest.TestCase):
 
 
 class FixtureTests(unittest.TestCase):
+    def test_batch_tail_fixtures_use_shared_exact_user_framed_seed_builder(self):
+        tok = WordTokenizer()
+        fixtures = smoke.tail_fixtures(tok, context=1024, cap=8)
+        self.assertEqual([offset for offset, _ in fixtures], [1, 2, 3])
+        for offset, ids in fixtures:
+            with self.subTest(offset=offset):
+                expected = common.build_partial_tail_seed(tok, offset, 1024, output_cap=8, guard_cells=8)
+                self.assertEqual(ids, expected.token_ids)
+                self.assertEqual(len(ids), expected.target_cells)
+                self.assertEqual((len(ids) + 7) % common.PAGE_CELLS, offset)
+                self.assertLessEqual(len(ids) + 8 + 8, 1024)
+
     def test_dual_fixture_token_counts_are_explicitly_unequal(self):
         a, b = smoke.fixtures(WordTokenizer(), context=1024)
         self.assertNotEqual(a, b)
