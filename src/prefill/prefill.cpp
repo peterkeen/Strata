@@ -1,5 +1,6 @@
 // src/prefill/prefill.cpp - see include/strata/prefill/prefill.hpp.
 #include "strata/prefill/prefill.hpp"
+#include "strata/core/emulate.hpp"
 #include "mmq_resident_sort.hpp"
 #include "wmma_gemm.h"
 #include "strata/core/mtp.hpp"
@@ -59,14 +60,22 @@ bool supported(int) { return false; }
 bool fits(int, int64_t) { return false; }
 size_t matrix_bytes(int, int64_t, int64_t) { return 0; }
 size_t q8_bytes(int64_t, int64_t) { return 0; }
-void quantize(const float*, const int32_t*, void*, int, int64_t, int64_t, int64_t, void*) {}
+void quantize(const float*, const int32_t*, void*, int, int64_t, int64_t, int64_t, void*, float*, const int32_t*, int) {}
+bool fp4_activations(int) { return false; }
 Context::Context() {}
 Context::~Context() {}
 void Context::run(const Product&, void*) {}
-void gather_native(const void*, const void*, size_t, const void*, size_t, void*, void*, void*) {}
-bool gather_native_group(const GatherGroup&, size_t, size_t, size_t, size_t, void*, size_t, void*, size_t, void*) { return false; }
+void gather_native(const void*, const void*, size_t, const void*, size_t, void*, void*, void*, const void*, void*, size_t) {}
+bool gather_native_group(const GatherGroup&, size_t, size_t, size_t, size_t, void*, size_t, void*, size_t, void*, size_t,
+                         void*, size_t) { return false; }
 void gather_strata_q2(const uint8_t*, void*, void*, void*) {}
 void swiglu(const float*, float*, int64_t, int64_t, bool, void*) {}
+void swiglu_scaled(const float*, float*, int64_t, int64_t, const int32_t*, int, const float*, int64_t, void*) {}
+void down_row_scales(float*, const int32_t*, int, const float*, int64_t, void*) {}
+bool swiglu_quant_ok(int) { return false; }
+void swiglu_quant(const float*, void*, int64_t, const int32_t*, int, const float* const*, int64_t, float*, void*) {}
+bool direct_ok(int) { return false; }
+bool token_rows_ok(int, int64_t) { return false; }
 void iota(int32_t*, int64_t, void*) {}
 }  // namespace strata::prefill::mmq
 #endif
@@ -100,6 +109,40 @@ constexpr int64_t C = 10240, ZV = 6144, HV = 48;
 inline int64_t MAXBLOB() { return (int64_t) strata::kernels::cpu::expert_layout().max_blob; }
 constexpr int STAGE = 8;           // host->device expert staging ring (chunks below stream_all_min())
 constexpr int kSplitHelpRing = 48;  // layer split help: the helper stage's ring slots it streams through (at most)
+// An NVFP4 group's swiglu, H's q8_1 rows and s_down per row in one kernel (mmq::swiglu_quant, the same bytes);
+// STRATA_PREFILL_SWIGLU_QUANT=0: the three kernels and H in floats.
+inline bool swiglu_quant_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PREFILL_SWIGLU_QUANT");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
+}
+// STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert (the streamed walk's MMQ groups)
+inline bool group_gather_env() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
+}
+// STRATA_PREFILL_IN_PLACE=0: every MMQ group gathered (see in_place in the streamed walk)
+inline bool in_place_env() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PREFILL_IN_PLACE");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
+}
+// STRATA_PREFILL_TOKEN_ROWS=0: an in-place layer's gate/up activations scattered to every expert row of their token
+// (k_used copies each) instead of quantized once per token and read through the row -> token table
+inline bool token_rows_env() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_PREFILL_TOKEN_ROWS");
+        return v == nullptr || std::atoi(v) != 0;
+    }();
+    return on;
+}
 // STRATA_PREFILL_STREAM_AHEAD=0 keeps the previous routed-only upload schedule (A/B).
 inline bool stream_ahead_enabled() {
     static const bool on = [] {
@@ -154,6 +197,12 @@ inline int64_t stream_all_min() {
 // gate at cpu_maybe).  x: a fixed x.  Unset or 0: every expert on the GPU (the default).  RTX 5090 + 9950X3D,
 // 600-token prompts: UD-Q4_K_XL 1,528-1,548 -> 1,296-1,369 ms (share 0.65), Q2_0 472-491 -> 445-448, IQ2_XS 507 -> 490
 // (250 tokens 402 -> 368); IQ2_XS on 2 AVX2 workers 512 -> 487 (share 0.49).
+// The fork's NVFP4 + Q8_0-down pack, warm serve turns at 95K (ms; share 0 / a fixed 0.5 / measured): 229 tokens
+// 605-697 / 505-555 / 477-546, 601 768-856 / 612-720 / 601-669, 1,193 1,279 / 809-879 / 788-880; it settles at 0.51
+// (~75 us an expert each side).  Smaller CPUs, emulated (STRATA_FORCE_AVX2=1, --pool-workers), 600 tokens: 2 workers
+// 0.42, 761 against 900 ms at a fixed 0.5; 1 worker on ggml-cpu's dot 0.26, 891 against 2,330 - a fixed share would
+// cost such a CPU more than it saves.  (The fork had `auto` as its default since 0.1.39-nvfp4.4; 0.1.41's default is
+// the same `auto`, on the same one-GPU paths.)
 // 0.1.41: ON BY DEFAULT where it was measured (CUDA builds, one GPU, no batch slots): STRATA_PREFILL_CPU_SHARE unset
 // behaves as `auto` with STRATA_PREFILL_CPU_SHARE_MAX=1024 (chunks below 1024 tokens: -20..-35% at 512 and 1000 tokens
 // on an RTX 3060, a Tesla P100 and an RTX 5070, 8/8 pairs each; mean KL against the share off about 0.004).
@@ -174,6 +223,16 @@ inline double cpu_share_env() {   // -1: measured
     return v == -2.0 ? (g_share_default ? -1.0 : 0.0) : v;
 }
 inline bool cpu_share_on() { return cpu_share_env() != 0.0; }
+// The fork: on an NVFP4 pack the share's chunks go up to 4096 tokens, the default's and an explicit share's alike (a
+// STRATA_PREFILL_CPU_SHARE_MAX wins): the CPU takes the experts few of its tokens route to, and streaming every expert
+// pays only above that.  RTX 5090, NVFP4 + Q8_0-down, warm serve turns: 1,620 tokens 1,317 -> 992 ms, 2,425 1,339 ->
+// 1,114; 4,630 at 8192 1,397 -> 1,509 (worse: the stream-all stays).  NVFP4 packs only: their 2.76 MB experts make such
+// a chunk PCIe-bound.  Q2_0's 1.15 MB ones do not (the share changed nothing below 1,300 tokens, 32 GB card or 12 GB
+// emulated), and there routed-only lost: 2,099 tokens 714 -> 763 ms, 1,299 482 -> 549.
+inline bool cpu_share_nvfp4() {
+    const auto& lay = kernels::cpu::expert_layout();
+    return lay.native && !lay.fmt.empty() && lay.fmt[0].gu_type == kernels::cpu::kNvfp4Type;
+}
 // STRATA_PREFILL_CPU_SHARE_MAX (default 3072, at least 1024): with the share on, chunks below it are staged after their
 // routing - so they can hand the CPU its share - instead of streaming every expert the cards do not hold.  The share pays
 // on chunks up to ~3K tokens, where few tokens route to many of the streamed experts; 1024 keeps the old limit.
@@ -183,6 +242,7 @@ inline int64_t cpu_share_max() {
         return e ? std::max<int64_t>(1024, (int64_t) std::atoll(e)) : (int64_t) 3072;
     }();
     static const bool explicit_max = std::getenv("STRATA_PREFILL_CPU_SHARE_MAX") != nullptr;
+    if (!explicit_max && cpu_share_nvfp4()) return 4096;   // the fork: NVFP4 packs (above)
     if (g_share_default && cpu_share_explicit() == -2.0 && !explicit_max) return 1024;   // the default's measured range
     return v;
 }
@@ -295,18 +355,21 @@ constexpr int DQ = 2;              // dequantized-expert ring (FP16 gate/up + do
 // BF16 activations here and FP32 ones in decode. STRATA_PREFILL_BF16X2=1 adds each activation's BF16 remainder as a
 // second GEMM (Y = W.hi + W.lo, ~16 mantissa bits): a router that picks its top 10 from the same x decode would.
 // 2 = all but the hyper-connection's; 1 = the hyper-connection's too (its activations are 10240 wide and its up
-// projection writes as much: slower); 0 (the default: opt-in, it changes the prompt path's numbers) = off.
+// projection writes as much: slower); 0 = off (upstream's default). This fork defaults to 2: its NVFP4 router
+// picks closer to decode's (first-token KL halved on short prompts).
 // `f16_io`: the stage's FP16 prompt path (Prefill::init decides it once per stage, on the stage's own device): FP16
 // activations carry 11 mantissa bits, so the BF16 low part does not apply there.
 inline int bf16x2_mode(bool f16_io) {
     static const int v = [] {
         const char* e = std::getenv("STRATA_PREFILL_BF16X2");
-        return e != nullptr ? std::atoi(e) : 0;
+        return e != nullptr ? std::atoi(e) : 2;
     }();
     return f16_io ? 0 : v;
 }
 inline bool bf16x2(bool f16_io) { return bf16x2_mode(f16_io) != 0; }
-// S23 (opt-in STRATA_HC_UPMIX=1): the hyper-connection read's up projection and gr_mix_r as one kernel (gr_upmix, gfx11);
+// S23 (STRATA_HC_UPMIX=1): the hyper-connection read's up projection and gr_mix_r as one kernel (gr_upmix: gfx11, and in
+// the fork CUDA sm_80+).  The fork's default on CUDA compute capability 12.x, where it is the default pair's bits at
+// chunks of 33+ tokens (RTX 5090, CUDA 13.3); opt-in elsewhere (gfx11 unchanged); STRATA_HC_UPMIX=0 off everywhere;
 // STRATA_HC_UPMIX_CHECK=N also runs the default pair on the first N reads and reports the difference of `mixed`
 static int64_t pf_switch_min_t() {   // S23: STRATA_PF_SWITCH_MIN_T=N - the rounding-level prompt switches only on chunks of
     // N or more tokens (shorter prompts keep the default numerics, and their outputs; the switches pay on long ones)
@@ -314,8 +377,33 @@ static int64_t pf_switch_min_t() {   // S23: STRATA_PF_SWITCH_MIN_T=N - the roun
     return v;
 }
 inline bool hc_upmix() {
-    static const bool v = [] { const char* e = std::getenv("STRATA_HC_UPMIX"); return e != nullptr && e[0] == '1'; }();
-    return v;
+    static const int env = [] { const char* e = std::getenv("STRATA_HC_UPMIX"); return e == nullptr ? -1 : e[0] == '1' ? 1 : 0; }();
+    if (env >= 0) return env == 1;
+#if defined(__HIPCC__)
+    return false;
+#else
+    static int known[64] = {};   // per device (a layer split can mix cards): 0 not asked yet, 1 compute capability 12.x, 2 no
+    int dev = 0;
+    if (cudaGetDevice(&dev) != cudaSuccess || dev < 0 || dev >= 64) { cudaGetLastError(); return false; }
+    if (known[dev] == 0) {
+        int major = 0;
+        known[dev] = cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev) == cudaSuccess &&
+                     strata::cc_major_of(major) == 12
+                         ? 1 : 2;
+        cudaGetLastError();
+    }
+    return known[dev] == 1;
+#endif
+}
+// the fork, CUDA: the fused kernel only on chunks of 33+ tokens - there cuBLAS's up GEMM sums K in the fused kernel's
+// order and the read is the default pair's bits (gr_upmix_parity, RTX 5090, CUDA 13.3); below it cuBLAS takes another
+// kernel (rounding-level apart), so short chunks keep the pair
+inline int64_t hc_upmix_min_t() {
+#if defined(__HIPCC__)
+    return 0;
+#else
+    return 33;
+#endif
 }
 inline bool bf16x2_hc(bool f16_io) { return bf16x2_mode(f16_io) == 1; }
 // S23 (opt-in STRATA_CVEC_FUSE=1): a steered layer's FFN write + control vector + the next half's norm in one pass
@@ -719,12 +807,15 @@ struct Prefill::Impl {
     float* H = nullptr;
     int32_t *ids_identity = nullptr, *bounds_dev = nullptr;
     uint8_t *grp_gu = nullptr, *grp_d = nullptr;
+    float *Xscale = nullptr, *Hscale = nullptr, *grp_tail = nullptr;   // NVFP4: activation scales, expert tails
+    float* row_sd = nullptr;          // NVFP4 in MMQ: each Dm row's s_down, applied by the combine as it reads the row
     std::vector<int32_t> bounds_host;
     std::unique_ptr<mmq::Context> mmq_ctx;
     std::vector<int32_t> ids_host, slot_host, src_host, cnt, off;
-    // set_cpu_pool: a small chunk's CPU experts. The layer's MoE input (T x N, from `mixed`) and the rows the pool
-    // writes (Dm's tail, in Dm's row order), both pinned; and the pool's per-token activations and jobs.
-    float *cpu_x = nullptr, *cpu_rows = nullptr;
+    // set_cpu_pool: a small chunk's CPU experts. The layer's MoE input (T x N, from `mixed`), the rows the pool writes
+    // (Dm's tail, in Dm's row order), ones for row_sd (the CPU's rows carry s_down already), all pinned; and the
+    // pool's per-token activations and jobs.
+    float *cpu_x = nullptr, *cpu_rows = nullptr, *cpu_ones = nullptr;
     size_t cpu_x_n = 0, cpu_rows_n = 0;
     std::vector<uint8_t> cpu_nact;
     std::vector<kernels::cpu::ActQ> cpu_actq;   // a Q2_0 layer's activations (the pool's Q2_0 kernels read ActQ)
@@ -868,7 +959,7 @@ void Prefill::release() {
     if (impl_->kv_released) cudaEventDestroy(impl_->kv_released);
     if (impl_->kv_ready) cudaEventDestroy(impl_->kv_ready);
     if (impl_->grp_host) cudaFreeHost(impl_->grp_host);
-    for (float* p : {impl_->cpu_x, impl_->cpu_rows})
+    for (float* p : {impl_->cpu_x, impl_->cpu_rows, impl_->cpu_ones})
         if (p) cudaFreeHost(p);
     for (cudaEvent_t e : impl_->cpu_ev)
         if (e) cudaEventDestroy(e);
@@ -982,6 +1073,8 @@ uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
         a.take<uint8_t>(mb.xq, ok);
         a.take<float>(mb.h, ok);
         a.take<uint8_t>(mb.hq, ok);
+        a.take<float>(T * K, ok); a.take<float>(T * K, ok); a.take<float>(MMQ_GROUP * 4, ok);
+        a.take<float>(T * K, ok);
     }
     return a.used;
 }
@@ -1198,6 +1291,9 @@ bool Prefill::carve(size_t T, void* alloc) {
             m.Xq = c.take<uint8_t>(mb.xq, ok);
             m.H = c.take<float>(mb.h, ok);
             m.Hq = c.take<uint8_t>(mb.hq, ok);
+            m.Xscale = c.take<float>(T * K, ok); m.Hscale = c.take<float>(T * K, ok);
+            m.grp_tail = c.take<float>(MMQ_GROUP * 4, ok);
+            m.row_sd = c.take<float>(T * K, ok);
         }
         if (base == nullptr) ok = false;
     }
@@ -1575,6 +1671,11 @@ bool Prefill::set_peer(core::PeerExperts* peer, int64_t cap_rows, std::string& e
     const bool host_route_ok = [] { const char* v = std::getenv("STRATA_PF_PEER_HOST"); return v == nullptr || std::atoi(v) != 0; }();
     if (!peer->p2p() && !host_route_ok) { err = "prefill peer: the two GPUs cannot access each other (no P2P)"; return false; }
     if (!mmq_plan().any) { err = "prefill peer: needs the MMQ prompt path"; return false; }
+    {   // NVFP4: the peer's MMQ products have no per-expert scales (grp_tail, row_sd); its decode rows do
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        for (const auto& f : lay.fmt)
+            if (lay.native && f.tail_off) { err = "prefill peer: not for NVFP4 experts yet"; return false; }
+    }
     auto pp = std::make_unique<PeerPrefill>();
     pp->peer = peer;
     pp->p2p = peer->p2p();
@@ -1743,19 +1844,20 @@ void Prefill::set_ring_budget(int slots, int64_t small_max) {
 double Prefill::pinned_share() { return g_pinned_share; }
 int64_t Prefill::stream_all_min_tokens() { return stream_all_min(); }
 
-uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed_impl(g, ss, chunk, false);
+uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk, bool src) {
+    return bytes_needed_impl(g, ss, chunk, false, src);
 }
 
 // What `init` really allocates when the prompt path owns its buffers (no loan): every cudaMalloc rounds up to a 2 MiB
 // page, and the ring is one allocation (carve).  `bytes_needed` stays the borrowed region's sum.
-uint64_t Prefill::bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed_impl(g, ss, chunk, true);
+uint64_t Prefill::bytes_needed_owned(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                     bool src) {
+    return bytes_needed_impl(g, ss, chunk, true, src);
 }
 
 uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
-                                    bool owned_pages) {
-    // the same allocation sequence as `init`, counted
+                                    bool owned_pages, bool src) {
+    // the same allocation sequence as `init`, counted (the MoE layout `carve` picks for the same source)
     const size_t T = (size_t) chunk;
     bool ok = true;
     Alloc o;
@@ -1789,7 +1891,7 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     const int64_t cap = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
-                                       moe_set_bytes(T, g.n_expert, fused_layout(T, true))}), ok);
+                                       moe_set_bytes(T, g.n_expert, fused_layout(T, src))}), ok);
     for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
@@ -1810,8 +1912,9 @@ uint64_t Prefill::bytes_needed_impl(const core::ModelGeometry& g, const core::Se
     return o.used + (8u << 20);   // alignment slack
 }
 
-uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk) {
-    return bytes_needed(g, ss, chunk) - (uint64_t) ring_slots((size_t) chunk) * (uint64_t) MAXBLOB();
+uint64_t Prefill::bytes_needed_no_ring(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
+                                        bool src) {
+    return bytes_needed(g, ss, chunk, src) - (uint64_t) ring_slots((size_t) chunk) * (uint64_t) MAXBLOB();
 }
 
 int64_t Prefill::ring_default_slots() {
@@ -1839,9 +1942,10 @@ void Prefill::arm_cpu_share(bool applies, bool by_default) {
 #if !defined(STRATA_USE_HIP)
     if (applies && by_default && cpu_share_explicit() == -2.0 && !g_share_default) {
         g_share_default = true;
-        std::fprintf(stderr, "prefill: the CPU share is ON by default for prompt chunks below 1024 tokens (the idle CPU "
+        std::fprintf(stderr, "prefill: the CPU share is ON by default for prompt chunks below %lld tokens (the idle CPU "
                              "takes some of the experts the GPU would stream; answers can differ slightly from 0.1.40.3, "
-                             "mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.\n");
+                             "mean KL ~0.004). STRATA_PREFILL_CPU_SHARE=0 turns it off.\n",
+                     (long long) cpu_share_max());   // the fork: 4096 on an NVFP4 pack
     }
 #else
     (void) by_default;
@@ -2054,6 +2158,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     std::string ple_next_err;
     std::future<bool> ple_next;             // declared after everything it reads: an early return waits for it
     int ple_buf = 0;
+    // STRATA_PLE_TRACE=1: when a chunk's read started, when layer 1 asked for its rows, how long it waited
+    static const bool ple_trace = std::getenv("STRATA_PLE_TRACE") != nullptr;
+    Clock::time_point ple_t0 = t_start;
 
     for (int64_t c0 = 0; c0 < n; c0 += m.T) {
         if (should_stop && should_stop()) { err = "cancelled"; return false; }
@@ -2120,10 +2227,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
         // ---- the PLE rows of the whole chunk, one batched SSD request on a thread (see ple_gather).  A later chunk's
         // were read ahead during the previous chunk; the first chunk's are read beside layer 0 - they are needed from
         // layer 1 on, and gathering them here first left the GPU idle for the whole read (~0.4 s of a 32K prompt)
-        if (ple_on && !ple_next.valid())
+        if (ple_on && !ple_next.valid()) {
             ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c0, b = ple_buf] {
                 return ple_gather(c0, b, ple_next_err);
             });
+            ple_t0 = Clock::now();
+        }
         bool ple_pending = ple_on;
         // the chunk's rows onto the device just before layer 1 reads them, and the next chunk's gather started
         auto ple_land = [&]() -> bool {
@@ -2134,6 +2243,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 err = ple_next_err;
                 return false;
             }
+            if (ple_trace)
+                std::fprintf(stderr, "strata ple: chunk %lld: read started %.1f ms into the run, layer 1 reached at %.1f, "
+                                     "waited %.1f ms\n", (long long) c0, std::chrono::duration<double, std::milli>(ple_t0 - t_start).count(),
+                             std::chrono::duration<double, std::milli>(tp - t_start).count(), ms_since(tp));
             if (cudaMemcpyAsync(m.ple_emb, m.ple_emb_host[ple_buf], (size_t) T * N * 4, cudaMemcpyHostToDevice, m.cs) !=
                     cudaSuccess ||
                 cudaEventRecord(m.ple_copied[ple_buf], m.cs) != cudaSuccess) {
@@ -2149,6 +2262,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 ple_next = std::async(std::launch::async, [&ple_gather, &ple_next_err, c1 = c0 + m.T, b = ple_buf ^ 1] {
                     return ple_gather(c1, b, ple_next_err);
                 });
+                ple_t0 = Clock::now();
             }
             ple_buf ^= 1;
             stats_.ms_ple += ms_since(tp);
@@ -2364,7 +2478,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
             if (!threaded_issue) return;
             while (a_issued.load(std::memory_order_acquire) <= k) std::this_thread::yield();
         };
+        size_t given_back = 0;   // the issuer may fill slots up to given_back + ring
         auto give_back = [&](size_t upto) {
+            given_back = upto;
             if (threaded_issue) a_consumed.store(upto, std::memory_order_release);
             else issue_until(upto + (size_t) m.ring);
         };
@@ -2467,6 +2583,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (gr_unfused()) gr_norm(m.R, (const float*) wn->data, EPS, m.xn, m.xn16, T, m.cs, m.xn16_lo);
                 else if (!normed) gr_norm_rs(m.R, (const float*) wn->data, EPS, m.grs, m.xn16, T, m.cs, m.xn16_lo, ldx);
                 normed = false;
+                bool moe_wrote = false;   // the MoE half's combine also did the write below (moe_combine_write_norm_rs)
                 bool hcd = false;
                 bool hdown = false;
                 if (ldx != D && !pf_hcdown()) {   // STRATA_HCD_EXACT: the exact-order down kernel when hipBLASLt would take 1176 / 1177
@@ -2485,17 +2602,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 if (!hcd && !hdown && !bf16_proj(m.gemm, wd, m.xn16, m.lo, T, sd, err, 0, m.xn16_lo, ldx != D ? ldx : 0)) return false;
                 gr_silu(m.lo, m.lo16, T, m.cs, m.lo16_lo);
                 bool upmixed = false;
-                if (hc_upmix() && T >= pf_switch_min_t() && !gr_unfused() && !m.lo16_lo && !m.mixed_bf_lo &&
+                if (hc_upmix() && T >= std::max(pf_switch_min_t(), hc_upmix_min_t()) && !gr_unfused() && !m.lo16_lo &&
                     wu->kind == core::WeightKind::Bf16InF32 && wu->data && wu->ne0 == LR && wu->ne1 == D) {
                     static int checks = [] { const char* e = std::getenv("STRATA_HC_UPMIX_CHECK"); return e ? std::atoi(e) : 0; }();
                     if (checks > 0) {   // the default pair first, kept for the comparison
                         --checks;
                         if (!bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err)) return false;
-                        gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h);
+                        gr_mix_r(m.R, m.grs, (const float*) wn->data, m.gated, m.mixed, m.mixed_bf, T, m.cs, m.mixed_h,
+                                 m.mixed_bf_lo);
                         std::vector<float> ref((size_t) T * N), got((size_t) T * N);
                         cudaMemcpyAsync(ref.data(), m.mixed, ref.size() * 4, cudaMemcpyDeviceToHost, m.cs);
                         upmixed = gr_upmix(m.lo16, (const uint16_t*) wu->data, m.R, m.grs, (const float*) wn->data,
-                                           m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
+                                           m.mixed, m.mixed_bf, m.mixed_h, T, m.cs, m.mixed_bf_lo);
                         cudaMemcpyAsync(got.data(), m.mixed, got.size() * 4, cudaMemcpyDeviceToHost, m.cs);
                         cudaStreamSynchronize(m.cs);
                         double e2 = 0, r2 = 0, emax = 0;
@@ -2508,7 +2626,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                      std::sqrt(e2 / std::max(r2, 1e-30)), emax, upmixed ? "upmix" : "upmix refused");
                     } else {
                         upmixed = gr_upmix(m.lo16, (const uint16_t*) wu->data, m.R, m.grs, (const float*) wn->data,
-                                           m.mixed, m.mixed_bf, m.mixed_h, T, m.cs);
+                                           m.mixed, m.mixed_bf, m.mixed_h, T, m.cs, m.mixed_bf_lo);
                     }
                 }
                 if (!upmixed && !bf16_proj(m.gemm, wu, m.lo16, m.gated, T, su, err, 0, m.lo16_lo)) return false;
@@ -2888,6 +3006,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                     const bool use_mmq = mmq_plan().any && mmq_plan().layer[(size_t) l];
                     const int mmq_gt = lay.native ? lay.fmt[(size_t) l].gu_type : 42;
                     const int mmq_dt = lay.native ? lay.fmt[(size_t) l].d_type : 42;
+                    // the streamed walk's MMQ groups: gathered in one launch each; in place (no gather) where the
+                    // products can read each expert where it lies; then gate/up's activations once per token
+                    const bool group_gather_l = group_gather_env() && stream_all && use_mmq && lay.native &&
+                                                MMQ_GROUP <= mmq::kGatherGroupMax;
+                    // (not with --peer-device: set_peer can decline a pack and leave m.pp null, the peer's slots and
+                    // buffers sized for the gathered groups all the same)
+                    const bool in_place_l = in_place_env() && group_gather_l && lay.fmt[(size_t) l].tail_off &&
+                                            swiglu_quant_on() && mmq::swiglu_quant_ok(mmq_dt) &&
+                                            mmq::direct_ok(mmq_gt) && mmq::direct_ok(mmq_dt) &&
+                                            !core::peer_portable() && !(m.pp && m.pp->peer);
+                    const bool tok_rows_l = in_place_l && token_rows_env() && mmq::token_rows_ok(mmq_gt, N);
                     // --peer-device: MMQ only, whether or not the peer took the prompt path (set_peer can decline), as
                     // fused_ring() sized the ring and the buffers for it
                     const bool no_peer = !core::peer_portable();
@@ -3182,6 +3311,44 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             cudaMemcpyAsync(m.slot_dev, m.slot_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
                             cudaMemcpyAsync(m.src_dev, m.src_host.data(), (size_t) T * K * 4, cudaMemcpyHostToDevice, m.cs);
                         }
+                        // Diagnostics: STRATA_DUMP_MOE_INPUT=path, STRATA_DUMP_MOE_LAYER=l - the first chunk's MoE input
+                        // of layer l ({T, N, K} int64, T x N floats, T x K expert ids) for testing products on real rows
+                        static const char* dump_moe = std::getenv("STRATA_DUMP_MOE_INPUT");
+                        static const bool dump_all = dump_moe && std::getenv("STRATA_DUMP_MOE_LAYER") &&
+                                                     std::strcmp(std::getenv("STRATA_DUMP_MOE_LAYER"), "all") == 0;
+                        static bool dumped_moe = false;
+                        // STRATA_DUMP_MOE_LAYER=all: every layer of every chunk, appended to <path>_lNN.bin as records of
+                        // {T, N, K, 2} int64, T x N floats (the MoE input), T x K expert ids, T x K routing weights
+                        // (calibration for tools/requant.py)
+                        if (dump_all) {
+                            std::vector<float> x((size_t) (T * N)), w((size_t) (T * K));
+                            cudaMemcpyAsync(x.data(), m.mixed, x.size() * sizeof(float), cudaMemcpyDeviceToHost, m.cs);
+                            cudaMemcpyAsync(w.data(), m.w, w.size() * sizeof(float), cudaMemcpyDeviceToHost, m.cs);
+                            cudaStreamSynchronize(m.cs);
+                            char path[1024];
+                            std::snprintf(path, sizeof path, "%s_l%02d.bin", dump_moe, (int) l);
+                            if (std::FILE* f = std::fopen(path, "ab")) {
+                                const int64_t hdr[4] = {(int64_t) T, (int64_t) N, (int64_t) K, 2};
+                                std::fwrite(hdr, sizeof hdr, 1, f);
+                                std::fwrite(x.data(), sizeof(float), x.size(), f);
+                                std::fwrite(ids_h, sizeof(int32_t), (size_t) (T * K), f);
+                                std::fwrite(w.data(), sizeof(float), w.size(), f);
+                                std::fclose(f);
+                            }
+                        }
+                        if (dump_moe && !dump_all && !dumped_moe && l == std::atoi(std::getenv("STRATA_DUMP_MOE_LAYER") ? std::getenv("STRATA_DUMP_MOE_LAYER") : "0")) {
+                            dumped_moe = true;
+                            std::vector<float> x((size_t) (T * N));
+                            cudaMemcpyAsync(x.data(), m.mixed, x.size() * sizeof(float), cudaMemcpyDeviceToHost, m.cs);
+                            cudaStreamSynchronize(m.cs);
+                            if (std::FILE* f = std::fopen(dump_moe, "wb")) {
+                                const int64_t hdr[3] = {(int64_t) T, (int64_t) N, (int64_t) K};
+                                std::fwrite(hdr, sizeof hdr, 1, f);
+                                std::fwrite(x.data(), sizeof(float), x.size(), f);
+                                std::fwrite(ids_h, sizeof(int32_t), (size_t) (T * K), f);
+                                std::fclose(f);
+                            }
+                        }
                         n_order = order.size();
                         // set_cpu_pool: the CPU's experts on a thread while this one streams and runs the GPU's; their
                         // unweighted rows land in Dm's row order, so the combine weights them as any other row
@@ -3189,14 +3356,17 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const size_t want = (size_t) rows_cpu * N;
                             if (m.cpu_rows_n < want) {
                                 cpu_cold = true;
-                                if (m.cpu_rows) cudaFreeHost(m.cpu_rows);
-                                m.cpu_rows = nullptr;
+                                for (float* q : {m.cpu_rows, m.cpu_ones})
+                                    if (q) cudaFreeHost(q);
+                                m.cpu_rows = m.cpu_ones = nullptr;
                                 m.cpu_rows_n = 0;
                                 const size_t cap_rows = (size_t) rows_cpu * 2;   // headroom: few reallocations
-                                if (cudaHostAlloc((void**) &m.cpu_rows, cap_rows * N * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
+                                if (cudaHostAlloc((void**) &m.cpu_rows, cap_rows * N * sizeof(float), cudaHostAllocDefault) != cudaSuccess ||
+                                    cudaHostAlloc((void**) &m.cpu_ones, cap_rows * sizeof(float), cudaHostAllocDefault) != cudaSuccess) {
                                     err = "prefill: cannot allocate the CPU experts' rows";
                                     return false;
                                 }
+                                std::fill(m.cpu_ones, m.cpu_ones + cap_rows, 1.0f);
                                 m.cpu_rows_n = cap_rows * N;
                             }
                             const int64_t r0c = T * K - rows_cpu;
@@ -3246,8 +3416,13 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const size_t mmq_db = use_mmq ? mmq::matrix_bytes(mmq_dt, N, 640) : 0;
                         pt.mark(kPfGather, cs);
                         if (use_mmq) {
-                            // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`
-                            mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs);
+                            // step 2b: the layer's activations as q8_1 rows in expert order, straight from `mixed`;
+                            // where the layer's products read the experts in place and gate/up is w4a4x2, each token
+                            // once (MMQ reads row src[r] for its row r: Product::y_rows)
+                            if (tok_rows_l)
+                                mmq::quantize(m.mixed, nullptr, m.Xq, mmq_gt, N, N, T, m.cs, m.Xscale);
+                            else
+                                mmq::quantize(m.mixed, m.src_dev, m.Xq, mmq_gt, N, N, T * K, m.cs, m.Xscale, m.slot_dev, (int) K);
                             // each group's rows: absolute bounds (gate/up reads the layer's rows), relative ones (down
                             // reads the group's own quantized H)
                             const size_t n = order.size(), ng = (n + MMQ_GROUP - 1) / MMQ_GROUP;
@@ -3603,16 +3778,18 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         // entry the routing skipped inside an open group first gathers what the group holds so far
                         // (`flush`), so no more than a group's entries are ever held back from the issuer.
                         // STRATA_PREFILL_GROUP_GATHER=0: one gather, one wait and one record per expert.
-                        static const bool group_env = [] {
-                            const char* v = std::getenv("STRATA_PREFILL_GROUP_GATHER");
-                            return v == nullptr || std::atoi(v) != 0;
-                        }();
-                        const bool group_gather = group_env && stream_all && use_mmq && lay.native &&
-                                                  MMQ_GROUP <= mmq::kGatherGroupMax;
+                        const bool group_gather = group_gather_l;
+                        // In place: a group's products read each expert's blob where it lies (its ring slot or cache
+                        // slot) through a pointer per expert, with no gather; its ring slots are released after the
+                        // down product instead.  The same sums (moe_mmq.hpp, Product::w_ptrs).  Experts a skipped ring
+                        // entry forced out of an open group (flush) are still gathered and read from the group slots.
+                        // STRATA_PREFILL_IN_PLACE=0: every group gathered.
+                        const bool in_place = in_place_l;
                         mmq::GatherGroup gg;
                         int gg_slots[MMQ_GROUP];
                         int gg_nslots = 0;   // ring slots gathered by the next flush
-                        auto flush = [&]() {
+                        // `zero`: the MMQ tail zeroed after the gathered experts (the group's last flush)
+                        auto flush = [&](size_t zero) {
                             if (gg.n <= gg.first) return;
                             const auto& f = lay.fmt[(size_t) l];
                             if (gg_nslots > 0) {   // the copies land in order: the last one covers the others
@@ -3620,12 +3797,16 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
                                 pt.mark(kPfDequant, cs);
                             }
+                            // NVFP4: each expert's scales go next to its group slot in the same launch
                             if (!mmq::gather_native_group(gg, f.up_off, mmq_gub / 2, f.down_off, mmq_db, m.grp_gu, mmq_gub,
-                                                          m.grp_d, mmq_db, m.cs)) {
+                                                          m.grp_d, mmq_db, m.cs, f.tail_off,
+                                                          f.tail_off ? m.grp_tail : nullptr, zero)) {
                                 for (int i = gg.first; i < gg.n; ++i) {   // not 16-byte aligned: one at a time
                                     const uint8_t* b = gg.blob[i];
                                     mmq::gather_native(b, b + f.up_off, mmq_gub / 2, b + f.down_off, mmq_db,
-                                                       m.grp_gu + i * mmq_gub, m.grp_d + i * mmq_db, m.cs);
+                                                       m.grp_gu + i * mmq_gub, m.grp_d + i * mmq_db, m.cs,
+                                                       f.tail_off ? b + f.tail_off : nullptr,
+                                                       f.tail_off ? m.grp_tail + i * 4 : nullptr, i + 1 == gg.n ? zero : 0);
                                 }
                             }
                             if (gg_nslots > 0) {
@@ -3644,19 +3825,30 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             if (use_mmq) {
                                 // gather the expert into its group slot (GGUF blocks, unchanged or converted)
                                 const size_t q = j % MMQ_GROUP;
+                                // the group's last expert also zeroes the MMQ tail after its slot (see MMQ_TAIL)
+                                const bool last_of_group = q + 1 == MMQ_GROUP || j + 1 == order.size();
                                 if (group_gather) {
                                     gg.blob[q] = blob_dev;
                                     gg.n = (int) q + 1;
                                     if (slot >= 0) gg_slots[gg_nslots++] = slot;
-                                    if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
-                                    flush();
-                                    gg = mmq::GatherGroup{};
+                                    if (!last_of_group) return true;
+                                    if (!in_place) {
+                                        flush(MMQ_TAIL);
+                                        gg = mmq::GatherGroup{};
+                                    }
                                 } else if (lay.native) {
                                     const auto& f = lay.fmt[(size_t) l];
+                                    // NVFP4: this expert's scales go next to its group slot in the same launch
                                     mmq::gather_native(blob_dev, blob_dev + f.up_off, mmq_gub / 2, blob_dev + f.down_off,
-                                                       mmq_db, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
+                                                       mmq_db, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs,
+                                                       f.tail_off ? blob_dev + f.tail_off : nullptr,
+                                                       f.tail_off ? m.grp_tail + q * 4 : nullptr, last_of_group ? MMQ_TAIL : 0);
                                 } else {
                                     mmq::gather_strata_q2(blob_dev, m.grp_gu + q * mmq_gub, m.grp_d + q * mmq_db, m.cs);
+                                    if (last_of_group) {
+                                        cudaMemsetAsync(m.grp_gu + (size_t) (q + 1) * mmq_gub, 0, MMQ_TAIL, m.cs);
+                                        cudaMemsetAsync(m.grp_d + (size_t) (q + 1) * mmq_db, 0, MMQ_TAIL, m.cs);
+                                    }
                                 }
                                 if (slot >= 0 && !group_gather) { cudaEventRecord(m.used[slot], m.cs); m.used_of[slot] = slot; }
                                 if (q + 1 < MMQ_GROUP && j + 1 < order.size()) return true;
@@ -3666,24 +3858,65 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 const int64_t r0 = m.bounds_host[j0], nr = m.bounds_host[j + 1] - r0;
                                 int64_t maxr = 0;
                                 for (size_t i = j0; i <= j; ++i) maxr = std::max<int64_t>(maxr, m.cnt[(size_t) order[i]]);
+                                const bool scaled = lay.native && lay.fmt[(size_t) l].tail_off;
+                                // NVFP4 tails: swiglu, H's q8_1 rows and the rows' s_down in one pass (the same bytes)
+                                const bool sq = scaled && swiglu_quant_on() && mmq::swiglu_quant_ok(mmq_dt);
+                                // each expert's gate/up, down and tail: in place, or its group slots (a group not in
+                                // place, and the experts [0, gg.first) a flush gathered)
+                                const void* gu_at[MMQ_GROUP];
+                                const void* d_at[MMQ_GROUP];
+                                const float* tail_at[MMQ_GROUP];
+                                const int n_gathered = in_place ? gg.first : ngx;
+                                for (int i = 0; i < ngx; ++i) {
+                                    const bool gathered = i < n_gathered;
+                                    const auto& f = lay.fmt[(size_t) l];
+                                    gu_at[i] = gathered ? (const void*) (m.grp_gu + (size_t) i * mmq_gub) : (const void*) gg.blob[i];
+                                    d_at[i] = gathered ? (const void*) (m.grp_d + (size_t) i * mmq_db)
+                                                       : (const void*) (gg.blob[i] + f.down_off);
+                                    tail_at[i] = gathered ? m.grp_tail + i * 4 : (const float*) (gg.blob[i] + f.tail_off);
+                                }
+                                if (in_place && gg_nslots > 0) {   // the copies land in order: the last one covers all
+                                    pt.mark(kPfWaitCopy, cs);
+                                    cudaStreamWaitEvent(m.cs, m.copied[gg_slots[gg_nslots - 1]], 0);
+                                }
                                 pt.mark(kPfGemmGU, cs);
-                                // the zeroed tail after the group's last expert (see MMQ_TAIL)
-                                cudaMemsetAsync(m.grp_gu + (size_t) ngx * mmq_gub, 0, MMQ_TAIL, m.cs);
-                                cudaMemsetAsync(m.grp_d + (size_t) ngx * mmq_db, 0, MMQ_TAIL, m.cs);
                                 mmq::Product gu;
                                 gu.w = m.grp_gu; gu.type = mmq_gt; gu.w_rows = 1280; gu.w_cols = N; gu.expert_bytes = mmq_gub;
                                 gu.n = ngx; gu.xq = m.Xq; gu.bounds = m.bounds_dev + j0; gu.ids = m.ids_identity;
                                 gu.total_rows = T * K; gu.max_rows = maxr; gu.dst = m.GU; gu.ld_dst = 1280;
+                                gu.y_scale = mmq::fp4_activations(mmq_gt) ? m.Xscale : nullptr;
+                                gu.w_ptrs = in_place ? gu_at : nullptr;
+                                if (tok_rows_l) { gu.y_rows = m.src_dev; gu.y_count = T; }
                                 m.mmq_ctx->run(gu, m.cs);
-                                mmq::swiglu(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, !lay.native, m.cs);
+                                if (sq)
+                                    mmq::swiglu_quant(m.GU + r0 * 1280, m.Hq, nr, m.bounds_dev + j0, ngx, tail_at, r0,
+                                                      m.row_sd + r0, m.cs);
+                                else if (scaled)   // gate/up scales applied as read
+                                    mmq::swiglu_scaled(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, m.bounds_dev + j0, ngx,
+                                                       m.grp_tail, r0, m.cs);
+                                else
+                                    mmq::swiglu(m.GU + r0 * 1280, m.H + r0 * 640, nr, 640, !lay.native, m.cs);
                                 pt.mark(kPfGemmD, cs);
-                                mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs);
+                                if (!sq) mmq::quantize(m.H + r0 * 640, nullptr, m.Hq, mmq_dt, 640, 640, nr, m.cs, m.Hscale);
                                 mmq::Product dn;
                                 dn.w = m.grp_d; dn.type = mmq_dt; dn.w_rows = N; dn.w_cols = 640; dn.expert_bytes = mmq_db;
                                 dn.n = ngx; dn.xq = m.Hq; dn.bounds = m.bounds_dev + n + 1 + g * (MMQ_GROUP + 1);
                                 dn.ids = m.ids_identity; dn.total_rows = nr; dn.max_rows = maxr; dn.dst = m.Dm + r0 * N;
                                 dn.ld_dst = N;
+                                dn.y_scale = mmq::fp4_activations(mmq_dt) ? m.Hscale : nullptr;
+                                dn.w_ptrs = in_place ? d_at : nullptr;
                                 m.mmq_ctx->run(dn, m.cs);
+                                if (scaled && !sq)   // s_down: applied by the combine
+                                    mmq::down_row_scales(m.row_sd + r0, dn.bounds, ngx, m.grp_tail, nr, m.cs);
+                                if (in_place) {   // the group's ring slots, read by now: ONE event releases them
+                                    if (gg_nslots > 0) {
+                                        const int rel = gg_slots[gg_nslots - 1];
+                                        cudaEventRecord(m.used[rel], m.cs);
+                                        for (int i = 0; i < gg_nslots; ++i) m.used_of[gg_slots[i]] = rel;
+                                    }
+                                    gg_nslots = 0;
+                                    gg = mmq::GatherGroup{};
+                                }
                                 return true;
                             }
                             const int q = (int) (j % DQ);
@@ -3691,8 +3924,10 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
                                 strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
-                                                                   m.dq_gu[q], m.cs);
-                                strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs);
+                                                                   m.dq_gu[q], m.cs,
+                                                                   f.tail_off ? (const float*) (blob_dev + f.tail_off) : nullptr);
+                                strata::kernels::iq_dequant_f16(f.d_type, blob_dev + f.down_off, f.n_embd * f.n_ff, m.dq_d[q], m.cs,
+                                                                f.tail_off ? (const float*) (blob_dev + f.tail_off) + 2 : nullptr);
                             } else {
                                 blob_dequant_f16(blob_dev, m.dq_gu[q], m.dq_d[q], m.cs);
                             }
@@ -3736,12 +3971,15 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                             const size_t kend = seq_start[(size_t) l + 1];
                             auto release_to = [&](int32_t e_stop) {
                                 while (k < kend && seq[k].e < e_stop) {
-                                    if (gg_nslots > 0) flush();   // the open group's slots get their event first
+                                    // in place, the open group is not gathered for it: this slot goes back with the
+                                    // group's after its products (unless that would hold back half the ring)
+                                    const bool defer = in_place && gg_nslots > 0 && k + 1 - given_back < (size_t) m.ring / 2;
+                                    if (gg_nslots > 0 && !defer) flush(0);   // the open group's slots get their event first
                                     const int sl = (int) (k % (size_t) m.ring);
                                     cudaEventRecord(m.used[sl], m.cs);
                                     m.used_of[sl] = sl;
                                     consumed = ++k;
-                                    give_back(consumed);
+                                    if (gg_nslots == 0) give_back(consumed);
                                 }
                             };
                             for (size_t j = 0; j < order.size(); ++j) {
@@ -3771,7 +4009,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         }
                     }
                     pt.mark(kPfCombine, cs);
-                    if (cpu_fut.valid()) {   // set_cpu_pool: the CPU's rows into Dm's tail
+                    if (cpu_fut.valid()) {   // set_cpu_pool: the CPU's rows into Dm's tail, row_sd 1 (s_down is in them)
                         if (cpu_share_env() < 0.0) cudaEventRecord(m.cpu_ev[1], m.cs);   // after the GPU's expert work
                         if (!cpu_fut.get()) { err = "prefill: a CPU expert has no blob"; return false; }
                         if (cpu_share_env() < 0.0 && n_stream > n_cpu) {
@@ -3784,6 +4022,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         const int64_t r0c = T * K - rows_cpu;
                         cudaMemcpyAsync(m.Dm + (size_t) r0c * N, m.cpu_rows, (size_t) rows_cpu * N * sizeof(float),
                                         cudaMemcpyHostToDevice, m.cs);
+                        if (use_mmq && !fused_l && lay.native && lay.fmt[(size_t) l].tail_off)
+                            cudaMemcpyAsync(m.row_sd + r0c, m.cpu_ones, (size_t) rows_cpu * sizeof(float),
+                                            cudaMemcpyHostToDevice, m.cs);
                         stats_.experts_cpu += n_cpu;
                     }
                     // no reading from a layer the share could not change (nothing taken) or with one-time costs
@@ -3799,12 +4040,33 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                         if (!m.pp->p2p && !m.pp->sums)
                             copy_f32_wide(m.Dm + (size_t) m.pp->back_at * N, m.pp->host_rows, m.pp->back_rows * N, m.cs);
                     }
-                    if (peer_now && m.pp->sums && m.pp->f16)
+                    const float* row_sd_l = use_mmq && !fused_l && lay.native && lay.fmt[(size_t) l].tail_off ? m.row_sd : nullptr;
+                    // The combine and the write below in one kernel where that write is gr_write_norm_rs (the same
+                    // conditions: not steered, a next layer, not before layer 1's PLE block) and the combine is the
+                    // plain one (not with the peer's sums): bo never stored, the same bits.
+                    // STRATA_PREFILL_COMBINE_WRITE=0: the two kernels.
+                    static const bool combine_write_env = [] {
+                        const char* e = std::getenv("STRATA_PREFILL_COMBINE_WRITE");
+                        return e == nullptr || std::atoi(e) != 0;
+                    }();
+                    static const bool combine_dbg = std::getenv("STRATA_DBG_NAN") != nullptr;   // it reads bo
+                    const bool peer_sums = peer_now && m.pp->sums;
+                    if (combine_write_env && !combine_dbg && !peer_sums && half == 1 && !strata::kernels::cvec().covers(l) &&
+                        !gr_unfused() && l + 1 < LE && !(l + 1 == 1 && ple_on)) {
+                        const core::LayerView vn(*m.wt, l + 1);
+                        const core::WeightRef* wnn_c = need(vn, "hc_attn_norm.weight", err);
+                        if (!wnn_c) return false;
+                        moe_wrote = moe_combine_write_norm_rs(m.Dm, m.slot_dev, m.w, m.shared, m.sg, row_sd_l, m.R, m.inj,
+                                                              HC, (const float*) wnn_c->data, EPS, m.grs, m.xn16, T, m.cs,
+                                                              m.xn16_lo, ldx);
+                    }
+                    if (moe_wrote) {
+                    } else if (peer_sums && m.pp->f16)
                         moe_combine_peer16(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.pp->host_sum16, m.pp->back_at, m.bo, T, m.cs);
-                    else if (peer_now && m.pp->sums)
+                    else if (peer_sums)
                         moe_combine_peer(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.pp->host_sum, m.pp->back_at, m.bo, T, m.cs);
                     else
-                        moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs);
+                        moe_combine(m.Dm, m.slot_dev, m.w, m.shared, m.sg, m.bo, T, m.cs, row_sd_l);
                     // debug: STRATA_DBG_NAN=1 reports the first layer of a chunk whose MoE produced non-finite values
                     if (static const bool dbg = std::getenv("STRATA_DBG_NAN") != nullptr; dbg) {
                         cudaStreamSynchronize(m.cs);
@@ -3886,8 +4148,9 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                           T, m.cs, m.xn16_lo, ldx);
                     normed = true;
                 } else if (wnn) {
-                    gr_write_norm_rs(m.R, m.bo, m.inj, HC, (const float*) wnn->data, EPS, m.grs, m.xn16, T, m.cs,
-                                     m.xn16_lo, ldx);
+                    if (!moe_wrote)
+                        gr_write_norm_rs(m.R, m.bo, m.inj, HC, (const float*) wnn->data, EPS, m.grs, m.xn16, T, m.cs,
+                                         m.xn16_lo, ldx);
                     normed = true;
                 } else {
                     gr_write(m.R, m.bo, m.inj, HC, T, m.cs);

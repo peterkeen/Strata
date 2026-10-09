@@ -498,19 +498,46 @@ __global__ void copy_indexed_kernel(float* __restrict__ dst, const float* __rest
         dst[i] = src[(size_t) idx * stride + i];
 }
 
+// A block copies chunks of blockDim x kFetchU uint4 (grid-stride over the n blobs' chunks: a division per chunk, not
+// per element), each thread's kFetchU loads in flight.  A blob is only 16 B aligned in the arena: its uint4 before the
+// first 128 B boundary go first, so each warp reads whole lines of host memory (a sector two warps shared crossed the
+// link twice).  3.58 MB blobs from the registered arena, RTX 5090 + PCIe 5: 46 -> 53 GB/s alone, 28 -> 34 GB/s beside
+// 8 CPU threads streaming DRAM (a cudaMemcpyAsync of the same blob: 49 / 39).
+constexpr int kFetchU = 4;
 __global__ void fetch_blobs_kernel(const unsigned long long* __restrict__ src, const int32_t* __restrict__ n,
-                                   uint4* __restrict__ dst, long long per) {
-    const long long total = (long long) *n * per;
-    for (long long i = (long long) blockIdx.x * blockDim.x + threadIdx.x; i < total;
-         i += (long long) gridDim.x * blockDim.x) {
-        const long long k = i / per, off = i - k * per;
-        dst[i] = ((const uint4*) src[k])[off];
+                                   uint4* __restrict__ dst, long long per, const unsigned long long* __restrict__ dst2) {
+    const long long ce = (long long) blockDim.x * kFetchU;
+    const long long cpb = (per + ce - 1) / ce;
+    const long long total = (long long) *n * cpb;
+    for (long long c = blockIdx.x; c < total; c += gridDim.x) {
+        const long long k = c / cpb, ci = c - k * cpb;
+        const uint4* s = (const uint4*) src[k];
+        uint4* d = dst2 != nullptr && dst2[k] != 0 ? (uint4*) dst2[k] : dst + k * per;
+        const int h = (int) ((8 - (((unsigned long long) s >> 4) & 7)) & 7);   // uint4 before the first 128 B line
+        if (ci == 0 && (long long) threadIdx.x < h && (long long) threadIdx.x < per) d[threadIdx.x] = s[threadIdx.x];
+        const long long o0 = ci * ce + h + threadIdx.x;
+        uint4 v[kFetchU];
+#pragma unroll
+        for (int j = 0; j < kFetchU; ++j) {
+            const long long o = o0 + (long long) j * blockDim.x;
+            if (o < per) v[j] = s[o];
+        }
+#pragma unroll
+        for (int j = 0; j < kFetchU; ++j) {
+            const long long o = o0 + (long long) j * blockDim.x;
+            if (o < per) d[o] = v[j];
+        }
     }
 }
 
-__global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes) {
+__global__ void res_patch_kernel(int32_t* __restrict__ table, const volatile int32_t* pairs, int n) {
+    for (int k = blockIdx.x * blockDim.x + threadIdx.x; k < n; k += gridDim.x * blockDim.x) table[pairs[2 * k]] = pairs[2 * k + 1];
+}
+
+__global__ void rebase_ptrs_kernel(unsigned long long* ptr, const int32_t* n, unsigned long long base, long long bytes,
+                                   const unsigned long long* dst2) {
     const int k = threadIdx.x;
-    if (k < *n) ptr[k] = base + (unsigned long long) k * (unsigned long long) bytes;
+    if (k < *n) ptr[k] = dst2 != nullptr && dst2[k] != 0 ? dst2[k] : base + (unsigned long long) k * (unsigned long long) bytes;
 }
 
 __global__ void add_streams_broadcast_kernel(const float* __restrict__ h, const float* __restrict__ e,
@@ -596,15 +623,24 @@ __global__ void force_token_kernel(int32_t* tok, const int32_t* force, int j) {
 
 }  // namespace
 
-void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream) {
+void fetch_blobs(const unsigned long long* src, const int32_t* n, uint8_t* dst, int64_t blob_bytes, int cap, void* stream,
+                 const unsigned long long* dst2) {
     if (cap <= 0) return;
     if (blob_bytes % 16 != 0) { std::fprintf(stderr, "fetch_blobs: blob size must be a multiple of 16\n"); std::exit(1); }
-    fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (blob_bytes / 16));
+    fetch_blobs_kernel<<<48 * 8, 256, 0, (cudaStream_t) stream>>>(src, n, (uint4*) dst, (long long) (blob_bytes / 16), dst2);
     check("fetch_blobs");
 }
 
-void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream) {
-    rebase_ptrs_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(ptr, n, (unsigned long long) base, (long long) blob_bytes);
+void res_patch(int32_t* table, const int32_t* pairs, int n, void* stream) {
+    if (n <= 0) return;
+    res_patch_kernel<<<(n + 255) / 256 < 64 ? (n + 255) / 256 : 64, 256, 0, (cudaStream_t) stream>>>(table, pairs, n);
+    check("res_patch");
+}
+
+void rebase_ptrs(unsigned long long* ptr, const int32_t* n, uint8_t* base, int64_t blob_bytes, void* stream,
+                 const unsigned long long* dst2) {
+    rebase_ptrs_kernel<<<1, 128, 0, (cudaStream_t) stream>>>(ptr, n, (unsigned long long) base, (long long) blob_bytes,
+                                                             dst2);
     check("rebase_ptrs");
 }
 
@@ -971,6 +1007,25 @@ __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t valu
     while (*flag < value) strata_spin_pause();
     __threadfence_system();
 }
+__device__ __forceinline__ unsigned long long now_ns() {   // gpu_stamp's clock
+    unsigned long long t;
+#if defined(STRATA_HIP_GFX906)
+    t = wall_clock64() * 40ull;
+#elif defined(__HIPCC__)
+    t = wall_clock64() * 10ull;
+#else
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+#endif
+    return t;
+}
+// wait_flag_ge, with the GPU's clock as it arrives (t_in) and as it leaves (t_out), either may be null
+__global__ void wait_flag_ge_stamped_kernel(const volatile uint32_t* flag, uint32_t value, volatile unsigned long long* t_in,
+                                            volatile unsigned long long* t_out) {
+    if (t_in != nullptr) *t_in = now_ns();
+    while (*flag < value) strata_spin_pause();
+    __threadfence_system();
+    if (t_out != nullptr) *t_out = now_ns();
+}
 }  // namespace
 
 namespace {
@@ -1196,6 +1251,12 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
     wait_flag_ge_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value);
     check("wait_flag_ge");
+}
+
+void wait_flag_ge_stamped(const uint32_t* flag, uint32_t value, unsigned long long* t_in, unsigned long long* t_out,
+                          void* stream) {
+    wait_flag_ge_stamped_kernel<<<1, 1, 0, (cudaStream_t) stream>>>(flag, value, t_in, t_out);
+    check("wait_flag_ge_stamped");
 }
 
 void embedding_gather_dev(const uint8_t* codes, const float* scales, const float* offsets, const int32_t* tokens,

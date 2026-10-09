@@ -625,6 +625,13 @@ uint64_t qsa_kv_elastic_full_bytes() {
     for (const auto& p : g_pools) n += (uint64_t) p->range.chunks() * strata::core::vmm_granularity();
     return n;
 }
+std::vector<std::pair<strata::core::VmmChunk, int64_t>> qsa_kv_elastic_handles() {
+    std::vector<std::pair<strata::core::VmmChunk, int64_t>> v;
+    for (size_t k = 0; k < g_pools.size(); ++k)
+        for (int64_t c = 0; c < g_pools[k]->range.chunks(); ++c)
+            if (const strata::core::VmmChunk h = g_pools[k]->range.handle(c)) v.emplace_back(h, ((int64_t) k << 32) | c);
+    return v;
+}
 namespace {
 
 /// How one state holds its K/V: `mode` as in QsaState::kv_mode, `slots` VRAM pages of `pages` logical ones.
@@ -1216,7 +1223,7 @@ if (st.kv_hybrid) {
     strata::kernels::kv_append_q4_step(st.v_q4, st.v_q4, st.page_table, st.step, b.vcur, b.vcur, s, stream,
                                        mirror ? &hv : nullptr);
 } else {
-if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 with STRATA_KV_ROT=1
+if (st.kv_rot) {   // rotated K and V (kv_q4.hpp): Q4_0, and INT8 unless STRATA_KV_ROT=0
     strata::kernels::fwht256_inplace_cuda(b.kcur, g.n_head_kv, stream);
     strata::kernels::fwht256_inplace_cuda(b.vcur, g.n_head_kv, stream);
 }
