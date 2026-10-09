@@ -451,3 +451,36 @@ leaving configs, shared settings, router and TTS untouched. Neither was executed
 Gate note for future windows: the model unload acknowledges before the engine's VRAM returns, and
 `prefill_fused_iq_test` then fails with `cudaMalloc: out of memory` while nothing else is running.
 `native-gates.sh` now waits for under 2 GiB GPU memory used before `ctest`.
+
+## 2026-10-09 — `kv-unified` port with NVFP4 and batch MTP deployed to production
+
+Authorized by the owner after the port's model gates were run on isolated hardware. The engine is
+the integrated `kv-unified` line (unified KV port + NVFP4 kernels and expert cache + opt-in unified
+batch MTP), built in `build-deploy-validated` in the host checkout at commit `7256bdaa`.
+
+- Config (`deploy/nibbler/config.json`, copied to the runtime config by the launcher on every start):
+  the `huihui-nvfp4` pack with `--batch-mtp`, `--spec 4 --spec-min-p 0.5`, `--max-context 65536`,
+  `--kv int8 --kv-resident 32768 --kv-unified --no-kv-grow`, `--vram-reserve-mib 2048`, conversation
+  cache 0, `parallel: 2`, no vision section (the NVFP4 pack ships no projector).
+- Deployed `engine/strata-nibbler` sha256 `25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836`
+  (`--version` 0.1.41); `engine/strata-vision` left as it was.
+- Backup and rollback (not executed): `/data/llm/Strata-backups/deploy-20261009T192028Z/` with the
+  previous engine, vision binary, `BUILD.json` and runtime config plus `rollback.sh`.
+- Live confirmation: two concurrent completions through `llama-swap` produced
+  `strata batch_mtp_stats slot=0 windows=33 offered=33 accepted=27 rejected=6` and
+  `slot=1 windows=34 offered=34 accepted=29 rejected=5`, both with zero fallbacks — one proposal per
+  window on each active slot.
+- Model gates against the deployed artifact: default target-only baseline 26/26; correctness
+  (`--batch-mtp`, hook build) offered 17 / accepted 13 / rejected 4 with exact token-ID parity;
+  limits; lifecycle; tails (reused 105/106/103, branch depths 8/8/8, clone offers 0); pressure
+  (exhaustion, first `BDONE pressure`, 2048-token target-only park, sibling cancel, canonical
+  restore `2048 == 2048`, last returned token unfed, exact continuation IDs); optional; handoff
+  (reused 1538 == 1538 with 30/30 resumed MAIN offers). Records live in the bead trail and the
+  per-task evidence files under `/data/llm/Strata-tests/deploy-gates-20261009/`.
+- Known limitations at this date: the pressure gate requires a declared native substitute for its
+  rejection witness when the fixture accepts every proposal (this NVFP4 fixture does so
+  deterministically), the paused-prefill ordering witness in the baseline smoke is sensitive to the
+  build layout, and the API reports `draft_n = 0` for concurrent batch requests while the native
+  per-slot counters are positive.
+- Operational note: with the NVFP4 model loaded the host keeps ~32 GiB RAM available with swap
+  nearly full, so gate or benchmark runs must unload the model and use an exclusive GPU.
