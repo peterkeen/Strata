@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from collections import deque
+import io
 import json
 import sys
 import tempfile
 from pathlib import Path
 import types
 import unittest
+from contextlib import redirect_stderr
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -25,6 +27,188 @@ def counter_row(slot=0, windows=129, offered=128, accepted=128, rejected=0, disc
             f"rejected={rejected} discarded={discarded} fallback_attempts={attempts} "
             f"fallback_incoherent={incoherent} fallback_not_ready={not_ready} fallback_limits={limits} "
             f"fallback_capacity={capacity} fallback_reserve={reserve}")
+
+
+PRESSURE_PARK_BYTES = 524843760
+PRESSURE_RESTORE_BYTES = 288764012
+
+
+class FakePressureEngine:
+    """Scripted native stdout/stderr for the production pressure gate: the pair, then the restore GEN.
+
+    The pair is fully scripted, including the sibling's cancel that follows the pressure park (the
+    gate sends its BSTOP as soon as it consumes the pressure terminal). The restore attempt answers
+    the next ``GEN`` with the drained slot's remaining continuation and its canonical-restore and
+    TARGET_ONLY diagnostics, so the production restore witnesses are exercised for real.
+    """
+
+    def __init__(self, stderr_path, prompts, cap, streams, *, rows, park_slot=1, park_at=8,
+                 park_bytes=PRESSURE_PARK_BYTES):
+        self.stderr_path = Path(stderr_path)
+        self.stage = "startup"
+        self.sent = []
+        self.seq = 0
+        self.cap = cap
+        self.prompts = {slot: list(ids) for slot, ids in prompts.items()}
+        self.streams = {slot: list(ids) for slot, ids in streams.items()}
+        self.rows = [rows] if isinstance(rows, str) else list(rows)
+        self.park_slot = park_slot
+        self.park_at = park_at
+        self.park_bytes = park_bytes
+        self.produced = {}
+        self._script = deque()
+        self._pair_scripted = False
+
+    def _write(self, *lines):
+        with self.stderr_path.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+
+    def _event(self, raw):
+        self.seq += 1
+        return common.parse_line(raw) | {"raw": raw, "seq": self.seq, "wall_s": self.seq / 100}
+
+    def _script_pair(self):
+        if self._pair_scripted:
+            return
+        self._pair_scripted = True
+        produced = {slot: 1 for slot in sorted(self.prompts)}
+        for slot in sorted(self.prompts):
+            self._script.append(self._event(f"T {self.streams[slot][0]}"))
+            self._script.append(self._event(f"DONE 1 {len(self.prompts[slot])} 1.0 1.0 length 0 0 0 0 0 0 0.0 0 0"))
+            self._script.append(self._event(f"BADM {slot} 1"))
+        sibling = next(slot for slot in sorted(self.prompts) if slot != self.park_slot)
+        while produced[self.park_slot] < self.park_at:
+            for slot in sorted(self.prompts):
+                self._script.append(self._event(f"BT {slot} {self.streams[slot][produced[slot]]}"))
+                produced[slot] += 1
+        self._script.append(self._event(f"BT {sibling} {self.streams[sibling][produced[sibling]]}"))
+        produced[sibling] += 1
+        park_tokens = len(self.prompts[self.park_slot]) + produced[self.park_slot] - 1
+        self._script.append(("write", list(self.rows) + [
+            f"strata serve: pressure parked target-only {park_tokens} tokens; parked=1 bytes={self.park_bytes}"]))
+        self._script.append(self._event(f"BDONE {self.park_slot} {produced[self.park_slot]} pressure 1.0"))
+        self._script.append(self._event(f"BDONE {sibling} {produced[sibling]} cancel 1.0"))
+        self.produced = produced
+
+    def _script_restore(self, line):
+        fields = line.split()
+        cap = int(fields[1])
+        ids = [int(token) for token in fields[-1].split(",")]
+        start = self.produced[self.park_slot]
+        tokens = self.streams[self.park_slot][start:start + cap]
+        assert len(tokens) == cap, "fake restore script is shorter than the requested continuation"
+        reused = len(ids) - 1
+        self._script.append(("write", [
+            f"strata serve: conversation cache: restored {reused} tokens (live) in 1.0 ms; parked=1 "
+            f"bytes={PRESSURE_RESTORE_BYTES}",
+            "strata serve: TARGET_ONLY restore: private MTP proposals suppressed until full replay",
+            "strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled"]))
+        for token in tokens:
+            self._script.append(self._event(f"T {token}"))
+        self._script.append(self._event(f"DONE {len(tokens)} {len(ids)} 1.0 1.0 length 0 0 {reused} 0 0 0 0.0 0 0"))
+
+    def send(self, *lines, deadline=None):
+        for line in lines:
+            self.sent.append(line)
+            if line.startswith("BGEN "):
+                self._script_pair()
+            elif line.startswith("GEN "):
+                self._script_restore(line)
+
+    def next_event(self, deadline=None):
+        while True:
+            if not self._script:
+                raise AssertionError("fake pressure native ran out of scripted events")
+            item = self._script.popleft()
+            if isinstance(item, tuple) and item[0] == "write":
+                self._write(*item[1])
+                continue
+            return item
+
+
+def pressure_inputs(*, cap=768, prompt_cells=(1536, 1540), park_at=8):
+    # Distinct first tokens, as in the real fixture: the capacity plan requires that the two
+    # histories cannot fit the pool even under hypothetical common-prefix sharing.
+    prompts = {slot: list(range(1 + slot * 5_000, 1 + slot * 5_000 + cells))
+               for slot, cells in enumerate(prompt_cells)}
+    streams = {slot: [10_000 + slot * 1_000 + index for index in range(cap)] for slot in prompts}
+    refs = []
+    for slot in sorted(prompts):
+        req = common.Request(f"fake-pressure-reference-{slot}", prompts[slot], cap)
+        req.tokens = list(streams[slot])
+        req.completion = {"kind": "DONE", "finish": "length"}
+        refs.append(req)
+    return prompts, streams, refs
+
+
+def run_pressure_gate(tmp, *, rows, substitute=None, park_at=8):
+    """Drive the production pressure path: run_source_pair, then run_pressure_restore."""
+    prompts, streams, refs = pressure_inputs(park_at=park_at)
+    stderr = Path(tmp) / "pressure.stderr"
+    stderr.write_text("", encoding="utf-8")
+    evidence = {"stdout": [], "commands": [], "stages": [], "processes": [], "coverage": {},
+                "source_ring": {"allocated_page_rounded_ring_cells": 200}}
+    engine = FakePressureEngine(stderr, prompts, 768, streams, rows=rows, park_at=park_at)
+    output = Path(tmp) / "pressure-evidence.json"
+    output.write_text("{}\n", encoding="utf-8")
+    suite = gate.PressureSuite(engine, evidence, output, 30.0, 4096, 0.0, 12345, stderr_path=stderr)
+    prompts_tuple = tuple(prompts[slot] for slot in sorted(prompts))
+    try:
+        owner, source = suite.run_source_pair(prompts_tuple, 768, refs, 30.0, rejection_substitute=substitute)
+        source["capacity_plan"] = gate.pressure_capacity_plan(prompts_tuple, [768, 768], 4096)
+        source["passed"] = True
+        args = types.SimpleNamespace(pressure_cap=768, stage_timeout=30)
+        gate.run_pressure_restore(args, evidence, suite, stderr, prompts_tuple, refs, owner, source)
+    finally:
+        # Mirrors the production gate's finally: the artifact is written even when the
+        # rejection verdict fails closed, so the restore evidence is always recorded.
+        output.write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    return evidence, source, stderr
+
+
+def all_accept_rows():
+    """The measured all-accept shape (str-7ze.16/17: identical counters and park bytes), as stderr lines."""
+    return "\n".join((
+        counter_row(slot=0, windows=255, offered=255, accepted=255, rejected=0, attempts=0, reserve=0),
+        counter_row(slot=1, windows=254, offered=254, accepted=254, rejected=0, attempts=0, reserve=0)))
+
+
+def natural_rejection_rows():
+    return "\n".join((
+        counter_row(slot=0, windows=255, offered=255, accepted=255, rejected=0, attempts=0, reserve=0),
+        counter_row(slot=1, windows=254, offered=254, accepted=253, rejected=1, attempts=0, reserve=0)))
+
+
+def correctness_artifact(**overrides):
+    """Shape of a passed `--mode correctness` artifact (hook-forced rejection)."""
+    artifact = {
+        "mode": "correctness",
+        "passed": True,
+        "exe": "/tmp/fake-strata",
+        "config": "/tmp/fake-model.json",
+        "coverage": {"correctness": "RUN", "dual_overlap": "RUN"},
+        "deterministic_proposal_schedule": {
+            "slot0": {"offer": 1, "outcome": "accepted"},
+            "slot1": {"offer": 1, "outcome": "rejected"}},
+        "processes": [{"startup_diagnostics": {"hook_lines": [
+            "strata batch_mtp_test_hook enabled: explicit proposal substitutions are test-only"]}}],
+        "stages": [{"stderr_diagnostics": {"batch_mtp_stats": [
+            {"slot": 0, "offered": 8, "accepted": 7, "rejected": 1, "discarded": 0},
+            {"slot": 1, "offered": 9, "accepted": 6, "rejected": 3, "discarded": 0}]}}],
+    }
+    artifact.update(overrides)
+    return artifact
+
+
+def write_correctness_artifact(tmp, **overrides):
+    path = Path(tmp) / "correctness.json"
+    path.write_text(json.dumps(correctness_artifact(**overrides)), encoding="utf-8")
+    return path
+
+
+def valid_substitute(tmp):
+    return gate.validate_rejection_substitute(write_correctness_artifact(tmp), exe=Path("/tmp/fake-strata"),
+                                              config=Path("/tmp/fake-model.json"))
 
 
 class FakeDualEngine:
@@ -445,19 +629,135 @@ class BatchMtpEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["coverage_evidence"]
                          ["bounded_private_ring_wrap_with_actual_proposals"]["verdict"], "RUN")
 
-    def test_natural_rejection_failure_names_a_fixture_limitation_but_still_fails(self):
-        all_accept = gate.parse_batch_stats(counter_row(slot=0, windows=4, offered=3, accepted=3, rejected=0,
-                                                        discarded=0, attempts=1, limits=1, reserve=0))
+    def test_natural_rejection_witness_is_present_without_a_substitute(self):
+        witness = gate.rejection_witness(gate.parse_batch_stats(natural_rejection_rows()))
+        self.assertTrue(witness["satisfied"])
+        self.assertEqual(witness["mechanism"], "natural_native_verifier_rejection")
+        self.assertEqual(witness["natural_rejection_witness"], "present")
+        self.assertIsNone(witness["substitute"])
+        self.assertEqual(witness["rejected_total"], 1)
+        self.assertEqual(witness["per_slot"][1]["rejected"], 1)
+        # The strict helper stays available for callers that demand a natural rejection outright.
+        self.assertEqual(gate.verify_stats(gate.parse_batch_stats(natural_rejection_rows()),
+                                          reject=True)["rejected"], 1)
+        self.assertIs(gate.require_rejection_witness({"rejection_witness": witness}), witness)
+
+    def test_all_accept_run_requires_an_explicit_native_substitute(self):
+        witness = gate.rejection_witness(gate.parse_batch_stats(all_accept_rows()))
+        self.assertFalse(witness["satisfied"])
+        self.assertEqual(witness["mechanism"], "none")
+        self.assertEqual(witness["natural_rejection_witness"], gate.NATURAL_REJECTION_ABSENT)
+        self.assertEqual(witness["rejected_total"], 0)
+        self.assertIn("deterministic 100% acceptance", witness["natural_rejection_witness"])
+        self.assertIn("--rejection-evidence", witness["failure_message"])
+        self.assertIn("not a pressure defect", witness["failure_message"])
         with self.assertRaises(AssertionError) as caught:
-            gate.verify_stats(all_accept, reject=True)
-        message = str(caught.exception)
-        self.assertIn("fixture/model limitation", message)
-        self.assertIn("not a pressure defect", message)
-        self.assertIn("fail-closed", message)
-        # The requirement is unchanged: a natural rejection still satisfies it.
-        with_reject = gate.parse_batch_stats(counter_row(slot=0, windows=4, offered=3, accepted=2, rejected=1,
-                                                         discarded=0, attempts=1, limits=1, reserve=0))
-        self.assertEqual(gate.verify_stats(with_reject, reject=True)["rejected"], 1)
+            gate.require_rejection_witness({"rejection_witness": witness})
+        self.assertIn("--rejection-evidence", str(caught.exception))
+        with self.assertRaises(AssertionError):
+            gate.require_rejection_witness({})
+
+    def test_all_accept_run_with_a_validated_substitute_is_satisfied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            substitute = valid_substitute(tmp)
+            witness = gate.rejection_witness(gate.parse_batch_stats(all_accept_rows()), substitute=substitute)
+            self.assertTrue(witness["satisfied"])
+            self.assertEqual(witness["mechanism"], gate.REJECTION_SUBSTITUTE_MECHANISM)
+            self.assertEqual(witness["natural_rejection_witness"], gate.NATURAL_REJECTION_ABSENT)
+            self.assertIs(witness["substitute"], substitute)
+            self.assertTrue(substitute["forced_rejection_is_native"])
+            self.assertEqual(substitute["rejected_total"], 4)
+            self.assertIn("same --exe and --config paths", substitute["identity_scope"])
+            self.assertEqual(len(substitute["sha256"]), 64)
+            self.assertTrue(gate.require_rejection_witness({"rejection_witness": witness})["satisfied"])
+
+    def test_rejection_substitute_validator_fails_closed_on_an_inconsistent_artifact(self):
+        exe, config = Path("/tmp/fake-strata"), Path("/tmp/fake-model.json")
+        cases = (
+            ({"passed": False}, "passed correctness artifact"),
+            ({"mode": "tails"}, "--mode correctness"),
+            ({"coverage": {"correctness": "UNTESTED"}}, "correctness = RUN"),
+            ({"exe": "/tmp/other-strata"}, "different --exe"),
+            ({"config": "/tmp/other-model.json"}, "different --config"),
+            ({"deterministic_proposal_schedule": {"slot1": {"outcome": "accepted"}}},
+             "deterministic forced rejection"),
+            ({"processes": [{"startup_diagnostics": {"hook_lines": []}}]}, "hook activation"),
+            ({"stages": [{"stderr_diagnostics": {"batch_mtp_stats": [
+                {"slot": 0, "offered": 8, "accepted": 8, "rejected": 0, "discarded": 0}]}}]},
+             "no rejected proposal"),
+        )
+        for overrides, message in cases:
+            with self.subTest(message=message):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = write_correctness_artifact(tmp, **overrides)
+                    with self.assertRaises(AssertionError) as caught:
+                        gate.validate_rejection_substitute(path, exe=exe, config=config)
+                    self.assertIn(message, str(caught.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(AssertionError) as caught:
+                gate.validate_rejection_substitute(Path(tmp) / "missing.json", exe=exe, config=config)
+            self.assertIn("not a file", str(caught.exception))
+
+    def test_rejection_evidence_flag_is_validated_before_any_model_work(self):
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stderr(stderr):
+            gate.main(["--exe", "/tmp/fake-strata", "--config", "/tmp/fake-model.json",
+                       "--output", "/tmp/never-task34.json", "--gate", "pressure",
+                       "--rejection-evidence", "/tmp/does-not-exist-task34.json"])
+        self.assertIn("not a file", stderr.getvalue())
+
+    def test_pressure_gate_runs_restore_witnesses_on_the_all_accept_shape(self):
+        """The measured 100 %-acceptance shape: the restore witnesses still run and hold."""
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence, source, _ = run_pressure_gate(Path(tmp), rows=all_accept_rows(),
+                                                   substitute=valid_substitute(tmp))
+        self.assertEqual(source["rejection_witness"]["mechanism"], gate.REJECTION_SUBSTITUTE_MECHANISM)
+        self.assertEqual(source["rejection_evidence_mechanism"], gate.REJECTION_SUBSTITUTE_MECHANISM)
+        self.assertEqual(source["natural_rejection_witness"], gate.NATURAL_REJECTION_ABSENT)
+        self.assertTrue(evidence["rejection_evidence"]["observed"])
+        self.assertTrue(evidence["rejection_evidence"]["substitute_used"])
+        self.assertTrue(evidence["rejection_evidence"]["restore_witnesses_evaluated_before_enforcement"])
+        restore = next(stage for stage in evidence["stages"] if stage["name"].startswith("positive-pressure"))
+        self.assertTrue(restore["passed"])
+        self.assertTrue(restore["positive_canonical_restore"])
+        self.assertEqual(restore["actual_reused_cells"], restore["expected_reused_cells"])
+        self.assertEqual(restore["restored_main_drafts_offered"], 0)
+        self.assertTrue(restore["last_returned_token_unfed"])
+        self.assertTrue(restore["exact_full_continuation_ids"])
+        for key in ("canonical_positive_restore_MAIN_exact_continuation", "last_returned_token_unfed",
+                    "target_only_restore_suppression_no_stale_offers",
+                    "mandatory_pressure_BDONE_and_positive_target_only_park"):
+            self.assertEqual(evidence["coverage"][key], "RUN")
+        self.assertTrue(evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"]
+                        .startswith("RUN ("))
+
+    def test_pressure_gate_accepts_the_natural_rejection_shape_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence, source, _ = run_pressure_gate(Path(tmp), rows=natural_rejection_rows())
+        self.assertEqual(source["rejection_witness"]["mechanism"], "natural_native_verifier_rejection")
+        self.assertEqual(source["natural_rejection_witness"], "present")
+        self.assertTrue(evidence["rejection_evidence"]["observed"])
+        self.assertFalse(evidence["rejection_evidence"]["substitute_used"])
+        self.assertIsNone(evidence["rejection_evidence"]["substitute"])
+        restore = next(stage for stage in evidence["stages"] if stage["name"].startswith("positive-pressure"))
+        self.assertTrue(restore["passed"])
+
+    def test_pressure_gate_fails_closed_without_a_substitute_but_still_runs_the_restore(self):
+        """A missing rejection witness must fail closed AND must not suppress the restore witnesses."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(AssertionError) as caught:
+                run_pressure_gate(Path(tmp), rows=all_accept_rows())
+            self.assertIn("--rejection-evidence", str(caught.exception))
+            self.assertIn("not a pressure defect", str(caught.exception))
+            # The restore stage was still evaluated and recorded before the verdict fired.
+            evidence = json.loads((Path(tmp) / "pressure-evidence.json").read_text())
+            restore = next(stage for stage in evidence["stages"] if stage["name"].startswith("positive-pressure"))
+            self.assertTrue(restore["passed"])
+            self.assertTrue(restore["positive_canonical_restore"])
+            self.assertEqual(restore["restored_main_drafts_offered"], 0)
+            self.assertEqual(evidence["coverage"]["canonical_positive_restore_MAIN_exact_continuation"], "RUN")
+            self.assertFalse(evidence["rejection_evidence"]["observed"])
+            self.assertEqual(evidence["rejection_evidence"]["mechanism"], "none")
 
     def test_ring_helper_dimensions_at_bounded_and_full_context_boundaries(self):
         bounded = gate.ring_capacity_from_source(128, 2, 4096)
