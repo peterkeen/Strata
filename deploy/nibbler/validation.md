@@ -507,3 +507,27 @@ re-run because swap was exhausted mid-run (`SwapFree` 164 MiB); no failed-run nu
 RAM/swap state is in the record. The deployed production config still uses `--max-context 65536`; these runs used
 262144 (the model's window) with the same pack and settings otherwise, so raising the deployed context is a
 configuration change that still needs its own rollout.
+
+### Live load test at the full 262144 context (2026-10-09)
+
+Production stayed loaded (no unload) and was driven through `llama-swap` on the real HTTP path, with prompts from
+the trial's own generator (`nvfp4-long-context.py`); the server reported 125 027 and 250 027 prompt tokens. A 5 s
+host sampler wrote 74 memory samples for the whole test.
+
+| Step | Prompt tokens | Prefill | Decode | Drafts accepted/offered | Wall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Single long stream | 125 027 | 68 879 ms (1815 tok/s) | 2888 ms (44.3 tok/s) | 85/105 | 71.8 s |
+| Two concurrent long streams | 125 027 / 125 026 | 68 820 / 68 639 ms (1817 / 1822 tok/s) | 2822 / 2888 ms (45.4 / 44.3 tok/s) | 82/100 and 84/109 | 143.3 s |
+| Single 250k prompt | 250 027 | 147 457 ms (1696 tok/s) | 1659 ms (38.6 tok/s) | 37/54 | 150.3 s |
+
+Memory: worst `MemAvailable` **30 654 MiB** (mid dual run), minimum `SwapFree` **1 090 MiB at the very start of the
+test** - swap free *rose* to about 1 380 MiB by the end, and `AnonPages` grew only a few hundred MiB for a
+250 000-token request. The engine log shows zero `pressure parked`, zero target-only parks, zero out-of-memory,
+allocation or `ERR` lines inside the load window, and the engine PID was present in every sample with no orphans.
+Post-load health: a short completion, both models ready, `/props` `n_ctx` 262144, GPU 13 974 MiB.
+
+Two conclusions worth keeping: long-context traffic at 262144 is comfortable here (~30 GiB available, no swap
+growth), and the earlier swap-exhaustion failures happened at repeated **fresh model loads** rather than during
+serving - each load re-reads the 63 GiB expert arena - so added swap protects loads/reloads, not long-context
+serving. Note also the per-slot session cost at this context (0.50 GiB each) and the expert-cache reduction
+(1890 -> 1845 slots) that the fuller context and the private MTP ring cause.
