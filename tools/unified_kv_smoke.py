@@ -26,10 +26,12 @@ before admission. Never infer pressure just from elapsed time or output length.
 The harness forces --prefill 64 so the existing BYIELD guard can pause even
 at context 512 with another full chunk remaining. The paused-prefill stage
 bursts solo GEN + BYIELD 0, then BGEN 1 + BSTOP 0. It requires YIELDED + DONE
-cancel, followed by the paused slot's zero-token BDONE cancel BEFORE waiter
-output/admission, with no active decode rows to rescue admission. The waiter
-may finish on EOS at admission (BADM=0); ordering and solo parity still apply.
-A missing/not-taken yield is a failure, never a skipped test.
+cancel, the paused slot's zero-token BDONE cancel, and the capacity invariant -
+the waiter must never be served (no token, no admitted continuation) from
+capacity the paused slot still holds. A run whose timing refuses the waiter at
+admission (zero-token `pressure`, `BADM 0`) before that release satisfies the
+invariant and is re-submitted after the release, so the ordering itself is not
+the witness. A missing/not-taken yield is a failure, never a skipped test.
 """
 from __future__ import annotations
 
@@ -684,9 +686,19 @@ class Suite:
     def paused_capacity_wait(self, prompt, reference):
         """A partial slot, not an active decode row, must be stopped IN admission.
 
-        Both controls are burst behind their request. Processing BSTOP only in
-        the outer command loop (or after !batch_on) will reject the waiter or
-        stall; silently evicting the protected partial slot will admit too early.
+        Both controls are burst behind their request: processing BSTOP only in the
+        outer command loop (or after !batch_on) would reject the waiter or stall, and
+        silently evicting the protected partial slot would admit too early.
+
+        The witness is the **capacity invariant**, not a fixed event order. The paused
+        slot must be released, and the waiter must never be *served* - no token and no
+        admitted continuation - from capacity the paused slot still holds. A run in
+        which the native refuses the waiter at admission before that release (a
+        zero-token `pressure` read with `BADM 0`, its documented internal continuation
+        boundary) satisfies the invariant; which of the two the timing produces is
+        build-dependent and must not decide the gate. A refused waiter is re-submitted
+        after the release and must then match its solo reference, so the released
+        capacity is proven usable instead of the witness being weakened.
         """
         self.engine.stage = 'capacity-wait-paused-prefill-bstop'
         source = Request('paused-solo-source', prompt, 96)
@@ -695,6 +707,7 @@ class Suite:
         self.evidence['stages'].append(stage)
         deadline = time.monotonic() + self.timeout
         yielded = release = None
+        retry = None
         try:
             pages = [r.record()['reservation_pages'] for r in (source, waiter)]
             common = 0
@@ -734,34 +747,84 @@ class Suite:
 
             protocol = Protocol([waiter])  # Slot 0 is partial, never an active row.
             self.engine.send(waiter.command(), 'BSTOP 0', deadline=deadline)
-            while not protocol.finished:
+            while not protocol.finished or release is None:
                 event = self.engine.next_event(deadline)
                 if event['kind'] == 'BDONE' and event['slot'] == 0:
                     stage['paused_release'] = event
                     require(release is None, 'duplicate paused-slot BDONE')
                     require(event['count'] == 0 and event['finish'] == 'cancel' and event['decode_ms'] == 0,
                             'paused BSTOP must emit BDONE 0 0 cancel 0, not decode a row')
-                    require(not waiter.tokens and waiter.admission_done is None and waiter.badm is None,
-                            'waiter emitted/admitted before paused reservation release')
                     release = event
-                else:
-                    if event['kind'] != 'OTHER':
-                        require(release is not None, 'waiter protocol arrived before paused-slot BDONE cancel')
+                    stage['waiter_state_at_release'] = {'tokens': len(waiter.tokens),
+                                                        'admission_seen': waiter.admission_done is not None,
+                                                        'badm_seen': waiter.badm is not None}
+                    continue
+                if release is None and event['kind'] != 'OTHER':
+                    # Serving the waiter out of the paused slot's held capacity is the
+                    # violation this stage exists for; fail the moment it appears.
+                    require(event['kind'] != 'T' and not (event['kind'] == 'BADM' and event['continues']),
+                            'waiter was served from capacity the paused slot still holds: '
+                            f'{event["raw"]} preceded BDONE 0 0 cancel')
+                    # A terminal before that release is only valid as the native's own
+                    # zero-token capacity refusal, never as a cancelled or answered read.
+                    if event['kind'] == 'DONE':
+                        require(event['count'] == 0 and event['finish'] == 'pressure',
+                                'a waiter terminal before the paused release must be a zero-token pressure '
+                                f'refusal, not {event["raw"]!r}')
+                if not protocol.finished:
                     protocol.consume(event)
+                else:
+                    require(event['kind'] == 'OTHER',
+                            f'unexpected waiter protocol after its terminal: {event["raw"]}')
             require(release is not None, 'no paused-slot reservation release observed')
-            # Natural EOS may finish this waiter on its admission token. The
-            # regression is releasing paused capacity before admission, not
-            # requiring this otherwise healthy request to enter batch decode.
-            require(waiter.badm is not None, 'waiter admission must emit BADM 1')
-            parity(waiter, reference)
-            require(source.completion['seq'] < release['seq'] < waiter.token_events[0]['seq'] < waiter.badm['seq'],
-                    'invalid paused release/admission ordering')
-            stage['pressure'].update(source_done_seq=source.completion['seq'], paused_bdone_seq=release['seq'],
-                                     waiting_first_t_seq=waiter.token_events[0]['seq'],
-                                     waiting_badm_seq=waiter.badm['seq'], waiter_continues=waiter.badm['continues'])
+            require(source.completion['seq'] < release['seq'], 'paused release must follow the source DONE cancel')
+            require(waiter.completion is not None, 'waiter did not reach a terminal record')
+            refused = waiter.completion.get('finish') == 'pressure'
+            stage['waiter_outcome'] = 'refused_before_release_then_resubmitted' if refused else 'served_after_release'
+            at_release = stage.get('waiter_state_at_release') or {}
+            stage['release_ordering'] = {'source_done_seq': source.completion['seq'],
+                                         'paused_release_seq': release['seq'],
+                                         'waiter_refused_before_release': refused,
+                                         'waiter_served_before_release': False,
+                                         'waiter_protocol_before_release': bool(at_release.get('admission_seen') or
+                                                                                at_release.get('badm_seen'))}
+            if not refused:
+                require(waiter.admission_done is not None and waiter.badm is not None,
+                        'waiter terminal without an admission/BADM record')
+                parity(waiter, reference)
+                require(release['seq'] < waiter.token_events[0]['seq'] < waiter.badm['seq'],
+                        'invalid paused release/admission ordering')
+                serving = waiter
+                stage['release_ordering']['serving_attempt'] = 'first_admission'
+            else:
+                require(not waiter.tokens and waiter.admission_done is not None and
+                        waiter.badm is not None and not waiter.badm['continues'],
+                        'a pre-release waiter terminal must be a zero-token BADM 0 pressure refusal')
+                stage['waiter_refusal'] = waiter.record()
+                # The frontend re-submits original + all returned tokens (none here) with the
+                # remaining allowance; proving the released capacity serves it keeps the
+                # relaxed ordering from weakening the witness.
+                retry = Request('waiter-resubmitted-after-paused-release', waiter.prompt, waiter.cap, waiter.slot)
+                retry.reference = reference
+                retry_protocol = Protocol([retry])
+                self.engine.send(retry.command(), deadline=deadline)
+                while not retry_protocol.finished:
+                    retry_protocol.consume(self.engine.next_event(deadline))
+                parity(retry, reference)
+                require(release['seq'] < retry.token_events[0]['seq'] and retry.badm is not None,
+                        're-submitted waiter was not served after the paused release')
+                stage['waiter_resubmission'] = retry.record()
+                stage['release_ordering']['waiter_resubmitted'] = True
+                stage['release_ordering']['serving_attempt'] = 'resubmitted_after_release'
+                serving = retry
+            stage['pressure'].update(source_done_seq=source.completion['seq'],
+                                     paused_bdone_seq=release['seq'],
+                                     waiting_first_t_seq=serving.token_events[0]['seq'],
+                                     waiting_badm_seq=serving.badm['seq'],
+                                     waiter_continues=serving.badm['continues'])
             stage['passed'] = True
         finally:
-            stage['requests'] = [source.record(), waiter.record()]
+            stage['requests'] = [source.record(), waiter.record()] + ([retry.record()] if retry else [])
             self.save()
 
     def invalid_then_healthy(self, prompt, reference):
