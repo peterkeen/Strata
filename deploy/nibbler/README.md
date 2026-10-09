@@ -1,9 +1,12 @@
 # Nibbler deployment candidate — `kv-unified`
 
-Status: **port in progress; being validated, not a validated port deployment**.
-The unified-KV fork lineage (copied from fork tip `9921eec`) is now ported onto
-upstream main `fb58e0db` on branch `kv-unified`. The initial port commits are
-`1092339f` (runtime/session/serving) and `537f8b35` (CLI integration).
+Status: **validated on this hardware and deployed with the owner's authorization (2026-10-09)**.
+The unified-KV fork lineage (copied from fork tip `9921eec`) is ported onto upstream main
+`fb58e0db` on branch `kv-unified` (the fork's working main line; see
+[the work log](../../docs/INCREMENTAL_UNIFIED_KV.md)), which now also carries the NVFP4 kernels and
+expert cache (`2035d315` and its two follow-ups) and the opt-in unified batch-MTP work.
+
+The initial port commits are `1092339f` (runtime/session/serving) and `537f8b35` (CLI integration).
 This is the newer upstream lineage following 0.1.40.x; both the upstream base
 and this checkout's `CMakeLists.txt` identify the engine as **0.1.41**.
 
@@ -11,8 +14,51 @@ The [unified KV work log](../../docs/MULTI_SLOT_UNIFIED_KV.md),
 [incremental allocation work log](../../docs/INCREMENTAL_UNIFIED_KV.md) and
 [deployment record](validation.md) retain the fork's dated measurements and
 rollouts. Those results are evidence for the fork builds tested on
-2026-10-03 through 2026-10-06, **not measurements or deployment verification
-of this port**. No port performance or quality result is claimed here.
+2026-10-03 through 2026-10-06; the port's own validation is recorded in the
+incremental work log's ported section (build 388/388, CPU/native 11/11, NVFP4 pack load,
+target-only baseline 26/26, and the model gates for correctness, limits, lifecycle, tails,
+pressure, optional and handoff). No port performance or quality result is claimed here.
+
+## Launch path (tracked)
+
+`/opt/native-inference/bin/start-strata-sharp-medium` (outside this repo) execs
+`deploy/nibbler/start-strata PORT` from this checkout. The launcher is now tracked here:
+it refreshes `/data/llm/Strata-run/nibbler/config.json` from `deploy/nibbler/config.json` and
+execs `.venv/bin/python -m serve.server --engine strata --config <runtime config> --host 127.0.0.1`.
+Because the launcher copies the tracked config on every start, `deploy/nibbler/config.json` **is**
+the production configuration: keep it in sync with anything intentionally changed at runtime, and
+never rewrite shared Chat settings (`config.shared-settings.json`) on restart.
+
+## Deployment (authorized 2026-10-09)
+
+Reversible rollout used for the `kv-unified` port:
+
+```sh
+# 1. back up the live artifacts (binary, BUILD.json, vision binary, runtime config)
+b=/data/llm/Strata-backups/deploy-$(date -u +%Y%m%dT%H%M%SZ); mkdir -p "$b"
+cp -a engine/strata-nibbler engine/strata-vision engine/BUILD.json \
+      /data/llm/Strata-run/nibbler/config.json "$b"/
+sha256sum engine/strata-nibbler engine/strata-vision engine/BUILD.json \
+      /data/llm/Strata-run/nibbler/config.json | tee "$b"/hashes.before
+# 2. build the branch in a NEW build directory with the production flags
+cmake -S . -B build-deploy -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=120 \
+      -DSTRATA_ENABLE_CUDA=ON -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
+      -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_GGML_DIR=$PWD/third_party/llama.cpp
+cmake --build build-deploy -j4
+# 3. install (the originals are already in the backup)
+install -m 0755 build-deploy/strata        engine/strata-nibbler
+install -m 0755 build-deploy/tools/vision/strata-vision engine/strata-vision
+# 4. update BUILD.json's version/src so /status reports the truth, then start on demand
+#    (llama-swap begins the engine when the model is requested; no router restart needed)
+curl -s http://127.0.0.1:8088/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.8-flash-next-iq3_s","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
+```
+
+Rollback: copy the four files above back from `$b`, then request the model again (llama-swap starts
+it from the launcher). The runtime config is refreshed from the checkout on every start, so a
+rollback that also restores the source tree must restore the tracked
+`deploy/nibbler/config.json` too.
+
 
 ## Preserved configuration and architecture
 
