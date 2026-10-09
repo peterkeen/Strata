@@ -2,43 +2,41 @@
   "exe": "/data/llm/Strata/engine/strata-nibbler",
   "parallel": 2,
   "args": [
-    "--pack", "/data/llm/Strata-data/packs/iq3_s",
-    "--native", "/data/llm/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-    "--ple-gguf", "/data/llm/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00002-of-00002.gguf",
+    "--pack", "/data/llm/models/huihui-nvfp4/pack",
+    "--native", "/data/llm/models/huihui-nvfp4/huihui-nvfp4-dense.gguf",
+    "--native-dense-gguf", "/data/llm/models/huihui-nvfp4/huihui-nvfp4-dense.gguf",
+    "--ple-gguf", "/data/llm/models/huihui-nvfp4/ple-fp8.gguf",
+    "--embd-gguf", "/data/llm/models/huihui-nvfp4/token-embd-bf16.gguf",
+    "--mtp", "/data/llm/models/huihui-nvfp4/mtp",
     "--expert-profile", "/data/llm/Strata/data/expert-profile.bin",
     "--expert-cache", "auto",
-    "--prefill", "auto",
+    "--prefill", "auto:8192",
     "--spec", "4",
     "--spec-min-p", "0.5",
-    "--mtp", "/data/llm/Strata-data/mtp/rt",
-    "--max-context", "262144",
+    "--batch-mtp",
+    "--max-context", "65536",
     "--kv", "int8",
     "--kv-resident", "32768",
     "--kv-unified",
-    "--vision",
+    "--no-kv-grow",
     "--vram-reserve-mib", "2048",
-    "--conversation-cache-mib", "8192",
-    "--conversation-cache-slots", "4",
-    "--conversation-cache-min-free-mib", "4096"
+    "--conversation-cache-mib", "0"
   ],
   "env": {
-    "STRATA_PF_FUSED": "1"
+    "CUDA_VISIBLE_DEVICES": "0",
+    "STRATA_KV_GROW": "0",
+    "STRATA_BATCH_MTP": "1",
+    "STRATA_PREFILL_NVFP4": "w4a4x2",
+    "STRATA_ADAPT_FETCH": "2"
   },
   "cwd": "/data/llm/Strata",
-  "tokenizer": "/data/llm/Strata-data/packs/iq3_s/tokenizer-sharp",
-  "model_name": "qwen3.8-flash-next-iq3_s",
+  "tokenizer": "/data/llm/models/huihui-nvfp4/pack/tokenizer",
+  "model_name": "qwen3.8-flash-next-nvfp4",
   "log": "/data/llm/Strata-run/nibbler/engine.log",
   "lib_dirs": ["/usr/local/cuda-13.3/bin", "/usr/local/cuda-13.3/lib64"],
   "port": 8088,
   "gpu": 0,
   "gpus_asked": true,
   "host": "127.0.0.1",
-  "allowed_hosts": ["nibbler", "nibbler.tailnet-a578.ts.net", "nibbler.local.keen.land"],
-  "vision": {
-    "exe": "/data/llm/Strata/engine/strata-vision",
-    "mmproj": "/data/llm/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
-    "model": "/data/llm/models/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
-    "gpu": true,
-    "max_tokens": 1024
-  }
+  "allowed_hosts": ["nibbler", "nibbler.tailnet-a578.ts.net", "nibbler.local.keen.land"]
 }
