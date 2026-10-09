@@ -9,7 +9,9 @@ Pressure + bounded private MTP ring wrap (4096 cells, 1536/1540 prompt cells,
   python3 tools/unified_kv_batch_mtp_pressure_smoke.py --exe /path/to/strata \
       --config model.json --output /tmp/mtp-pressure-UNIQUE.json --gate pressure
 
-Optional speculative-row shortage separated from mandatory pressure:
+Optional speculative-row shortage separated from mandatory pressure (single active
+slot; MAIN's parked copy plus the slot mapping exactly fill the pool, so the optional
+second verify row falls back to target-only with no pressure park):
   same command with --gate optional
 
 Full coherent active BHANDOFF back to MAIN and exact continuation parity:
@@ -162,30 +164,109 @@ def pressure_capacity_plan(prompts, caps, context):
             "arithmetic_is_fixture_sizing_only_not_pressure_evidence": True}
 
 
-OPTIONAL_STOP_MIN_OUTPUT = 258
+OPTIONAL_WITNESS_MIN_MARGIN = 16
 
 
-def optional_stop_ready(requests):
-    return (len(requests) == 2 and all(r.badm and r.badm["continues"] and r.completion is None
-                                       for r in requests) and
-            min(len(r.tokens) for r in requests) >= OPTIONAL_STOP_MIN_OUTPUT)
+def optional_witness_plan(context: int, ahead_cells: int = incremental.AHEAD) -> dict:
+    """Boundary arithmetic for the single-active-slot optional-reservation witness.
+
+    One BGEN slot decodes on a shared pool that is exactly filled by the slot's own
+    page mapping plus MAIN's retained parked prompt copy.  The slot's mapping ends
+    at the page boundary whose second (optional) verify row is the first unmapped
+    cell, so the optional-row reservation finds no free page and falls back to
+    target-only while the mandatory row is already mapped.  The next mandatory row
+    then recovers by reclaiming MAIN's idle parked copy (generate.cpp: idle main ->
+    release(seq 0)), so the slot keeps decoding and no pressure park is expected.
+
+    This is a reservation-path witness, not a pressure witness: the fixture must
+    never be credited when a park appears before the optional fallback.
+    """
+    require(context > 0 and context % PAGE == 0, "optional witness needs a four-cell-aligned context")
+    require(ahead_cells > 0 and ahead_cells % PAGE == 0, "reserve-ahead must be a positive page multiple")
+    pool_pages = context // PAGE
+    ahead_pages = ahead_cells // PAGE
+    remainder = pool_pages - ahead_pages
+    require(remainder >= 2 and remainder % 2 == 0,
+            f"context {context} cannot split into a prompt mapping plus a {ahead_cells}-cell headroom at one "
+            f"page boundary (pool {pool_pages} pages, remainder {remainder}); no bounded single-slot witness exists")
+    prompt_pages = remainder // 2
+    prompt_cells = prompt_pages * PAGE - 1        # last cell of a page: the optional row crosses the boundary
+    mapping_pages = prompt_pages + ahead_pages
+    mapping_cells = mapping_pages * PAGE
+    parked_pages = pages(prompt_cells)
+    boundary = mapping_cells - prompt_cells       # = ahead_cells + 1
+    plan = {"context_cells": context, "pool_pages": pool_pages, "page_cells": PAGE,
+            "reserve_ahead_cells": ahead_cells,
+            "prompt_cells": prompt_cells, "prompt_page_offset": prompt_cells % PAGE,
+            "prompt_pages": parked_pages, "witness_mapping_cells": mapping_cells,
+            "witness_mapping_pages": mapping_pages,
+            "pages_in_use_at_boundary": parked_pages + mapping_pages,
+            "free_pages_at_boundary": pool_pages - (parked_pages + mapping_pages),
+            "spare_pages": pool_pages - (parked_pages + mapping_pages),
+            "boundary_output_count": boundary, "bstop_output_count": boundary + 1,
+            "reclaim_source": "MAIN's idle parked prompt copy (release seq 0) on the next mandatory reservation",
+            "isolation_claim": "the optional (second) row is the only row that cannot be reserved; the mandatory row "
+                               "is already mapped and the next mandatory row recovers by reclaim, so no pressure park",
+            "arithmetic_source": "native page size 4, shared_kv_reserve_ahead 256, and generate.cpp's "
+                                 "truncate(seq 0, live.size()) after BADM keeps MAIN's parked prompt copy mapped"}
+    require(parked_pages + mapping_pages == pool_pages,
+            "derived boundary arithmetic does not exactly fill the shared pool")
+    require(boundary == ahead_cells + 1, "boundary output count must equal reserve-ahead + 1")
+    return plan
 
 
-def validate_optional_result(requests, stats, diagnostics):
-    require(len(requests) == 2 and all(r.completion and r.completion["kind"] == "BDONE" and
-                                       r.completion["finish"] == "cancel" for r in requests),
-            "optional fallback gate requires both BSTOP cancel terminals; any pressure terminal fails")
-    require(len(stats) == 2 and {s["slot"] for s in stats} == {0, 1},
-            "each optional slot needs exactly one lifecycle counter summary")
-    proof = verify_stats(stats, offer=True, every_slot_offer=True, fallback_reserve=True)
-    require(not any(d["kind"] == "pressure_target_only" for d in diagnostics["pressure"]),
-            "optional proposal shortage caused a pressure park")
-    require(all(any(event["kind"] == "BT" for event in r.token_events) for r in requests),
-            "optional fallback fixture lacks actual batch target progress")
-    proof["fallback_slots"] = [s["slot"] for s in stats if s["fallback_reserve"] > 0]
-    proof["fallback_counter_timing"] = "per-slot lifecycle total; native contract has no per-window timestamp"
-    proof["no_pressure_terminal"] = True
-    return proof
+def optional_bstop_ready(token_count: int, plan: dict) -> bool:
+    """Stop only once the boundary window completed (a target-only window emits one row)."""
+    return token_count >= plan["bstop_output_count"]
+
+
+def optional_witness_checks(request, plan, diagnostics, stopped) -> dict:
+    """Named witnesses; every one must hold for the optional path to be isolated."""
+    stats = diagnostics["batch_mtp_stats"]
+    row = stats[0] if len(stats) == 1 else None
+    parks = [record for record in diagnostics["pressure"] if record["kind"] == "pressure_target_only"]
+    completion = request.completion or {}
+    other_reasons = ("fallback_incoherent", "fallback_not_ready", "fallback_limits", "fallback_capacity")
+    other = sum(row[key] for key in other_reasons) if row is not None else None
+    checks = {
+        "exactly_one_witness_slot_lifecycle":
+            (row is not None, {"rows": stats}),
+        "boundary_output_count_reached":
+            (len(request.tokens) >= plan["bstop_output_count"],
+             {"tokens": len(request.tokens), "required": plan["bstop_output_count"]}),
+        "bstop_before_mandatory_shortage":
+            (bool(stopped), {"bstop_sent": bool(stopped)}),
+        "healthy_cancel_terminal":
+            (completion.get("kind") == "BDONE" and completion.get("finish") == "cancel",
+             {"completion": completion}),
+        "positive_offers":
+            (row is not None and row["offered"] > 0,
+             {"offered": None if row is None else row["offered"]}),
+        "positive_per_slot_fallback_reserve":
+            (row is not None and row["fallback_reserve"] >= 1,
+             {"fallback_reserve": None if row is None else row["fallback_reserve"]}),
+        "no_other_fallback_reason":
+            (other == 0, {"other_fallback_reasons": other, "row": row}),
+        "no_pressure_park": (not parks, {"parks": parks}),
+    }
+    return {"checks": {name: {"observed": ok, "detail": detail} for name, (ok, detail) in checks.items()},
+            "missed": [name for name, (ok, _) in checks.items() if not ok],
+            "row": row, "parks": parks,
+            "park_ordering_observable": False,
+            "park_contract": "the native reports lifecycle counters and any park at the terminal only, so a park's "
+                             "position relative to the optional window cannot be time-ordered; the isolated witness "
+                             "stage therefore treats any park as non-isolation (stricter than the minimum)"}
+
+
+def validate_optional_witness(request, plan, diagnostics, stopped) -> dict:
+    """Fail closed and name the missed witness; the coverage is never credited."""
+    result = optional_witness_checks(request, plan, diagnostics, stopped)
+    if result["missed"]:
+        raise AssertionError(
+            "optional witness isolation failed: missed " + ", ".join(result["missed"]) +
+            " (fixture non-isolation: the optional reservation path was not isolated from mandatory pressure; "
+            "coverage stays UNTESTED)")
+    return result
 
 
 def pressure_overlap_proof(requests):
@@ -391,59 +472,66 @@ class PressureSuite(incremental.Suite):
                 stage["diagnostics"] = parse_diagnostics(raw[stderr_start:].decode("utf-8", errors="replace"))
             self.save()
 
-    def run_optional_row_fallback(self, prompts, cap, refs, deadline_s):
-        requests = [self.make_attempt(f"optional-row-slot-{i}", p, cap, i) for i, p in enumerate(prompts)]
-        for req, ref in zip(requests, refs):
-            req.reference = ref
-        self.engine.stage = "optional-speculative-row-fallback-no-pressure"
+    def run_optional_row_fallback(self, prompt, cap, reference, plan, deadline_s):
+        """One active private slot must isolate the optional reservation path.
+
+        A single slot decodes; MAIN's parked prompt copy plus the slot's own page
+        mapping exactly fill the shared pool, so the optional (second) verify row at
+        the mapping's last page cannot be reserved while the mandatory row is already
+        mapped.  The next mandatory row recovers by reclaiming MAIN's idle parked copy;
+        a pressure park is therefore a witness failure, not an expected outcome.
+        """
+        request = self.make_attempt("optional-witness-slot-0", prompt, cap, 0)
+        request.reference = reference
+        self.engine.stage = "optional-row-fallback-isolated-witness"
         stderr_start = self.stderr_path.stat().st_size
-        stage = {"name": self.engine.stage, "passed": False, "requests": []}
+        stage = {"name": self.engine.stage, "passed": False, "requests": [],
+                 "fixture_arithmetic": plan,
+                 "boundary_output_count": plan["boundary_output_count"],
+                 "bstop_output_count": plan["bstop_output_count"],
+                 "output_cap": cap,
+                 "mandatory_row_already_mapped_at_boundary": True,
+                 "stop_guard_arithmetic": "p = prompt_cells + produced - 1, so the boundary window runs at "
+                                         f"produced == {plan['boundary_output_count']} and completes at "
+                                         f"{plan['bstop_output_count']}"}
         self.evidence["stages"].append(stage)
-        protocol = common.Protocol(requests)
+        protocol = common.Protocol([request])
         deadline = time.monotonic() + deadline_s
         stopped = False
         try:
-            self.engine.send(*(r.command() for r in requests), deadline=deadline)
+            self.engine.send(request.command(), deadline=deadline)
             while not protocol.finished:
                 event = self.engine.next_event(deadline)
                 protocol.consume(event)
-                if not stopped and optional_stop_ready(requests):
-                    # This is only a bounded stop guard. Output counts do not
-                    # timestamp the fallback: acceptance can separate the slots,
-                    # and the first reservation can consume the spare page. The
-                    # terminal counters must independently prove fallback_reserve,
-                    # while both slots cancel without pressure.
-                    self.engine.send("BSTOP 0", "BSTOP 1", deadline=deadline)
+                if not stopped and optional_bstop_ready(len(request.tokens), plan):
+                    # Only the output count of the witness window is usable as a stop
+                    # guard: the native reports lifecycle counters at the terminal, so
+                    # the fallback itself cannot be observed live. The stop point is
+                    # derived from the boundary arithmetic, not guessed.
+                    self.engine.send(f"BSTOP {request.slot}", deadline=deadline)
                     stage["bstop_after_seq"] = event["seq"]
                     stopped = True
-            require(stopped, "optional fallback fixture ended/pressure-parked before the bounded fallback point")
-            for req, ref in zip(requests, refs):
-                require(req.tokens == ref.tokens[:len(req.tokens)], f"{req.name}: target prefix parity differs")
+            stage["bt_counts_at_bstop"] = {str(request.slot): len(request.tokens)}
+            require(request.tokens == reference.tokens[:len(request.tokens)],
+                    f"{request.name}: witness prefix parity differs from the same-binary solo reference")
             raw = self.stderr_path.read_bytes()
             text = raw[stderr_start:].decode("utf-8", errors="replace")
             diagnostics = parse_diagnostics(text)
-            stats = diagnostics["batch_mtp_stats"]
-            proof = validate_optional_result(requests, stats, diagnostics)
-            stage.update(requests=[r.record() for r in requests], fallback_proof=proof,
-                         no_pressure_for_optional_row=True, stderr_byte_range=[stderr_start, len(raw)],
-                         diagnostics=diagnostics,
-                         fixture={"prompt_cells": [len(p) for p in prompts], "prompt_offsets": [len(p) % PAGE for p in prompts],
-                                  "initial_headroom_cells": incremental.AHEAD,
-                                  "initially_free_shared_pages": plan["pool_pages"] - plan["initial_pages_total"],
-                                  "planned_optional_extent_crosses_page_after_headroom": True,
-                                  "native_fallback_counter_is_authoritative": True,
-                                  "stop_guard_min_output_count": OPTIONAL_STOP_MIN_OUTPUT,
-                                  "output_counts_at_bstop": [len(r.tokens) for r in requests],
-                                  "last_BT_seq_by_slot": {str(r.slot): max(e["seq"] for e in r.token_events
-                                                                              if e["kind"] == "BT")
-                                                           for r in requests},
-                                  "bstop_command_after_seq": stage["bstop_after_seq"],
-                                  "output_count_is_stop_guard_not_fallback_timestamp": True,
-                                  "mandatory_first_row_remains_inside_mapped_page": True})
+            try:
+                witness = validate_optional_witness(request, plan, diagnostics, stopped)
+            except AssertionError:
+                stage["fixture_isolation"] = "fixture_non_isolation"
+                raise
+            stage.update(requests=[request.record()], witness=witness,
+                         per_slot_counter_rows=[witness["row"]],
+                         pressure_park_absence={"absent": not witness["parks"], "parks": witness["parks"]},
+                         fixture_isolation="isolated_optional_witness",
+                         stderr_byte_range=[stderr_start, len(raw)], diagnostics=diagnostics)
             stage["passed"] = True
             self.save()
         finally:
-            stage.setdefault("requests", [r.record() for r in requests])
+            stage.setdefault("requests", [request.record()])
+            stage.setdefault("fixture_isolation", "fixture_non_isolation")
             raw = self.stderr_path.read_bytes() if self.stderr_path.exists() else b""
             stage.setdefault("stderr_byte_range", [stderr_start, len(raw)])
             if not stage.get("diagnostics"):
@@ -600,25 +688,27 @@ def solo_references(suite, evidence, prompts, cap):
     return refs
 
 
-def run_optional(args, evidence, suite, stderr, padded, refs):
-    prompts = (padded("OPTIONAL-PAGE-BOUNDARY-A", args.optional_a_cells),
-               padded("OPTIONAL-PAGE-BOUNDARY-B", args.optional_b_cells))
-    require([len(p) % PAGE for p in prompts] == [3, 3],
-            "optional fallback prompts must place the post-headroom mandatory row on the final mapped page cell")
+def run_optional(args, evidence, suite, stderr, prompt, reference, plan):
     cap = args.optional_cap
-    require(cap > OPTIONAL_STOP_MIN_OUTPUT,
-            "optional stop fixture needs room beyond its bounded output-count guard")
-    plan = pressure_capacity_plan(prompts, [cap, cap], args.context)
-    require(plan["initial_pages_total"] == plan["pool_pages"] - 1,
-            "optional-row boundary fixture requires exactly one initially free shared page")
-    evidence["optional_capacity_plan"] = plan
-    require(len(refs) == 2 and all(ref.prompt == prompt and len(ref.tokens) == cap and
-                                   ref.completion["finish"] == "length"
-                                   for ref, prompt in zip(refs, prompts)),
-            "optional fixture requires complete same-binary solo references for the exact boundary prompts")
-    suite.run_optional_row_fallback(prompts, cap, refs, args.stage_timeout)
-    evidence["coverage"]["optional_reservation_fallback_without_pressure"] = "RUN: fallback_reserve counter plus both cancel terminals, no pressure park"
-    evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = "RUN (prompts exceed helper-derived ring capacity)"
+    require(len(prompt) == plan["prompt_cells"],
+            f"optional witness prompt must be {plan['prompt_cells']} cells for the derived boundary arithmetic")
+    require(len(prompt) % PAGE == PAGE - 1 and plan["prompt_page_offset"] == PAGE - 1,
+            "optional witness prompt must end at the last cell of a page so the optional row crosses the boundary")
+    require(cap > plan["bstop_output_count"],
+            f"optional witness output cap {cap} must exceed the boundary witness point "
+            f"{plan['bstop_output_count']}")
+    require(cap + OPTIONAL_WITNESS_MIN_MARGIN <= args.context - len(prompt) - GUARD,
+            "optional witness cap leaves no bounded room after the boundary witness point")
+    plan = dict(plan, output_cap=cap)
+    evidence["optional_witness_plan"] = plan
+    require(reference is not None and reference.prompt == prompt and len(reference.tokens) == cap and
+            reference.completion["finish"] == "length",
+            "optional witness requires a complete same-binary solo reference for the exact boundary prompt")
+    suite.run_optional_row_fallback(prompt, cap, reference, plan, args.stage_timeout)
+    evidence["coverage"]["optional_reservation_fallback_without_pressure"] = (
+        "RUN: single active private slot; positive per-slot fallback_reserve with no other fallback reason, "
+        "healthy cancel terminal and no pressure park")
+    evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = "RUN (prompt exceeds helper-derived ring capacity)"
     evidence["coverage"]["positive_full_coherent_BHANDOFF"] = "UNTESTED; run --gate handoff"
     evidence["coverage"]["older_slot_checkpoint_private_draft_restore"] = "UNTESTED; not borrowed"
 
@@ -699,8 +789,8 @@ def main(argv=None):
     ap.add_argument("--prompt-a-cells", type=int, default=1536)
     ap.add_argument("--prompt-b-cells", type=int, default=1540)
     ap.add_argument("--pressure-cap", type=int, default=768)
-    ap.add_argument("--optional-a-cells", type=int, default=1787)
-    ap.add_argument("--optional-b-cells", type=int, default=1791)
+    ap.add_argument("--optional-cells", type=int, default=1919,
+                    help="optional witness prompt cells; must equal the derived boundary arithmetic")
     ap.add_argument("--optional-cap", type=int, default=320)
     ap.add_argument("--handoff-cap", type=int, default=64)
     ap.add_argument("--mtp-window", type=int, default=128)
@@ -726,6 +816,15 @@ def main(argv=None):
         validate_deadlines(args.startup_timeout, args.stage_timeout, args.cleanup_timeout)
     except AssertionError as exc:
         ap.error(str(exc))
+    if args.gate == "optional":
+        try:
+            derived = optional_witness_plan(args.context)
+        except AssertionError as exc:
+            ap.error(str(exc))
+        if args.optional_cells != derived["prompt_cells"]:
+            ap.error(f"--optional-cells must be the derived boundary prompt length {derived['prompt_cells']}")
+        if not derived["bstop_output_count"] < args.optional_cap <= args.context - derived["prompt_cells"] - GUARD:
+            ap.error("optional witness cap must exceed the boundary witness point and stay inside the logical context")
     output = args.output.expanduser().resolve()
     stderr_paths = [Path(f"{output}.{label}.stderr.log") for label in ("reference", "source", "handoff")]
     if output.exists() or any(path.exists() for path in stderr_paths):
@@ -763,24 +862,24 @@ def main(argv=None):
         process["started_wall_time"] = time.time()
         start_owned_engine(engine, suite, command, cwd, env, args, evidence, process)
         if args.gate == "optional":
-            require(all(len(p) > evidence["source_ring"]["allocated_page_rounded_ring_cells"]
-                        for p in (padded("OPTIONAL-PAGE-BOUNDARY-A", args.optional_a_cells),
-                                  padded("OPTIONAL-PAGE-BOUNDARY-B", args.optional_b_cells))),
-                    "optional rows must also use a prompt longer than actual bounded ring capacity")
-            optional_prompts = (padded("OPTIONAL-PAGE-BOUNDARY-A", args.optional_a_cells),
-                                padded("OPTIONAL-PAGE-BOUNDARY-B", args.optional_b_cells))
-            refs = []
-            for i, prompt in enumerate(optional_prompts):
-                refs.append(suite.solo(f"optional-case-same-binary-reference-{i}", prompt, args.optional_cap))
-            for ref in refs:
-                require(len(ref.tokens) == args.optional_cap and ref.completion["finish"] == "length",
-                        "optional reference ended early; pressure coverage cannot count EOS")
+            plan = optional_witness_plan(args.context)
+            evidence["optional_witness_plan"] = plan
+            require(args.optional_cells == plan["prompt_cells"],
+                    f"--optional-cells must equal the derived boundary prompt length {plan['prompt_cells']}")
+            witness_prompt = padded("OPTIONAL-PAGE-BOUNDARY-WITNESS", plan["prompt_cells"])
+            require(len(witness_prompt) == plan["prompt_cells"],
+                    "fixture builder did not produce the derived optional witness prompt length")
+            require(len(witness_prompt) > evidence["source_ring"]["allocated_page_rounded_ring_cells"],
+                    "optional witness prompt must also exceed actual bounded private ring capacity")
+            reference = suite.solo("optional-witness-same-binary-reference", witness_prompt, args.optional_cap)
+            require(len(reference.tokens) == args.optional_cap and reference.completion["finish"] == "length",
+                    "optional witness reference ended early (EOS); resize the cap, never credit it")
             finish_process(engine, evidence, process, True)
             engine = suite = stderr = process = None
             engine, suite, stderr, command, cwd, env, process = setup_engine(args, evidence, output, cfg, "source")
             process["started_wall_time"] = time.time()
             start_owned_engine(engine, suite, command, cwd, env, args, evidence, process)
-            run_optional(args, evidence, suite, stderr, padded, refs)
+            run_optional(args, evidence, suite, stderr, witness_prompt, reference, plan)
         elif args.gate == "handoff":
             require(len(prompts[0]) > evidence["source_ring"]["allocated_page_rounded_ring_cells"],
                     "coherent handoff fixture must exercise a prompt longer than the bounded ring")
