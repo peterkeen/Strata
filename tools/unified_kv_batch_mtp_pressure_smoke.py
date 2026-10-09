@@ -823,7 +823,15 @@ def run_handoff(args, evidence, suite, stderr, prompts):
                                           args.handoff_cap - len(req.tokens))
         resume_start = stderr.stat().st_size
         main_stage = suite.run("coherent-handoff-main-GEN", [continuation])
+        # Snapshot the continuation's exclusive stderr bytes NOW, at the instant the
+        # continuation attempt completes. The same-binary reference below runs in
+        # this process and its own (legitimate) TARGET_ONLY diagnostics would
+        # otherwise land inside a later slice of the same file and be misattributed
+        # to the continuation.
+        continuation_raw = stderr.read_bytes()
+        continuation_end = len(continuation_raw)
         reference = suite.solo("coherent-handoff-same-binary-reference", prompt, args.handoff_cap)
+        reference_end = stderr.stat().st_size
         require(len(reference.tokens) == args.handoff_cap and req.tokens + continuation.tokens == reference.tokens,
                 "coherent BHANDOFF continuation differs from same-binary solo IDs")
         require(continuation.admission_done["reused"] == expected_reused and expected_reused > 0,
@@ -833,14 +841,35 @@ def run_handoff(args, evidence, suite, stderr, prompts):
         fields = continuation.completion["raw"].split()
         require(len(fields) >= 8 and int(fields[7]) > 0,
                 "coherent full-slot private ring transfer failed to resume MTP proposals")
-        main_text = stderr.read_bytes()[resume_start:].decode("utf-8", errors="replace")
+        # Continuation-scoped claim: only the exclusive snapshot taken before the
+        # reference ran. Never read beyond it for this assertion.
+        main_text = continuation_raw[resume_start:continuation_end].decode("utf-8", errors="replace")
         require("TARGET_ONLY slot clone" not in main_text,
                 "coherent full-slot transfer was incorrectly downgraded to target-only")
+        # Misattribution audit only (not a continuation claim): report the absolute
+        # offset and owning stage of every TARGET_ONLY slot-clone line in this run.
+        ranges = {"source": (start, resume_start), "continuation": (resume_start, continuation_end),
+                  "reference": (continuation_end, reference_end)}
+        audit_raw = stderr.read_bytes() if stderr.exists() else b""
+        suppression_offsets, cursor = [], 0
+        while True:
+            index = audit_raw.find(b"TARGET_ONLY slot clone", cursor)
+            if index < 0:
+                break
+            suppression_offsets.append({"offset": index,
+                                        "stage": next((name for name, (lo, hi) in ranges.items()
+                                                       if lo <= index < hi), "outside")})
+            cursor = index + 1
         stage.update(source=req.record(), source_mtp=verify_stats(source_diags["batch_mtp_stats"], offer=True),
                      handoff_command_after_seq=stage["handoff_command_after_seq"],
                      main_continuation=continuation.record(), reused_cells=continuation.admission_done["reused"],
                      expected_reused_cells=expected_reused, continuation_main_draft_offers=int(fields[7]),
-                     exact_solo_ids=True, stderr_byte_range=[start, len(raw)], passed=True)
+                     exact_solo_ids=True, stderr_byte_range=[start, len(raw)],
+                     continuation_byte_range=[resume_start, continuation_end],
+                     reference_byte_range=[continuation_end, reference_end],
+                     suppression_offsets=suppression_offsets,
+                     continuation_range_clean=not suppression_offsets or not any(
+                         item["stage"] == "continuation" for item in suppression_offsets), passed=True)
         main_stage["passed"] = True
         evidence["coverage"]["positive_full_coherent_BHANDOFF"] = "RUN"
         evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = "RUN if prompt exceeds helper-derived private ring"
