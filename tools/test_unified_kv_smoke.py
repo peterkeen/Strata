@@ -318,7 +318,8 @@ class PausedPrefillTests(unittest.TestCase):
                 raise RuntimeError(parsed['raw'])
             return parsed
 
-    def execute(self, context=512, pause=None, waiting=None, expected_error=None, solo_eos=False):
+    def execute(self, context=512, pause=None, waiting=None, resubmission=None, expected_error=None,
+                solo_eos=False):
         source = [1] * (3 * context // 4 - 60)
         ref = smoke.Request('solo-waiter', [2] * (context // 2), 2)
         solo = ['T 7', f'DONE 1 {len(ref.prompt)} 0 0 stop'] if solo_eos else \
@@ -329,8 +330,9 @@ class PausedPrefillTests(unittest.TestCase):
         waiting = waiting if waiting is not None else ['BDONE 0 0 cancel 0', 'REUSED 0', 'T 7',
                                                        f'DONE 1 {len(ref.prompt)} 0 0 length',
                                                        'BADM 1 1', 'BT 1 8', 'BDONE 1 2 length 0']
+        scripts = [pause, waiting] + ([resubmission] if resubmission is not None else [])
         data = evidence()
-        engine = self.ScriptEngine(data, [pause, waiting])
+        engine = self.ScriptEngine(data, scripts)
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'evidence.json'
             suite = smoke.Suite(engine, data, output, 1, context)
@@ -361,6 +363,56 @@ class PausedPrefillTests(unittest.TestCase):
                 self.assertLess(pressure['paused_bdone_seq'], pressure['waiting_first_t_seq'])
                 self.assertEqual(stage['requests'][0]['tokens'], [])
                 self.assertEqual(stage['requests'][1]['tokens'], [7, 8])
+                self.assertEqual(stage['waiter_outcome'], 'served_after_release')
+                self.assertFalse(stage['release_ordering']['waiter_refused_before_release'])
+                self.assertFalse(stage['release_ordering']['waiter_served_before_release'])
+                self.assertLess(stage['release_ordering']['source_done_seq'],
+                                stage['release_ordering']['paused_release_seq'])
+
+    def test_waiter_refused_before_paused_release_satisfies_the_capacity_invariant(self):
+        """The measured hardware race shape (str-7ze.22 F1): refusal, release, then serving.
+
+        On the deployed build the native refused the waiter at admission (zero tokens,
+        `pressure`, `BADM 0`) before the paused slot was released, while other builds served
+        it after the release. The invariant - no token and no admitted continuation before the
+        release - holds in both, so the stage must accept either and still prove the released
+        capacity serves the waiter.
+        """
+        for context in (512, 1024):
+            with self.subTest(context=context):
+                waiting = [f'DONE 0 {context // 2} 0 0 pressure', 'BADM 1 0', 'BDONE 0 0 cancel 0']
+                resubmission = ['T 7', f'DONE 1 {context // 2} 0 0 length', 'BADM 1 1', 'BT 1 8',
+                                'BDONE 1 2 length 0']
+                stage, engine = self.execute(context, waiting=waiting, resubmission=resubmission)
+                self.assertTrue(stage['passed'])
+                self.assertEqual(len(engine.bursts), 3)
+                self.assertEqual(engine.bursts[2][0].split()[0], 'BGEN')
+                self.assertEqual(stage['waiter_outcome'], 'refused_before_release_then_resubmitted')
+                self.assertEqual(stage['requests'][1]['completion']['finish'], 'pressure')
+                self.assertEqual(stage['requests'][1]['tokens'], [])
+                self.assertFalse(stage['waiter_refusal']['badm']['continues'])
+                self.assertFalse(stage['release_ordering']['waiter_served_before_release'])
+                self.assertTrue(stage['release_ordering']['waiter_refused_before_release'])
+                self.assertTrue(stage['release_ordering']['waiter_resubmitted'])
+                self.assertTrue(stage['release_ordering']['waiter_protocol_before_release'])
+                self.assertEqual(stage['waiter_state_at_release']['tokens'], 0)
+                self.assertLess(stage['paused_release']['seq'],
+                                stage['waiter_resubmission']['token_events'][0]['seq'])
+                self.assertEqual(stage['requests'][2]['tokens'], [7, 8])
+                self.assertEqual(stage['pressure']['waiter_continues'], True)
+                self.assertLess(stage['pressure']['source_done_seq'], stage['pressure']['paused_bdone_seq'])
+
+    def test_waiter_served_or_wrongly_terminated_before_paused_release_fails_closed(self):
+        for waiting, message in (
+                (['DONE 0 512 0 0 pressure', 'BADM 1 1'], 'served from capacity the paused slot still holds'),
+                (['T 7', 'DONE 1 512 0 0 length', 'BADM 1 1'], 'served from capacity the paused slot still holds'),
+                (['DONE 0 512 0 0 length', 'BDONE 0 0 cancel 0'], 'zero-token pressure refusal'),
+                (['DONE 0 512 0 0 stop', 'BDONE 0 0 cancel 0'], 'zero-token pressure refusal'),
+                (['DONE 0 512 0 0 cancel', 'BDONE 0 0 cancel 0'], 'zero-token pressure refusal')):
+            with self.subTest(waiting=waiting):
+                stage, _ = self.execute(1024, waiting=waiting, expected_error=AssertionError)
+                self.assertFalse(stage['passed'])
+                self.assertNotIn('waiter_outcome', stage)
 
     def test_missing_yield_fails_instead_of_skipping(self):
         stage, engine = self.execute(pause=['DONE 0 324 0 0 cancel 0 0 0'], expected_error=AssertionError)
