@@ -515,6 +515,7 @@ struct Cursor {    uint8_t* p;    uint64_t used = 0;    template <typename T>   
 namespace {
 // KV streaming (docs/kv-streaming-design.md): 0 keeps every cell in VRAM.
 int64_t g_kv_resident = 0;
+bool g_kv_unified = false;
 uint64_t g_kv_host_bytes = 0;
 
 // ---- the elastic K/V (--kv-grow): one VMM range per state, each pool array at a chunk boundary in it
@@ -650,6 +651,66 @@ KvPlan kv_plan(const QsaShapes& s, int64_t max_cells, int64_t ring_cells) {
     }
     return p;
 }
+bool kv_share_valid(const QsaShapes& s, int64_t max_cells, int64_t ring_cells,
+                    const KvPlan& p, const QsaState& owner) {
+    const QsaShapes& o = owner.kv_shapes;
+    const bool geometry = s.n_head == o.n_head && s.n_head_kv == o.n_head_kv &&
+        s.head_dim == o.head_dim && s.n_rot == o.n_rot && s.idx_n_head == o.idx_n_head &&
+        s.idx_dim == o.idx_dim && s.idx_block == o.idx_block && s.idx_top_k == o.idx_top_k &&
+        s.page_size == o.page_size;
+    const bool pools = owner.kv_hybrid ? owner.k_q && owner.k_scale && owner.v_q4 :
+        owner.kv_q4 ? owner.k_q4 && owner.v_q4 :
+        owner.kv_int8 ? owner.k_q && owner.v_q && owner.k_scale && owner.v_scale :
+        owner.k_pool && owner.v_pool;
+    if (!geometry || !pools || !owner.cos_tab || !owner.sin_tab || max_cells <= 0 ||
+        max_cells > owner.max_cells || ring_cells > 0) return false;
+    if (owner.kv_mode == 0)
+        // Never alias an elastic owner: its pools live in their own VMM range and only `pool_slots_mapped` cells are
+        // mapped, so aliasing it would index unmapped addresses (and the borrower charged no pool bytes of its own).
+        return p.mode == 0 && owner.n_slots >= p.pages && !owner.host.present() && owner.kv_elastic < 0;
+    // Merely marking legacy streamed storage shared is not enough: it must have the allocation-time
+    // split between backing ownership, global residency, and sequence-local GPU reader addressing.
+    const bool host_pools = owner.kv_q4 ? owner.host.k_q4 && owner.host.v_q4 :
+        owner.kv_int8 ? owner.host.k_q && owner.host.v_q && owner.host.k_scale && owner.host.v_scale :
+        owner.host.k_pool && owner.host.v_pool;
+    return owner.kv_mode == 1 && p.mode == 1 && ring_cells == 0 && !owner.kv_hybrid &&
+        owner.shared_kv && owner.n_slots == p.slots && host_pools && owner.page_table &&
+        owner.host.logical_pages && owner.host.resident_pages == owner.map.page_table &&
+        owner.map.page_table && owner.map.page_table != owner.page_table &&
+        owner.host.logical_pages != owner.page_table && owner.host.logical_pages != owner.map.page_table &&
+        owner.host.n_logical_pages == owner.n_pages && owner.host.n_backing_pages == owner.map.n_blocks &&
+        owner.map.n_blocks >= p.pages && owner.map.n_slots == p.slots &&
+        owner.host.n_resident_slots == p.slots && owner.map.slot_block && owner.map.slot_stamp &&
+        owner.map.slot_ref && owner.map.miss_block && owner.map.miss_slot && owner.map.ctl;
+}
+
+// Exact private carve for a borrowed state; physical pools and RoPE contribute no arena bytes.
+uint64_t kv_shared_state_bytes(const QsaShapes& s, const KvPlan& p) {
+    const uint64_t parts[] = {
+        (uint64_t) p.pages * 4, (uint64_t) (s.idx_block - 1) * s.idx_dim * 4,
+        (uint64_t) s.idx_dim * 4, (uint64_t) p.pooled_rows * s.idx_dim * 4, 4,
+        strata::kernels::qsa_step_bytes(), 4, (uint64_t) s.n_head * 4,
+    };
+    uint64_t n = p.mode == 1 ? align_up16((uint64_t) p.pages * 4) : 0; // private backing table
+    for (uint64_t v : parts) n += align_up16(v);
+    return n;
+}
+
+uint64_t kv_unified_owner_bytes(const QsaShapes& s, int64_t max_cells, const KvPlan& p, bool with_rope) {
+    // Match each Cursor::take boundary, rather than relying on legacy over-allocation padding.
+    const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;
+    uint64_t n = kv_shared_state_bytes(s, p);
+    if (g_kv_q4) n += 2 * align_up16(rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim));
+    else if (g_kv_int8) {
+        n += 2 * align_up16(rows * s.head_dim);
+        n += 2 * align_up16(rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2);
+    } else n += 2 * align_up16(rows * s.head_dim * 2);
+    n += align_up16((uint64_t) p.pages * 4); // global backing -> GPU table
+    n += 5 * align_up16((uint64_t) p.slots * 4) + align_up16(strata::kernels::kKvCtlInts * 4);
+    if (with_rope) n += 2 * align_up16((uint64_t) max_cells * (s.n_rot / 2) * 4);
+    return n;
+}
+
 uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8) {
     if (hybrid) {   // K8V4: the INT8 K half (codes + scales) plus the Q4_0 V half (kv_q4.hpp's rotation)
         const uint64_t rows = (uint64_t) pages * s.page_size * s.n_head_kv;
@@ -664,12 +725,19 @@ uint64_t kv_pool_bytes(const QsaShapes& s, int64_t pages, bool hybrid, bool int8
 
 void qsa_set_kv_resident(int64_t cells) { g_kv_resident = cells > 0 ? cells : 0; }
 int64_t qsa_kv_resident() { return g_kv_resident; }
+void qsa_set_kv_unified(bool enabled) { g_kv_unified = enabled; }
+bool qsa_kv_unified() { return g_kv_unified; }
 int64_t qsa_kv_resident_min() { return 20480; }
 uint64_t qsa_kv_host_bytes() { return g_kv_host_bytes; }
 
-uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells) {
+uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_rope, int64_t ring_cells,
+                         const QsaState* share_kv) {
     const QsaShapes s = qsa_shapes(g);
     const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    if (share_kv != nullptr)
+        return kv_share_valid(s, max_cells, ring_cells, p, *share_kv) ? kv_shared_state_bytes(s, p) : 0;
+    if (g_kv_unified && ring_cells == 0 && p.mode == 1)
+        return g_kv_hybrid ? 0 : kv_unified_owner_bytes(s, max_cells, p, with_rope);
     uint64_t n = 0;
     if (!(g_kv_elastic && p.mode == 0))   // the elastic K/V's pools are in their own VMM range
         n += kv_pool_bytes(s, p.slots, g_kv_hybrid && ring_cells <= 0,
@@ -687,11 +755,21 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 }
 
 uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, QsaState& st,
-                        const QsaState* share_rope, int64_t ring_cells) {
+                        const QsaState* share_rope, int64_t ring_cells, const QsaState* share_kv) {
     const QsaShapes s = qsa_shapes(g);
-    const KvPlan p = kv_plan(s, max_cells, ring_cells);
+    KvPlan p = kv_plan(s, max_cells, ring_cells);
+    if (share_kv != nullptr) {
+        if (share_kv == &st || !kv_share_valid(s, max_cells, ring_cells, p, *share_kv)) return 0;
+        share_rope = share_kv;   // even the session's first layer borrows the owner's table
+        p.slots = share_kv->n_slots;
+    }
+    const bool shared_stream = p.mode == 1 && ring_cells == 0 && (share_kv != nullptr || g_kv_unified);
+    if (shared_stream && share_kv == nullptr && g_kv_hybrid) return 0;
     const int64_t pages = p.pages;
     Cursor c{(uint8_t*) base};
+    st.kv_shapes = s;
+    st.shared_kv = share_kv != nullptr || shared_stream;
+    st.kv_host_arena = nullptr;
     st.kv_int8 = g_kv_int8 && !g_kv_q4;
     st.kv_q4 = g_kv_q4;
     // Hybrid K8V4, main layers only (the drafter's state is created with the globals toggled to INT8 -
@@ -706,8 +784,21 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.n_slots = p.slots;
     const uint64_t rows = (uint64_t) p.slots * s.n_head_kv * s.page_size;   // VRAM rows: the slots
     const uint64_t q4_row = strata::kernels::kv_q4_bytes_per_head((int) s.head_dim);
-    st.kv_elastic = -1;
-    if (g_kv_elastic && p.mode == 0) {
+    st.kv_elastic = -1;   // every path, borrowers included: only an elastic state owns a mapped VMM range
+    if (share_kv != nullptr) {
+        st.kv_int8 = share_kv->kv_int8;
+        st.kv_q4 = share_kv->kv_q4;
+        st.kv_hybrid = share_kv->kv_hybrid;
+        st.kv_rot = share_kv->kv_rot;
+        st.k_pool = share_kv->k_pool;
+        st.v_pool = share_kv->v_pool;
+        st.k_q = share_kv->k_q;
+        st.v_q = share_kv->v_q;
+        st.k_scale = share_kv->k_scale;
+        st.v_scale = share_kv->v_scale;
+        st.k_q4 = share_kv->k_q4;
+        st.v_q4 = share_kv->v_q4;
+    } else if (g_kv_elastic && p.mode == 0) {
         // the elastic K/V: each array at a chunk boundary of the state's own range, the first cells mapped
         const uint64_t slot_rows = (uint64_t) s.n_head_kv * s.page_size;
         const uint64_t scale_row = (uint64_t) (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2;
@@ -761,11 +852,23 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.page_table = c.take<int32_t>((uint64_t) pages);
     st.n_pages = pages;
     st.max_cells = max_cells;
+    st.host = strata::kernels::KvHostPools{};
     st.map = strata::kernels::KvStreamMap{};
     st.map.page_table = st.page_table;
     st.map.n_blocks = pages;
     st.map.n_slots = p.slots;
-    if (p.mode == 1) {
+    if (shared_stream) {
+        if (share_kv != nullptr) {
+            st.host = share_kv->host; // payloads/global residency alias, logical binding replaced below
+            st.map = share_kv->map;
+        } else st.map.page_table = c.take<int32_t>((uint64_t) pages);
+        st.host.logical_pages = c.take<int32_t>((uint64_t) pages);
+        st.host.resident_pages = st.map.page_table;
+        st.host.n_logical_pages = pages;
+        st.host.n_backing_pages = st.map.n_blocks;
+        st.host.n_resident_slots = p.slots;
+    }
+    if (p.mode == 1 && share_kv == nullptr) {
         st.map.slot_block = c.take<int32_t>((uint64_t) p.slots);
         st.map.slot_stamp = c.take<int32_t>((uint64_t) p.slots);
         st.map.slot_ref = c.take<int32_t>((uint64_t) p.slots);
@@ -779,6 +882,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     st.idx_pooled = c.take<float>((uint64_t) p.pooled_rows * s.idx_dim);
     st.idx_block_pos = c.take<int32_t>(1);
     if (share_rope != nullptr) {
+        st.owns_rope = false;
         st.cos_tab = share_rope->cos_tab;
         st.sin_tab = share_rope->sin_tab;
     } else {
@@ -796,9 +900,9 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
         return 0;   // the caller sees a zero byte count; a half-built state is worse than none
     }
     st.host_step[strata::kernels::kStepCount] = 0;
-    // KV streaming: the authoritative K/V of every cell, pinned and device-mapped, in the identity layout
-    st.host = strata::kernels::KvHostPools{};
-    if (p.mode != 0) {
+    // KV streaming: one authoritative backing pool per layer. A unified borrower already aliases it;
+    // only the owner pins/charges payload storage. Do not overwrite allocation-time translation bindings.
+    if (p.mode != 0 && share_kv == nullptr) {
         const uint64_t hrows = (uint64_t) pages * s.n_head_kv * s.page_size;
         const uint64_t bytes = (uint64_t) pages * strata::kernels::kv_block_bytes(s, qsa_kv_format(st)) + 4 * 256;
         uint8_t* h = nullptr;
@@ -812,6 +916,7 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
                                  (double) g_kv_host_bytes / 1073741824.0);
             return 0;
         }
+        st.kv_host_arena = h; // raw host handle, never copied to a borrower or freed by session_release
         g_kv_host_bytes += bytes;
         Cursor hc{d};
         if (st.kv_hybrid) {
@@ -847,7 +952,15 @@ uint64_t qsa_state_init(const ModelGeometry& g, int64_t max_cells, void* base, Q
     }
     // the page table starts as the IDENTITY, which is the simplest legal mapping and what a caller that does
     // not page at all wants; a streamed state starts with nothing resident, a ring at `block % n_slots`.
-    if (p.mode == 0) {
+    if (st.shared_kv) {
+        st.shared_page_table.assign((size_t) pages, -1);
+        cudaMemcpy(st.page_table, st.shared_page_table.data(), (size_t) pages * 4, cudaMemcpyHostToDevice);
+        if (shared_stream) {
+            cudaMemcpy(const_cast<int32_t*>(st.host.logical_pages), st.shared_page_table.data(),
+                       (size_t) pages * 4, cudaMemcpyHostToDevice);
+            if (share_kv == nullptr) strata::kernels::kv_stream_reset(st.map, nullptr); // once, owner only
+        }
+    } else if (p.mode == 0) {
         std::vector<int32_t> tab((size_t) pages);
         for (int64_t i = 0; i < pages; ++i) tab[(size_t) i] = (int32_t) i;
         cudaMemcpy(st.page_table, tab.data(), tab.size() * 4, cudaMemcpyHostToDevice);
@@ -866,29 +979,40 @@ void qsa_state_zero(const QsaState& st, const ModelGeometry& g, void* stream) {
     // an elastic state zeroes what is mapped (the rest is zeroed when it is mapped)
     const int64_t live_slots = st.kv_elastic >= 0 ? pool_slots_mapped(*g_pools[(size_t) st.kv_elastic]) : st.n_slots;
     const size_t rows = (size_t) live_slots * s.n_head_kv * s.page_size;
-    if (st.kv_hybrid) {
-        cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
-        cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
-        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
-    } else if (st.kv_q4) {
-        cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
-        cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
-    } else if (st.kv_int8) {
-        cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
-        cudaMemsetAsync(st.v_q, 0, rows * s.head_dim, cs);
-        cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
-        cudaMemsetAsync(st.v_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
-    } else {
-        cudaMemsetAsync(st.k_pool, 0, rows * s.head_dim * 2, cs);
-        cudaMemsetAsync(st.v_pool, 0, rows * s.head_dim * 2, cs);
+    if (!st.shared_kv) {
+        if (st.kv_hybrid) {
+            cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
+            cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
+            cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+        } else if (st.kv_q4) {
+            cudaMemsetAsync(st.k_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+            cudaMemsetAsync(st.v_q4, 0, rows * strata::kernels::kv_q4_bytes_per_head((int) s.head_dim), cs);
+        } else if (st.kv_int8) {
+            cudaMemsetAsync(st.k_q, 0, rows * s.head_dim, cs);
+            cudaMemsetAsync(st.v_q, 0, rows * s.head_dim, cs);
+            cudaMemsetAsync(st.k_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
+            cudaMemsetAsync(st.v_scale, 0, rows * (s.head_dim / strata::kernels::KV_Q8_GROUP) * 2, cs);
+        } else {
+            cudaMemsetAsync(st.k_pool, 0, rows * s.head_dim * 2, cs);
+            cudaMemsetAsync(st.v_pool, 0, rows * s.head_dim * 2, cs);
+        }
+        // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
+        // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
+        // carries the unwritten cells past the end, which nothing reads.
+        if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, stream);
     }
-    // A streamed state starts over with nothing resident. Its host copy is not cleared (GBs over PCIe per new
-    // conversation): no reader names a cell before this sequence has written it, and a block copied in whole
-    // carries the unwritten cells past the end, which nothing reads.
-    if (st.kv_mode == 1) strata::kernels::kv_stream_reset(st.map, stream);
     cudaMemsetAsync(st.idx_tail, 0, (size_t) (s.idx_block - 1) * s.idx_dim * 4, cs);
     cudaMemsetAsync(st.idx_dead, 0, (size_t) s.idx_dim * 4, cs);
     cudaMemsetAsync(st.idx_pooled, 0, (size_t) st.idx_pooled_rows * s.idx_dim * 4, cs);
+    // Keep legacy zeroing unchanged; shared sequences also reset their private captured-token state.
+    if (st.shared_kv) {
+        cudaMemsetAsync(st.idx_block_pos, 0, sizeof(int32_t), cs);
+        cudaMemsetAsync(st.step, 0, strata::kernels::qsa_step_bytes(), cs);
+        cudaMemsetAsync(st.attention_status, 0, sizeof(int32_t), cs);
+        cudaMemsetAsync(st.pos_dev, 0, (size_t) s.n_head * 4, cs);
+        std::memset(st.host_step, 0, strata::kernels::qsa_step_bytes() + sizeof(int32_t));
+        std::memset(st.host_pos, 0, (size_t) s.n_head * 4);
+    }
 }
 
 strata::kernels::QsaAttnPools qsa_attn_pools(const QsaState& st) {

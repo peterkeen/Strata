@@ -1,0 +1,652 @@
+#include "strata/core/shared_kv_pages.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstdlib>
+#include <limits>
+#include <new>
+#include <random>
+#include <set>
+#include <stdexcept>
+#include <vector>
+
+using strata::core::SharedKvPages;
+
+// Single-threaded, scoped fault injection for the output-reservation tests.
+// All normal tests use the usual malloc/free-backed allocation path.
+namespace allocation_fault {
+std::ptrdiff_t after = -1;
+// Keep the malloc/free implementation behind a call boundary: GCC otherwise
+// reports a mismatched-new-delete false positive when inlining replacement delete.
+#if defined(__GNUC__)
+__attribute__((noinline))
+#elif defined(_MSC_VER)
+__declspec(noinline)
+#endif
+void deallocate(void* memory) noexcept { std::free(memory); }
+}
+
+void* operator new(std::size_t bytes) {
+    if (allocation_fault::after >= 0 && allocation_fault::after-- == 0) {
+        allocation_fault::after = -1;
+        throw std::bad_alloc();
+    }
+    if (void* memory = std::malloc(bytes == 0 ? 1 : bytes)) return memory;
+    throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+void operator delete(void* memory) noexcept { allocation_fault::deallocate(memory); }
+void operator delete[](void* memory) noexcept { allocation_fault::deallocate(memory); }
+void operator delete(void* memory, std::size_t) noexcept { allocation_fault::deallocate(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { allocation_fault::deallocate(memory); }
+
+namespace {
+size_t checks = 0;
+
+void check(bool ok, const char* label) {
+    ++checks;
+    if (!ok) {
+        std::fprintf(stderr, "FAIL: %s\n", label);
+        std::exit(1);
+    }
+}
+
+template <typename Exception, typename F>
+void check_throws(F action, const char* label) {
+    bool caught = false;
+    try {
+        action();
+    } catch (const Exception&) {
+        caught = true;
+    }
+    check(caught, label);
+}
+
+struct Snapshot {
+    std::vector<std::vector<int32_t>> mappings;
+    size_t free;
+    size_t used;
+};
+
+Snapshot snapshot(const SharedKvPages& pool, size_t sequences) {
+    Snapshot result{{}, pool.free_pages(), pool.used_pages()};
+    for (size_t seq = 0; seq < sequences; ++seq) result.mappings.push_back(pool.mapping(seq));
+    return result;
+}
+
+void unchanged(const SharedKvPages& pool, const Snapshot& before) {
+    check(pool.free_pages() == before.free && pool.used_pages() == before.used,
+          "failure preserves physical accounting");
+    for (size_t seq = 0; seq < before.mappings.size(); ++seq) {
+        check(pool.mapping(seq) == before.mappings[seq], "failure preserves all mappings");
+    }
+}
+
+// Without exposing private refcounts, verify that used_pages counts precisely
+// the union of live IDs, not the number of logical references. The COW/content
+// tests below additionally detect incorrect refcounts on shared live pages.
+void invariants(const SharedKvPages& pool, size_t sequences) {
+    std::set<int32_t> live;
+    for (size_t seq = 0; seq < sequences; ++seq) {
+        std::set<int32_t> local;
+        for (int32_t page : pool.mapping(seq)) {
+            check(page >= 0 && static_cast<size_t>(page) < pool.capacity(), "physical ID in range");
+            check(local.insert(page).second, "no duplicate physical ID within a sequence");
+            live.insert(page);
+        }
+    }
+    check(live.size() == pool.used_pages(), "distinct live IDs match ownership accounting");
+    check(pool.free_pages() + pool.used_pages() == pool.capacity(), "pool accounting balances");
+}
+
+void growth_and_recycling() {
+    SharedKvPages pool(9, 3);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error = "stale";
+    check(pool.capacity() == 9 && pool.free_pages() == 9 && pool.used_pages() == 0,
+          "initial pool is empty");
+    check(pool.ensure(0, 0, 2, copies, error), "first sequence grows");
+    check(copies.empty() && error.empty(), "success clears output state");
+    check(pool.mapping(0) == std::vector<int32_t>({0, 1}), "initial allocation is ascending");
+    check(pool.ensure(1, 0, 1, copies, error), "second sequence grows less");
+    check(pool.ensure(0, 2, 4, copies, error), "first sequence grows again");
+    check(pool.ensure(2, 0, 2, copies, error), "third sequence grows interleaved");
+    check(pool.ensure(1, 1, 3, copies, error), "second sequence catches up");
+    check(pool.mapping(0) == std::vector<int32_t>({0, 1, 3, 4}), "unequal growth has stable first mapping");
+    check(pool.mapping(1) == std::vector<int32_t>({2, 7, 8}), "unequal growth has stable second mapping");
+    check(pool.mapping(2) == std::vector<int32_t>({5, 6}), "unequal growth has stable third mapping");
+    invariants(pool, 3);
+    pool.release(1);
+    check(pool.free_pages() == 3, "release frees only that sequence");
+    pool.release(1);
+    check(pool.free_pages() == 3, "repeated release is harmless");
+    check(pool.ensure(2, 2, 5, copies, error), "released pages can be reused");
+    check(pool.mapping(2) == std::vector<int32_t>({5, 6, 2, 7, 8}), "tail-first release gives deterministic LIFO reuse");
+    check(pool.ensure(0, 0, 2, copies, error), "ensure smaller end retains tail");
+    check(pool.mapping(0).size() == 4 && copies.empty(), "ensure does not truncate implicitly");
+    check(pool.truncate(0, 2, error), "truncate drops only tail");
+    check(pool.mapping(0) == std::vector<int32_t>({0, 1}) && pool.free_pages() == 2,
+          "truncate frees unshared tail");
+    check(pool.truncate(0, std::numeric_limits<size_t>::max(), error), "oversize truncate is no-op");
+    check(pool.mapping(0).size() == 2, "truncate never grows");
+    invariants(pool, 3);
+}
+
+void sharing_and_partial_page_cow() {
+    SharedKvPages pool(8, 3);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(0, 0, 3, copies, error), "source grows");
+    std::vector<std::array<int, 4>> physical(pool.capacity());
+    for (size_t i = 0; i < physical.size(); ++i) physical[i] = {{int(i * 10), 1, 2, 3}};
+    check(pool.ensure(1, 0, 1, copies, error), "destination initially owns a page");
+    check(pool.clone_prefix(0, 1, 3, error), "clone replaces destination with full shared prefix");
+    check(pool.mapping(1) == pool.mapping(0) && pool.used_pages() == 3,
+          "clone releases old destination and shares pages");
+    check(pool.clone_prefix(0, 2, 2, error), "third sequence shares shorter prefix");
+    check(pool.ensure(1, 2, 4, copies, error), "partial-page write COW plus growth");
+    check(copies.size() == 1 && copies[0].from == 2 && copies[0].to == 3,
+          "only shared writable partial page is copied");
+    for (const auto& copy : copies) physical[static_cast<size_t>(copy.to)] = physical[static_cast<size_t>(copy.from)];
+    const auto destination_page = static_cast<size_t>(pool.mapping(1)[2]);
+    physical[destination_page][2] = 99; // Model a write to just one token in the page.
+    check(physical[2][2] == 2 && physical[destination_page][2] == 99,
+          "partial write does not alter shared source page");
+    check(physical[destination_page][0] == 20 && physical[destination_page][3] == 3,
+          "COW preserves the untouched tokens of a partial page");
+    check(pool.mapping(1)[0] == pool.mapping(0)[0] && pool.mapping(1)[1] == pool.mapping(0)[1],
+          "read-only prefix remains shared");
+    check(pool.ensure(1, 2, 4, copies, error) && copies.empty(), "private pages are never copied twice");
+    check(pool.ensure(2, 0, 2, copies, error) && copies.size() == 2, "whole shared prefix can become private");
+    check(copies[0].from == 0 && copies[1].from == 1, "copy records follow logical order");
+    invariants(pool, 3);
+    pool.release(0);
+    check(pool.used_pages() == 6, "release frees only last-reference source page");
+    pool.release(1);
+    check(pool.used_pages() == 2, "release respects references after COW");
+    pool.release(2);
+    check(pool.free_pages() == 8, "last references recycle every page");
+    invariants(pool, 3);
+}
+
+void exhaustion_and_clone_semantics() {
+    SharedKvPages pool(4, 3);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(0, 0, 3, copies, error), "exhaustion source setup");
+    check(pool.clone_prefix(0, 1, 3, error), "exhaustion shared setup");
+    auto before = snapshot(pool, 3);
+    copies.push_back({99, 99});
+    check(!pool.ensure(1, 2, 4, copies, error), "combined COW and growth require two free pages");
+    check(copies.empty() && !error.empty(), "exhaustion returns empty copies and diagnostic");
+    unchanged(pool, before);
+    check(pool.ensure(2, 0, 1, copies, error), "failure did not consume free-list head");
+    check(pool.mapping(2) == std::vector<int32_t>({3}), "failed ensure preserves allocation order");
+    before = snapshot(pool, 3);
+    check(!pool.ensure(1, 0, 3, copies, error), "full pool cannot COW shared pages");
+    unchanged(pool, before);
+    check(pool.ensure(0, 3, 3, copies, error) && copies.empty(), "read-only ensure succeeds with no free pages");
+    check(pool.clone_prefix(0, 2, 3, error), "sharing succeeds in a full pool");
+    check(pool.free_pages() == 1, "clone recycles old destination");
+    before = snapshot(pool, 3);
+    check(!pool.clone_prefix(0, 2, 4, error), "incomplete source rejected before releasing destination");
+    unchanged(pool, before);
+    check(!pool.clone_prefix(0, 0, 4, error), "incomplete self-prefix rejected");
+    unchanged(pool, before);
+    check(pool.clone_prefix(0, 0, 2, error), "self clone truncates to complete prefix");
+    check(pool.mapping(0) == std::vector<int32_t>({0, 1}) && pool.used_pages() == 3,
+          "self clone leaves shared tail alive in other sequences");
+    check(pool.truncate(1, 1, error), "truncate shared tail");
+    check(pool.used_pages() == 3, "truncate keeps pages owned by another sequence");
+    check(pool.clone_prefix(2, 2, 0, error), "empty self clone releases all its references");
+    check(pool.used_pages() == 2, "last shared tail reference is freed");
+    check(pool.clone_prefix(2, 0, 0, error), "empty source prefix replaces populated destination");
+    check(pool.mapping(0).empty() && pool.used_pages() == 1, "empty clone respects remaining owner");
+    check(pool.clone_prefix(1, 1, 1, error), "full self clone is a no-op");
+    pool.release(1);
+    check(pool.used_pages() == 0, "all clone references eventually released");
+    invariants(pool, 3);
+}
+
+void invalid_inputs() {
+    check_throws<std::invalid_argument>([] { SharedKvPages pool(0, 1); }, "zero capacity rejected explicitly");
+    check_throws<std::invalid_argument>([] { SharedKvPages pool(1, 0); }, "zero sequences rejected explicitly");
+    check_throws<std::invalid_argument>([] {
+        SharedKvPages pool(static_cast<size_t>(std::numeric_limits<int32_t>::max()) + 1, 1);
+    }, "capacity overflow rejected before allocation");
+    check_throws<std::invalid_argument>([] {
+        SharedKvPages pool(std::numeric_limits<size_t>::max(), 1);
+    }, "maximal capacity rejected before allocation");
+    SharedKvPages pool(3, 2);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(0, 0, 2, copies, error), "invalid-input setup");
+    check(pool.clone_prefix(0, 1, 2, error), "invalid-input sharing setup");
+    const auto before = snapshot(pool, 2);
+    for (const auto& input : std::vector<std::array<size_t, 3>>{
+             {{2, 0, 1}}, {{std::numeric_limits<size_t>::max(), 0, 0}},
+             {{0, 2, 1}}, {{0, 0, 4}}, {{0, 0, std::numeric_limits<size_t>::max()}},
+             {{0, std::numeric_limits<size_t>::max(), 1}}}) {
+        copies.push_back({9, 9});
+        check(!pool.ensure(input[0], input[1], input[2], copies, error), "invalid ensure rejected");
+        check(!error.empty() && copies.empty(), "invalid ensure resets copies and sets error");
+        unchanged(pool, before);
+    }
+    check(!pool.clone_prefix(2, 0, 0, error), "invalid clone source rejected");
+    unchanged(pool, before);
+    check(!pool.clone_prefix(0, 2, 0, error), "invalid clone destination rejected");
+    unchanged(pool, before);
+    check(!pool.clone_prefix(0, 1, std::numeric_limits<size_t>::max(), error), "huge incomplete clone rejected");
+    unchanged(pool, before);
+    check(!pool.truncate(2, 0, error) && !error.empty(), "invalid truncate rejected");
+    unchanged(pool, before);
+    check_throws<std::out_of_range>([&] { pool.release(2); }, "invalid release throws");
+    check_throws<std::out_of_range>([&] { pool.release(std::numeric_limits<size_t>::max()); }, "huge release throws");
+    check_throws<std::out_of_range>([&] { (void)pool.mapping(2); }, "invalid mapping throws");
+    check_throws<std::out_of_range>([&] { (void)pool.mapping(std::numeric_limits<size_t>::max()); }, "huge mapping throws");
+    unchanged(pool, before);
+    check(pool.ensure(0, 0, 0, copies, error) && copies.empty() && error.empty(), "empty ensure clears error");
+    unchanged(pool, before);
+    pool.release(1);
+    check(pool.ensure(0, 0, 3, copies, error) && copies.empty(), "invalid calls did not inflate refcounts");
+    check(pool.mapping(0) == std::vector<int32_t>({0, 1, 2}), "invalid calls preserved free list");
+    invariants(pool, 2);
+}
+
+void released_records() {
+    SharedKvPages pool(8, 3);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    std::vector<int32_t> released{-10, -20};
+    check(pool.ensure(0, 0, 3, copies, error), "release-record source setup");
+    check(pool.clone_prefix(0, 1, 3, error, &released), "share full source prefix with output");
+    pool.release(0, &released);
+    check(released == std::vector<int32_t>({-10, -20}), "releasing referenced prefix emits nothing");
+    check(pool.used_pages() == 3, "shared prefix remains live after source release");
+    check(pool.ensure(0, 0, 2, copies, error), "move-like destination setup");
+    check(pool.mapping(0) == std::vector<int32_t>({3, 4}), "destination owns separate pages");
+    check(pool.clone_prefix(1, 0, 3, error, &released), "move-like clone replaces destination");
+    check(released == std::vector<int32_t>({-10, -20, 4, 3}), "clone appends only dead destination IDs in pop order");
+    pool.release(1, &released);
+    check(released == std::vector<int32_t>({-10, -20, 4, 3}), "move-like source release emits no transferred IDs");
+    check(pool.clone_prefix(0, 2, 1, error, &released), "share retained head before truncating tail");
+    check(pool.truncate(0, 1, error, &released), "truncate private tail records last references");
+    check(released == std::vector<int32_t>({-10, -20, 4, 3, 2, 1}), "truncate appends tail IDs in deterministic order");
+    check(pool.clone_prefix(0, 0, 0, error, &released), "self clone drops shared head");
+    check(released == std::vector<int32_t>({-10, -20, 4, 3, 2, 1}), "self clone emits nothing for still-shared head");
+    check(pool.ensure(0, 0, 3, copies, error), "grow with recycled last-reference IDs");
+    check(pool.mapping(0) == std::vector<int32_t>({1, 2, 3}), "recording does not change allocation order");
+    check(pool.clone_prefix(0, 0, 1, error, &released), "self clone records private tail");
+    check(released == std::vector<int32_t>({-10, -20, 4, 3, 2, 1, 3, 2}), "self clone appends private tails in pop order");
+    const auto before_noop = released;
+    check(pool.clone_prefix(0, 0, 1, error, &released), "full self clone with output is no-op");
+    check(pool.truncate(0, std::numeric_limits<size_t>::max(), error, &released), "oversize truncate with output is no-op");
+    pool.release(1, &released);
+    check(released == before_noop, "no-op operations preserve prepopulated output");
+    pool.release(0, &released);
+    pool.release(2, &released);
+    check(released == std::vector<int32_t>({-10, -20, 4, 3, 2, 1, 3, 2, 1, 0}), "final owners append last references");
+    check(pool.free_pages() == pool.capacity(), "release records allow complete allocator recovery");
+    check(pool.ensure(1, 0, 8, copies, error), "recovered pool admits full capacity");
+    check(pool.mapping(1) == std::vector<int32_t>({0, 1, 2, 3, 4, 5, 6, 7}), "complete recovery retains deterministic reuse");
+    invariants(pool, 3);
+    pool.release(1, nullptr);
+    check(pool.free_pages() == 8, "explicit null release output preserves old behavior");
+}
+
+void invalid_released_output() {
+    SharedKvPages pool(4, 2);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(0, 0, 2, copies, error), "invalid-output source setup");
+    check(pool.clone_prefix(0, 1, 1, error), "invalid-output shared head setup");
+    check(pool.ensure(1, 1, 2, copies, error), "invalid-output private tail setup");
+    std::vector<int32_t> released{-9, -8};
+    const auto original = released;
+    const auto before = snapshot(pool, 2);
+    const size_t output_capacity = released.capacity();
+    for (const auto& input : std::vector<std::array<size_t, 3>>{
+             {{2, 0, 0}}, {{0, 2, 0}}, {{0, 1, 3}}, {{1, 1, 3}},
+             {{std::numeric_limits<size_t>::max(), 1, 0}},
+             {{0, 1, std::numeric_limits<size_t>::max()}}}) {
+        check(!pool.clone_prefix(input[0], input[1], input[2], error, &released) && !error.empty(),
+              "invalid clone with released output rejected");
+        check(released == original && released.capacity() == output_capacity, "invalid clone leaves output untouched");
+        unchanged(pool, before);
+    }
+    for (size_t seq : {size_t{2}, std::numeric_limits<size_t>::max()}) {
+        check(!pool.truncate(seq, 0, error, &released) && !error.empty(), "invalid truncate with output rejected");
+        check_throws<std::out_of_range>([&] { pool.release(seq, &released); }, "invalid release with output throws");
+        check(released == original && released.capacity() == output_capacity, "invalid release/truncate leaves output untouched");
+        unchanged(pool, before);
+    }
+    check(pool.ensure(1, 2, 3, copies, error), "invalid-output calls preserve free-list head");
+    check(pool.mapping(1) == std::vector<int32_t>({0, 2, 3}), "invalid-output calls preserve allocation order");
+    pool.release(0, &released);
+    check(released == std::vector<int32_t>({-9, -8, 1}), "invalid calls preserved shared/private refcounts");
+    pool.release(1, &released);
+    check(released == std::vector<int32_t>({-9, -8, 1, 3, 2, 0}), "invalid-output pool fully recovers in correct order");
+    check(pool.free_pages() == pool.capacity(), "invalid-output pool recovers all pages");
+    invariants(pool, 2);
+}
+
+template <typename F>
+void fail_allocation(std::ptrdiff_t after, F action) {
+    struct Reset {
+        ~Reset() { allocation_fault::after = -1; }
+    } reset;
+    allocation_fault::after = after;
+    check_throws<std::bad_alloc>(action, "reservation failure throws before ownership mutation");
+}
+
+void released_reservation_failure() {
+    SharedKvPages pool(6, 2);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(0, 0, 3, copies, error), "reservation-failure source setup");
+    check(pool.ensure(1, 0, 2, copies, error), "reservation-failure destination setup");
+    std::vector<int32_t> released(1, -7);
+    check(released.capacity() == released.size(), "fault test output needs allocation on append");
+    const auto before = snapshot(pool, 2);
+    fail_allocation(0, [&] { pool.release(0, &released); });
+    unchanged(pool, before);
+    check(released == std::vector<int32_t>({-7}), "failed release reserve preserves output");
+    fail_allocation(0, [&] { (void)pool.truncate(0, 1, error, &released); });
+    unchanged(pool, before);
+    check(released == std::vector<int32_t>({-7}), "failed truncate reserve preserves output");
+    fail_allocation(0, [&] { (void)pool.clone_prefix(0, 0, 1, error, &released); });
+    unchanged(pool, before);
+    check(released == std::vector<int32_t>({-7}), "failed self-clone reserve preserves output");
+    // First allocation builds the source prefix; second reserves the output.
+    fail_allocation(1, [&] { (void)pool.clone_prefix(0, 1, 3, error, &released); });
+    unchanged(pool, before);
+    check(released == std::vector<int32_t>({-7}), "failed clone output reserve preserves output");
+    fail_allocation(0, [&] { (void)pool.clone_prefix(0, 1, 3, error, &released); });
+    unchanged(pool, before);
+    check(released == std::vector<int32_t>({-7}), "failed clone prefix allocation preserves output");
+    check(pool.ensure(1, 2, 3, copies, error), "failed reservations preserve free list");
+    check(pool.mapping(1) == std::vector<int32_t>({3, 4, 5}), "failed reservations preserve allocation order");
+    check(pool.clone_prefix(0, 1, 3, error, &released), "clone succeeds after reservation failures");
+    check(released == std::vector<int32_t>({-7, 5, 4, 3}), "recovered clone emits all and only old destination pages");
+    // Fully shared release needs no output capacity and must not allocate.
+    allocation_fault::after = 0;
+    pool.release(0, &released);
+    allocation_fault::after = -1;
+    check(released == std::vector<int32_t>({-7, 5, 4, 3}), "fully shared release needs no output reservation");
+    pool.release(1, &released);
+    check(released == std::vector<int32_t>({-7, 5, 4, 3, 2, 1, 0}), "reservation-failure pool fully recovers");
+    check(pool.free_pages() == pool.capacity(), "reservation failures never leak ownership");
+    invariants(pool, 2);
+}
+
+void check_release_forecasts(const SharedKvPages& pool, size_t sequences) {
+    const auto before = snapshot(pool, sequences);
+    const SharedKvPages control = pool;
+    for (size_t seq = 0; seq < sequences; ++seq) {
+        SharedKvPages actual = control;
+        actual.release(seq);
+        // A valid const query must not allocate either.
+        allocation_fault::after = 0;
+        const size_t forecast = pool.free_pages_after_release(seq);
+        const size_t exclusive = pool.exclusive_pages(seq);
+        const bool did_not_allocate = allocation_fault::after == 0;
+        allocation_fault::after = -1;
+        check(did_not_allocate, "release forecast does not allocate");
+        check(forecast == actual.free_pages(), "forecast equals release on independent allocator copy");
+        check(forecast == pool.free_pages() + exclusive, "release forecast is free plus exclusive pages");
+        check(forecast >= pool.free_pages() && forecast <= pool.capacity(), "release forecast within capacity");
+    }
+    unchanged(pool, before);
+    // Compare every ID in the eventual allocation order, not just counters.
+    SharedKvPages queried = pool;
+    SharedKvPages unqueried = control;
+    for (size_t seq = 0; seq < sequences; ++seq) {
+        queried.release(seq);
+        unqueried.release(seq);
+    }
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(queried.ensure(0, 0, queried.capacity(), copies, error), "queried allocator fully recovers");
+    check(unqueried.ensure(0, 0, unqueried.capacity(), copies, error), "unqueried allocator fully recovers");
+    check(queried.mapping(0) == unqueried.mapping(0), "const forecasts preserve all free-list ordering and refcounts");
+}
+
+void free_after_release() {
+    SharedKvPages pool(20, 4);
+    const SharedKvPages& view = pool;
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(view.free_pages_after_release(0) == 20, "empty mapping forecasts current free capacity");
+    check_release_forecasts(view, 4);
+    check(pool.ensure(0, 0, 6, copies, error), "forecast unique source setup");
+    check(view.free_pages_after_release(0) == 20, "unique source release restores full capacity");
+    check_release_forecasts(view, 4);
+    check(pool.clone_prefix(0, 1, 4, error), "forecast first shared prefix");
+    check(pool.clone_prefix(0, 2, 2, error), "forecast three-way shared head");
+    check(view.free_pages_after_release(0) == 16, "source forecast counts only two unique tail pages");
+    check(view.free_pages_after_release(1) == 14 && view.free_pages_after_release(2) == 14,
+          "multiply referenced prefixes add no free capacity");
+    check_release_forecasts(view, 4);
+    check(pool.ensure(1, 4, 7, copies, error), "forecast includes unwritten reserved tail pages");
+    check(view.free_pages_after_release(0) == 13 && view.free_pages_after_release(1) == 14,
+          "forecast distinguishes unique source tail from separate reservation");
+    check_release_forecasts(view, 4);
+    check(pool.ensure(0, 1, 3, copies, error) && copies.size() == 2, "forecast mixed shared and COW-private pages");
+    check(view.free_pages_after_release(0) == 13 && view.free_pages_after_release(1) == 13,
+          "forecast counts noncontiguous last references after COW");
+    check_release_forecasts(view, 4);
+    const auto before = snapshot(pool, 4);
+    check_throws<std::out_of_range>([&] { (void)view.free_pages_after_release(4); }, "forecast invalid sequence throws");
+    check_throws<std::out_of_range>([&] { (void)view.free_pages_after_release(std::numeric_limits<size_t>::max()); },
+                                    "forecast maximal sequence throws");
+    unchanged(pool, before);
+    check_release_forecasts(view, 4);
+    pool.release(0);
+    check(view.free_pages_after_release(0) == pool.free_pages(), "already released mapping contributes zero");
+    check_release_forecasts(view, 4);
+    check(pool.clone_prefix(1, 1, 0, error), "forecast self clone releases complete mapping");
+    check(view.free_pages_after_release(1) == pool.free_pages(), "self-released mapping contributes zero");
+    check_release_forecasts(view, 4);
+    pool.release(2);
+    check(view.free_pages_after_release(3) == 20, "fully recovered pool forecast");
+    check_release_forecasts(view, 4);
+
+    // exclusive_pages(): the capacity a single sequence's release returns, and the
+    // term free_pages_after_release composes. Reclaimed idle claims are costed
+    // with it, so it must never count a page another live owner still references.
+    {
+        SharedKvPages p(20, 4);
+        const SharedKvPages& v = p;
+        std::vector<SharedKvPages::Copy> cs;
+        std::string e;
+        check(v.exclusive_pages(0) == 0 && v.exclusive_pages(3) == 0, "empty sequences own no exclusive pages");
+        check(p.ensure(0, 0, 6, cs, e), "exclusive accessor unique mapping setup");
+        check(v.exclusive_pages(0) == 6 && v.free_pages_after_release(0) == 20,
+              "unique mapping is entirely exclusive");
+        check(p.clone_prefix(0, 1, 4, e), "exclusive accessor shared prefix setup");
+        check(v.exclusive_pages(0) == 2 && v.exclusive_pages(1) == 0,
+              "shared pages are exclusive to neither owner");
+        check(v.free_pages_after_release(0) == 16 && v.free_pages_after_release(1) == 14,
+              "forecast composes free and exclusive pages");
+        allocation_fault::after = 0;
+        const size_t query = v.exclusive_pages(0);
+        allocation_fault::after = -1;
+        check(query == 2, "exclusive accessor does not allocate");
+        check_throws<std::out_of_range>([&] { (void)v.exclusive_pages(4); }, "exclusive accessor invalid sequence throws");
+        p.release(0);
+        check(v.exclusive_pages(0) == 0 && v.free_pages_after_release(0) == v.free_pages(),
+              "released sequence owns no exclusive pages");
+        check(v.exclusive_pages(1) == 4, "releasing the sharing owner leaves the survivor exclusive");
+        check(v.free_pages_after_release(1) == v.free_pages() + 4, "survivor release returns its four tail pages");
+        p.release(1);
+        check(v.exclusive_pages(1) == 0 && v.free_pages() == v.capacity(), "fully recovered pool has no exclusive pages");
+    }
+}
+
+void protected_prefix_restore_capacity() {
+    constexpr size_t page_tokens = 4;
+    constexpr size_t capacity = 262144 / page_tokens; // 65,536 physical pages.
+    constexpr size_t protected_pages = 196608 / page_tokens; // 49,152 pages.
+    constexpr size_t image_pages = 200704 / page_tokens; // 50,176 pages.
+    constexpr size_t request_pages = 208900 / page_tokens; // 52,225 pages.
+    SharedKvPages pool(capacity, 2);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    check(pool.ensure(1, 0, protected_pages, copies, error), "regression protected prefix setup");
+    check(pool.clone_prefix(1, 0, protected_pages, error), "regression main shares protected prefix");
+    check(pool.ensure(0, protected_pages, protected_pages + 8, copies, error), "regression main has unique output reservation");
+    const auto before = snapshot(pool, 2);
+    const SharedKvPages& view = pool;
+    const size_t available = view.free_pages_after_release(0);
+    check(pool.free_pages() == 16376 && available == 16384, "main release would free only eight unique pages");
+    check(available * page_tokens == 65536, "protected prefix leaves 65,536 tokens of free capacity");
+    check(image_pages > available && request_pages > available, "fresh canonical image and full request cannot fit");
+    check(request_pages - protected_pages == 3073 && request_pages - protected_pages <= available,
+          "shared protected prefix needs only 3,073 additional pages");
+    unchanged(pool, before); // Capacity decision must retain the live/slot-prefix alternative.
+
+    SharedKvPages fresh = pool;
+    fresh.release(0);
+    check(fresh.free_pages() == available, "large-pool forecast equals actual main release");
+    const auto released = snapshot(fresh, 2);
+    check(!fresh.ensure(0, 0, image_pages, copies, error), "fresh canonical image restore is inadmissible");
+    check(copies.empty(), "failed image restore has no copies");
+    unchanged(fresh, released);
+    check(!fresh.ensure(0, 0, request_pages, copies, error), "fresh full-request reservation is inadmissible");
+    unchanged(fresh, released);
+    check(fresh.clone_prefix(1, 0, protected_pages, error), "protected prefix can be cloned after release");
+    check(fresh.ensure(0, protected_pages, request_pages, copies, error) && copies.empty(),
+          "cloned protected prefix plus tail fits without COW");
+    check(fresh.free_pages() == 13311, "cloned-prefix reservation leaves 13,311 free pages");
+
+    check(pool.ensure(0, protected_pages, request_pages, copies, error) && copies.empty(),
+          "retained live-prefix alternative also fits without destructive release");
+    check(pool.mapping(0) == fresh.mapping(0), "retained and clone alternatives produce the same deterministic mapping");
+    check(pool.mapping(1) == before.mappings[1] && pool.free_pages() == 13311,
+          "protected source survives fallback with identical remaining capacity");
+    pool.release(0);
+    pool.release(1);
+    check(pool.free_pages() == capacity, "large-pool regression completely recovers capacity");
+}
+
+// Deterministic model test: simulate GPU page copies and single-token writes.
+// Track logical contents independently, so any premature recycling, missing
+// reference, extra reference, or missing/incorrect COW corrupts an assertion.
+void model_test() {
+    constexpr size_t capacity = 13;
+    constexpr size_t sequences = 5;
+    using Page = std::array<int, 4>;
+    SharedKvPages pool(capacity, sequences);
+    std::vector<Page> physical(capacity, Page{{-1, -1, -1, -1}});
+    std::vector<std::vector<Page>> expected(sequences);
+    std::mt19937 rng(0x51A7A);
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    int value = 0;
+
+    for (size_t step = 0; step < 4000; ++step) {
+        const size_t seq = rng() % sequences;
+        const auto before = snapshot(pool, sequences);
+        switch (rng() % 4) {
+        case 0: {
+            const size_t end = rng() % (capacity + 3);
+            const size_t begin = rng() % (end + 2);
+            size_t cow = 0;
+            for (size_t page = begin; page < std::min(end, before.mappings[seq].size()); ++page) {
+                const auto id = before.mappings[seq][page];
+                size_t owners = 0;
+                for (const auto& mapping : before.mappings) {
+                    owners += static_cast<size_t>(std::count(mapping.begin(), mapping.end(), id));
+                }
+                if (owners > 1) ++cow;
+            }
+            const size_t growth = end > expected[seq].size() ? end - expected[seq].size() : 0;
+            const bool should_succeed = begin <= end && end <= capacity && cow + growth <= before.free;
+            copies.push_back({-1, -1});
+            check(pool.ensure(seq, begin, end, copies, error) == should_succeed, "modeled ensure admission");
+            if (!should_succeed) {
+                check(copies.empty() && !error.empty(), "modeled failure output");
+                unchanged(pool, before);
+                break;
+            }
+            check(error.empty() && copies.size() == cow, "modeled copy count");
+            size_t record = 0;
+            for (size_t page = 0; page < before.mappings[seq].size(); ++page) {
+                if (pool.mapping(seq)[page] != before.mappings[seq][page]) {
+                    check(page >= begin && page < end, "COW only changes writable range");
+                    check(record < copies.size(), "every changed mapping has a copy");
+                    const auto copy = copies[record++];
+                    check(copy.from == before.mappings[seq][page] && copy.to == pool.mapping(seq)[page],
+                          "copy matches old and new physical mappings");
+                }
+            }
+            check(record == copies.size(), "no extra copy records");
+            for (const auto& copy : copies) physical[static_cast<size_t>(copy.to)] = physical[static_cast<size_t>(copy.from)];
+            while (expected[seq].size() < pool.mapping(seq).size()) {
+                const size_t page = expected[seq].size();
+                expected[seq].push_back(physical[static_cast<size_t>(pool.mapping(seq)[page])]);
+            }
+            for (size_t page = begin; page < end; ++page) {
+                const size_t token = rng() % 4;
+                physical[static_cast<size_t>(pool.mapping(seq)[page])][token] = ++value;
+                expected[seq][page][token] = value;
+            }
+            break;
+        }
+        case 1: {
+            const size_t from = rng() % sequences;
+            const size_t end = rng() % (capacity + 3);
+            const bool valid = end <= expected[from].size();
+            std::vector<Page> prefix;
+            if (valid) prefix.assign(expected[from].begin(), expected[from].begin() + end);
+            check(pool.clone_prefix(from, seq, end, error) == valid, "modeled clone admission");
+            if (valid) {
+                check(error.empty(), "clone clears error");
+                expected[seq] = prefix;
+            } else {
+                check(!error.empty(), "incomplete clone sets error");
+                unchanged(pool, before);
+            }
+            break;
+        }
+        case 2: {
+            const size_t end = rng() % (capacity + 3);
+            check(pool.truncate(seq, end, error) && error.empty(), "modeled truncate succeeds");
+            if (end < expected[seq].size()) expected[seq].resize(end);
+            break;
+        }
+        default:
+            pool.release(seq);
+            expected[seq].clear();
+            break;
+        }
+        invariants(pool, sequences);
+        for (size_t owner = 0; owner < sequences; ++owner) {
+            check(pool.mapping(owner).size() == expected[owner].size(), "modeled logical length");
+            for (size_t page = 0; page < expected[owner].size(); ++page) {
+                check(physical[static_cast<size_t>(pool.mapping(owner)[page])] == expected[owner][page],
+                      "all live logical contents survive unrelated operations");
+            }
+        }
+    }
+    for (size_t seq = 0; seq < sequences; ++seq) pool.release(seq);
+    check(pool.free_pages() == capacity, "model releases all references");
+    invariants(pool, sequences);
+}
+} // namespace
+
+int main() {
+    growth_and_recycling();
+    sharing_and_partial_page_cow();
+    exhaustion_and_clone_semantics();
+    invalid_inputs();
+    model_test();
+    released_records();
+    invalid_released_output();
+    released_reservation_failure();
+    free_after_release();
+    protected_prefix_restore_capacity();
+    std::printf("shared_kv_pages_test: %zu checks passed\n", checks);
+}

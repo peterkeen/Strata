@@ -128,15 +128,17 @@ __global__ void kv_append_kernel(uint16_t* __restrict__ k_pool, uint16_t* __rest
     if (i >= kv_heads * head_dim) return;
     const int h = i / head_dim, d = i - h * head_dim;
     // `[page][kv_head][page_size][head_dim]`: one head's consecutive cells are contiguous inside a page.
-    // KV streaming: the host copy (identity layout) always, the VRAM page only if the block is resident.
-    const long long page = (long long) table[pos / page_size];
-    if (page >= 0) {
+    // Shared writers consult global backing residency, never a potentially stale sequence reader view.
+    const long long logical = pos / page_size;
+    const long long backing = kv_host_backing_page(host, pos < 0 ? -1 : logical);
+    const long long page = kv_host_gpu_page(host, table, logical, backing);
+    if (page >= 0 && k_pool != nullptr && v_pool != nullptr) {
         const long long row = (page * kv_heads + h) * page_size + (pos % page_size);
         k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
         v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
     }
-    if (host.k_pool != nullptr) {
-        const long long row = ((pos / page_size) * kv_heads + h) * page_size + (pos % page_size);
+    if (host.k_pool != nullptr && host.v_pool != nullptr && backing >= 0) {
+        const long long row = (backing * kv_heads + h) * page_size + (pos % page_size);
         host.k_pool[row * head_dim + d] = f16_from_f32(kcur[i]);
         host.v_pool[row * head_dim + d] = f16_from_f32(vcur[i]);
     }
