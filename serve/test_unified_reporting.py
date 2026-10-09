@@ -51,9 +51,13 @@ class UnifiedReporting(unittest.TestCase):
         with urllib.request.urlopen(self.base + path, timeout=10) as r:
             return json.loads(r.read())
 
-    def assert_slots(self, processing):
+    def assert_slots(self, processing, prompt_tokens=None):
+        if prompt_tokens is None:
+            prompt_tokens = [0] * len(processing)
+        self.assertEqual(len(prompt_tokens), len(processing))
         self.assertEqual(self.get("/slots"),
-                         [{"id": b, "n_ctx": self.engine.max_context, "is_processing": active}
+                         [{"id": b, "n_ctx": self.engine.max_context, "is_processing": active,
+                           "n_prompt_tokens": prompt_tokens[b]}
                           for b, active in enumerate(processing)])
         count = len(processing)
         self.assertEqual(self.get("/props")["total_slots"], count)
@@ -80,7 +84,8 @@ class UnifiedReporting(unittest.TestCase):
             props = self.get("/props")
             self.assertEqual(props["total_slots"], 1)
             self.assertEqual(props["default_generation_settings"]["n_ctx"], 262144)
-            self.assertEqual(self.get("/slots"), [{"id": 0, "n_ctx": 262144, "is_processing": False}])
+            self.assertEqual(self.get("/slots"), [{"id": 0, "n_ctx": 262144, "is_processing": False,
+                                                   "n_prompt_tokens": 0}])
             for key in ("kv_unified", "kv_capacity_cells", "kv_resident", "kv_resident_capacity_cells"):
                 self.assertNotIn(key, props)
 
@@ -94,10 +99,10 @@ class UnifiedReporting(unittest.TestCase):
         self.engine.slot_live[:] = [None, {"state": "reading"}, {"state": "decoding"}]
         with self.svc.status_lock:
             self.svc.status.update(busy=True, queued=4)
-        self.assert_slots([False, True, True])
+        self.assert_slots([False, True, True], prompt_tokens=[3, 0, 0])
         self.engine.slot_live[:] = [None] * 3
         # Service busy can also mean waiting for admission: don't invent a solo request.
-        self.assert_slots([False, False, False])
+        self.assert_slots([False, False, False], prompt_tokens=[3, 0, 0])
         with self.svc.status_lock:
             self.svc.status.update(busy=False, queued=0)
         self.engine.slot_busy[:] = [False] * 3
@@ -201,7 +206,7 @@ class UnifiedReporting(unittest.TestCase):
             next(run)
             self.assertTrue(self.engine.solo_active)
             self.assertEqual(self.engine.slot_live, [None] * 3)
-            self.assert_slots([True, False, False])
+            self.assert_slots([True, False, False], prompt_tokens=[2, 0, 0])
         finally:
             run.close()   # STOP and drain; the solo-active flag must not stick after cancellation
         self.assertFalse(self.engine.solo_active)

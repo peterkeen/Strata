@@ -263,7 +263,13 @@ class UnifiedLifecycle(unittest.TestCase):
         self.assertTrue(engine.slot_busy[0], "a timeout is not a BDONE acknowledgement")
 
     def scheduler(self):
-        engine = StrataEngine.__new__(StrataEngine)
+        # Admission checks the real process's liveness, including after acquiring ctl.
+        # This helper is also borrowed by IncrementalAdmission; keep its fixture self-contained.
+        fixture = UnifiedLifecycle()
+        self.addCleanup(fixture.tearDown)
+        fixture.start("yield")
+        engine = fixture.engine
+        self.assertTrue(engine.alive())
         engine.slot_cv = threading.Condition()
         engine.slot_busy = [True, True]  # protected paused prefills have no decoder to free them
         engine.slot_live = [None, None]
