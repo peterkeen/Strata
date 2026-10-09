@@ -278,6 +278,32 @@ present in every arm. Observed expert cache: 6407 MiB / 2430 slots in arm (a) an
 (b), so the MTP feature itself costs ~21 MiB and ~8 expert slots here. No steady batch CPU fraction, COW internals,
 park/restore timing or output quality was measured in this A/B.
 
+### Full-context measurement (262144 cells, 2026-10-09)
+
+The same feature measured at the context the engine is meant to serve, on the deployed NVFP4 build
+(`engine/strata-nibbler` sha256 `25cec204…`, pack `huihui-nvfp4`), one RTX 5060 Ti, greedy temperature 0,
+`--max-context 262144 --kv int8 --kv-resident 32768 --kv-unified --no-kv-grow --spec 4 --spec-min-p 0.5
+--prefill auto:8192 --batch 2`. The **only** knob under test is `--batch-mtp`; both sides use one proposal per
+slot. Three repetitions per arm in an alternating order, every repetition in the evidence record:
+
+| Arm | MTP on | MTP off | Change |
+| --- | ---: | ---: | ---: |
+| Solo stream, 125 000-cell prompt, 128 output tokens | decode **29.81** tok/s, prefill 1827 tok/s | decode **23.62** tok/s, prefill 1888 tok/s | decode **+26.2 %**, prefill −3.2 % |
+| Two concurrent 125 000-cell streams, 128 each | Σ per-stream **38.19**, dual-decode window **60.21** tok/s | Σ **29.82**, window **47.48** tok/s | **+28.0 % / +26.8 %** |
+| Short prompt, 256 output tokens | decode **30.53** tok/s | decode **23.89** tok/s | **+27.8 %** (wall −18.9 %) |
+| 250 000-cell prompt (one run per side) | decode 29.22 tok/s | decode 23.08 tok/s | +26.6 % |
+
+Draft acceptance on these prompts is 63/63, 63/63 with one 64/63/1, 127/127 and 31/31 - near total, because the
+workloads are greedy and highly predictable; a chat workload will accept fewer. Native evidence:
+`strata batch: 64 windows, avg 1.98 rows` with MTP against `127 windows, avg 1.00 rows` without, i.e. one proposal
+per window. No pressure or park event occurred in any run. The prefill rate is 3.2 % lower with MTP at 125k because
+the feature's own VRAM keeps 1845 expert slots against 1890 and the engine picks a smaller adaptive prefill chunk
+(1656 against 1693 borrowed slots) - a cost of the feature, not a settings difference. Expert-cache hit rate during
+decode was 19-21 %. The aggregate wall rate is flat because a 125k prompt is prefill-dominated; the decode figures
+above are the ones the drafts affect. Host note: two repetitions of the dual arm had to be re-run because swap was
+exhausted mid-run (the record includes both discarded attempts and the per-run RAM/swap state); no failed-run number
+is quoted.
+
 ## Together with conversation parking
 
 `--conversation-cache-mib N --conversation-cache-slots K` (DETAILS.md) works with the layer split too: a request
