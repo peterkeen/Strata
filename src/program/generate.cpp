@@ -4154,7 +4154,7 @@ int main(int argc, char** argv) {
                             strata::core::vmm_available() &&
                             // the batch slots carve their own K/V and --vram-elastic's cache is not one VMM range
                             o.batch == 0 && !o.vram_elastic && o.peer_device < 0;
-            if (asked && !on && (o.kv_grow_given || (ev != nullptr && ev[0] != '\0')))
+            if (asked && !on && (o.kv_grow_given || (kv_grow_env != nullptr && kv_grow_env[0] != '\0')))
                 std::fprintf(stderr, "strata generate: --kv-grow is off (one GPU, a profile, the whole K/V in VRAM, "
                                      "every expert in RAM, no --batch, --vram-elastic or --peer-device)\n");
             const char* iv = std::getenv("STRATA_KV_GROW_INIT");
