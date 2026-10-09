@@ -1,6 +1,15 @@
 # Incremental unified KV work log
 
-Status: **port in progress on `kv-unified`; the port is being validated**.
+Status: **validated on isolated hardware; this branch is the fork's working main line**.
+
+**Branch layout (fork `peterkeen/Strata`).** `main` is pinned to upstream Strata
+(`Niko1221/Strata`) and is not developed in this fork: it is the reference the
+fork rebases onto. All fork development happens on **`kv-unified`**, which is the
+fork's main line and carries three change sets together: the unified-KV port, the
+NVFP4 kernels and expert cache, and the opt-in unified batch-MTP work (below).
+Feature branches under `feature/*` are historical. No pull requests are opened
+from this fork; changes land on `kv-unified`.
+
 Port base: upstream main `fb58e0db` (following the 0.1.40.x lineage;
 `CMakeLists.txt` identifies this base and the port as 0.1.41).
 
