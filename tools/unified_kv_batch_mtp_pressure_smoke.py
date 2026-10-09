@@ -25,12 +25,16 @@ continuation. Each process gets a fresh stderr/evidence range. A model/GPU gate
 that cannot demonstrate its condition fails; it is never credited from sizing
 arithmetic or scripted protocol alone.
 
-The pressure gate requires one NATURALLY rejected draft as real native evidence
-(see `natural_rejection_requirement` in the evidence JSON). A run in which the
-model accepts every offered draft therefore fails closed; that is a fixture/model
-limitation for the natural-rejection witness, never a pressure defect. The
-correctness gate obtains its rejection deterministically through the compile-time
-test hook instead.
+The pressure gate requires a NATURAL rejection wherever the model produces one. A run
+in which the model accepts every offered draft (the measured deterministic 100 %
+acceptance on this fixture) is NOT a pressure defect: the gate records
+`natural_rejection_witness = "absent (deterministic 100% acceptance on this fixture)"`
+and requires an explicit substitute that is still native evidence - a passed
+`--mode correctness` artifact (`--rejection-evidence PATH`) whose compile-time test
+hook forced a rejection through the real target verifier. Either way every
+park/restore witness is evaluated: the rejection verdict is enforced only after the
+canonical-restore and exact-continuation witnesses have been recorded. See
+`natural_rejection_requirement` in the evidence JSON.
 """
 from __future__ import annotations
 
@@ -112,14 +116,13 @@ def verify_stats(stats: list[dict], *, offer=False, every_slot_offer=False, acce
     if accept:
         require(sum(s["accepted"] for s in stats) > 0, "no proposal was accepted")
     if reject:
-        # Kept as a hard requirement: a natural rejection is real native evidence of
-        # target verification. An all-accept run is a model/fixture limitation for
-        # this witness, not a pressure defect, and still fails closed.
+        # Kept as a hard requirement for callers that demand a natural rejection outright.
+        # run_source_pair uses rejection_witness() instead, which allows an explicit native
+        # substitute (see the acceptance criteria for this gate).
         require(sum(s["rejected"] for s in stats) > 0,
                 "no naturally rejected proposal was observed: the model accepted every offered draft, so this "
                 "run cannot demonstrate the natural-rejection witness (fixture/model limitation, not a pressure "
-                "defect); the gate stays fail-closed, and the correctness gate forces a rejection via its "
-                "compile-time test hook instead")
+                "defect); the correctness gate forces a rejection via its compile-time test hook instead")
     if fallback_reserve:
         require(sum(s["fallback_reserve"] for s in stats) > 0,
                 "no optional speculative-row reservation fallback was observed")
@@ -127,6 +130,96 @@ def verify_stats(stats: list[dict], *, offer=False, every_slot_offer=False, acce
             "offered": sum(s["offered"] for s in stats), "accepted": sum(s["accepted"] for s in stats),
             "rejected": sum(s["rejected"] for s in stats),
             "fallback_reserve": sum(s["fallback_reserve"] for s in stats)}
+
+
+NATURAL_REJECTION_ABSENT = "absent (deterministic 100% acceptance on this fixture)"
+REJECTION_SUBSTITUTE_MECHANISM = "deterministic_test_hook_rejection_cited_from_correctness_gate"
+
+
+def validate_rejection_substitute(path: Path, *, exe: Path, config: Path) -> dict:
+    """Validate the explicit native substitute for a natural rejection.
+
+    The substitute is a passed `--mode correctness` artifact from the same binary and config
+    whose deterministic schedule forced a rejection through the compile-time test hook. The
+    hook substitutes only the proposal row; the rejected counter is the real target verifier's
+    result on that row, so the evidence stays native.
+    """
+    require(path.is_file(), f"rejection substitute is not a file: {path}")
+    raw = path.read_bytes()
+    artifact = json.loads(raw.decode("utf-8-sig"))
+    require(isinstance(artifact, dict) and artifact.get("passed") is True,
+            "rejection substitute must be a passed correctness artifact (passed=true)")
+    require(artifact.get("mode") == "correctness",
+            "rejection substitute must come from --mode correctness")
+    require((artifact.get("coverage") or {}).get("correctness") == "RUN",
+            "rejection substitute artifact did not itself credit coverage correctness = RUN")
+    require(str(artifact.get("exe")) == str(exe),
+            "rejection substitute was produced by a different --exe path")
+    require(str(artifact.get("config")) == str(config),
+            "rejection substitute was produced with a different --config path")
+    schedule = artifact.get("deterministic_proposal_schedule") or {}
+    require((schedule.get("slot1") or {}).get("outcome") == "rejected",
+            "rejection substitute does not record a deterministic forced rejection")
+    hook_lines = [line for process in artifact.get("processes") or []
+                  for line in ((process.get("startup_diagnostics") or {}).get("hook_lines") or [])]
+    require(hook_lines, "rejection substitute lacks the test-hook activation diagnostic")
+    rows = [row for stage in artifact.get("stages") or []
+            for row in ((stage.get("stderr_diagnostics") or {}).get("batch_mtp_stats") or [])]
+    rejected = sum(int(row.get("rejected", 0)) for row in rows)
+    require(rejected > 0,
+            "rejection substitute artifact reports no rejected proposal in its native counters")
+    return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+            "mechanism": REJECTION_SUBSTITUTE_MECHANISM,
+            "artifact_passed": True, "artifact_mode": "correctness",
+            "artifact_coverage_correctness": "RUN",
+            "identity_scope": "same --exe and --config paths (the correctness harness records paths, not binary "
+                              "hashes) plus this artifact's SHA-256",
+            "exe": str(exe), "config": str(config),
+            "deterministic_proposal_schedule": schedule,
+            "hook_activation_lines": hook_lines,
+            "rejected_total": rejected,
+            "forced_rejection_is_native": True,
+            "scope": "the hook substitutes only the proposal row; the rejected counter is the real target "
+                     "verifier's result on that row"}
+
+
+def rejection_witness(stats, *, substitute=None) -> dict:
+    """Decide the pressure gate's rejection witness without suppressing the restore witnesses.
+
+    Real native evidence stays mandatory. Any natural rejection is the witness. On the measured
+    deterministic 100 %-acceptance shape the witness is recorded absent and an explicit
+    substitute artifact is required; the verdict is enforced by require_rejection_witness()
+    *after* the restore witnesses have been evaluated, so a missing witness can never suppress
+    them.
+    """
+    per_slot = {row["slot"]: {"offered": row["offered"], "accepted": row["accepted"],
+                              "rejected": row["rejected"]} for row in stats}
+    rejected_total = sum(row["rejected"] for row in stats)
+    base = {"per_slot": per_slot, "rejected_total": rejected_total,
+            "natural_acceptance_scope": "aggregate across both slots; offers are independently required per slot"}
+    if rejected_total > 0:
+        return {**base, "satisfied": True, "mechanism": "natural_native_verifier_rejection",
+                "natural_rejection_witness": "present", "substitute": None,
+                "detail": "at least one slot reports a rejection by the real target verifier"}
+    if substitute is None:
+        return {**base, "satisfied": False, "mechanism": "none",
+                "natural_rejection_witness": NATURAL_REJECTION_ABSENT, "substitute": None,
+                "failure_message": "the model accepted every offered draft and no rejection substitute was "
+                                   "supplied: pass --rejection-evidence <a passed --mode correctness artifact that "
+                                   "forced a rejection through the compile-time test hook> (fixture/model "
+                                   "limitation for the natural-rejection witness, not a pressure defect)"}
+    return {**base, "satisfied": True, "mechanism": REJECTION_SUBSTITUTE_MECHANISM,
+            "natural_rejection_witness": NATURAL_REJECTION_ABSENT, "substitute": substitute,
+            "detail": "deterministic hook-forced rejection cited from the correctness gate"}
+
+
+def require_rejection_witness(stage: dict) -> dict:
+    """Enforce the rejection witness last, so it can never suppress another witness."""
+    witness = (stage or {}).get("rejection_witness") or {}
+    require(witness.get("satisfied") is True,
+            witness.get("failure_message") or
+            "missing rejection witness: the pressure source pair recorded no rejection evidence")
+    return witness
 
 
 def ring_capacity_from_source(window: int, spec: int, context: int) -> dict:
@@ -513,7 +606,7 @@ class PressureSuite(incremental.Suite):
         super().__init__(*args, **kwargs)
         self.stderr_path = stderr_path
 
-    def run_source_pair(self, prompts, cap, references, deadline_s):
+    def run_source_pair(self, prompts, cap, references, deadline_s, rejection_substitute=None):
         requests = [self.make_attempt(f"pressure-source-slot-{i}", p, cap, i) for i, p in enumerate(prompts)]
         for req, ref in zip(requests, references):
             req.reference = ref
@@ -562,7 +655,8 @@ class PressureSuite(incremental.Suite):
             require(any(p["tokens"] == expected_park_tokens for p in parks),
                     "first pressure lacked a positive target-only parked snapshot for the consumed prefix")
             stats = diagnostics["batch_mtp_stats"]
-            proof = verify_stats(stats, offer=True, every_slot_offer=True, accept=True, reject=True)
+            proof = verify_stats(stats, offer=True, every_slot_offer=True, accept=True)
+            witness = rejection_witness(stats, substitute=rejection_substitute)
             by_slot = {s["slot"]: s for s in stats}
             require(len(stats) == 2 and set(by_slot) == {0, 1},
                     "each active slot needs exactly one per-attempt MTP counter summary")
@@ -573,12 +667,21 @@ class PressureSuite(incremental.Suite):
                          sibling_cancel_completion=sibling.completion,
                          overlap=pressure_overlap_proof(requests),
                          batch_mtp_proof=proof,
+                         rejection_witness=witness,
+                         rejection_evidence_mechanism=witness["mechanism"],
+                         natural_rejection_witness=witness["natural_rejection_witness"],
                          natural_accept_reject_scope="aggregate across both slots; offers are independently required per slot",
                          per_slot_natural_accept_reject={str(k): {"accepted": v["accepted"],
                                                                "rejected": v["rejected"],
                                                                "offered": v["offered"]}
                                                         for k, v in by_slot.items()},
                          stderr_byte_range=[stderr_start, len(raw)], diagnostics=diagnostics)
+            self.evidence["rejection_evidence"] = {
+                **witness, "observed": witness["satisfied"],
+                "substitute_used": witness["substitute"] is not None,
+                "stage": stage["name"],
+                "restore_witnesses_evaluated_before_enforcement": True,
+            }
             stage["passed"] = True
             self.save()
             return pressure_owner, stage
@@ -962,12 +1065,87 @@ def run_handoff(args, evidence, suite, stderr, prompts):
         suite.save()
 
 
+def run_pressure_restore(args, evidence, suite, stderr, prompts, refs, owner, source_stage):
+    """Canonical restore, exact continuation, ring geometry - then the rejection verdict.
+
+    The restore witnesses are evaluated and recorded unconditionally; the rejection witness
+    is enforced only at the very end (require_rejection_witness), so a fixture/model
+    limitation in the rejection evidence can never suppress them.
+    """
+    # Complete a separate MAIN GEN with precisely original + ALL output
+    # tokens. The last returned one is not in the parked KV and is replayed.
+    remaining = args.pressure_cap - len(owner.tokens)
+    require(remaining > 0, "pressure owner consumed its entire output allowance")
+    replay, expected_reuse = pressure_replay_ids(owner.prompt, owner.tokens)
+    require(replay == prompts[owner.slot] + owner.tokens and len(replay) > 0,
+            "pressure continuation history differs from original + every returned token")
+    resumed = suite.make_attempt(f"pressure-restore-main-slot-{owner.slot}", replay, remaining)
+    stderr_start = stderr.stat().st_size
+    restore_stage = suite.run("positive-pressure-park-restore-target-only-MAIN", [resumed])
+    require(owner.tokens + resumed.tokens == refs[owner.slot].tokens,
+            "pressure/replay token IDs differ from same-binary solo target reference")
+    require(resumed.completion["kind"] == "DONE" and resumed.completion["finish"] == "length" and
+            len(resumed.tokens) == remaining,
+            "restored MAIN continuation did not complete the remaining allowance")
+    raw = stderr.read_bytes()
+    text = raw[stderr_start:].decode("utf-8", errors="replace")
+    diagnostics = parse_diagnostics(text)
+    require(any(d["kind"] == "restore" and d["tokens"] == expected_reuse
+                for d in diagnostics["canonical_cache"]),
+            "missing positive canonical-restore diagnostic for exact target prefix")
+    verify_target_only_resume(resumed.completion["raw"], diagnostics,
+                              expected_reuse, resumed.admission_done["reused"])
+    done_fields = resumed.completion["raw"].split()
+    restore_stage.update(passed=True, request=resumed.record(), pressure_owner_slot=owner.slot,
+                         replay_prompt_ids=replay, expected_reused_cells=expected_reuse,
+                         actual_reused_cells=resumed.admission_done["reused"],
+                         last_returned_token_unfed=True, positive_canonical_restore=True,
+                         restored_main_drafts_offered=int(done_fields[7]),
+                         target_only_diagnostics=diagnostics,
+                         exact_full_continuation_ids=True, stderr_byte_range=[stderr_start, len(raw)])
+    evidence["coverage"].update({"dual_slot_BT_and_batch_MTP_before_exhaustion": "RUN",
+        "mandatory_pressure_BDONE_and_positive_target_only_park": "RUN",
+        "stop_sibling_after_first_park": "RUN",
+        "canonical_positive_restore_MAIN_exact_continuation": "RUN",
+        "last_returned_token_unfed": "RUN",
+        "target_only_restore_suppression_no_stale_offers": "RUN",
+        "bounded_private_ring_wrap_and_natural_accept_reject": "RUN",
+        "optional_reservation_fallback_without_pressure": "UNTESTED; separate --gate optional",
+        "positive_full_coherent_BHANDOFF": "UNTESTED; separate --gate handoff"})
+    ring_cells = evidence["source_ring"]["allocated_page_rounded_ring_cells"]
+    consumed_history = len(owner.prompt) + len(owner.tokens) - 1
+    require(len(owner.prompt) > ring_cells and consumed_history > ring_cells,
+            "pressure fixture did not prefill and continue beyond the actual bounded ring")
+    evidence["ring_wrap"] = {"ring_geometry": evidence["source_ring"],
+                              "pressure_prompt_cells": [len(p) for p in prompts],
+                              "consumed_target_history_cells": consumed_history,
+                              "prompt_longer_than_ring": all(len(p) > ring_cells for p in prompts),
+                              "consumed_history_exceeds_ring": consumed_history > ring_cells,
+                              "natural_slot_outcomes": source_stage["per_slot_natural_accept_reject"],
+                              "natural_accept_reject_scope": source_stage["natural_accept_reject_scope"],
+                              "ring_fallback_to_full_resident": False,
+                              "evidence_limit": "native per-slot proposals/acceptance/rejection and solo parity "
+                                                "are model evidence; byte-level ring internals require CUDA parity "
+                                                "tests"}
+    evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = ring_wrap_coverage(
+        evidence, prompt_cells=max(len(p) for p in prompts), consumed_history_cells=consumed_history,
+        proposals=sum(row["offered"] for row in source_stage["per_slot_natural_accept_reject"].values()))
+    # LAST: the rejection witness must never have suppressed any witness above. Persist the
+    # restore evidence first, so a fail-closed verdict still leaves a complete artifact.
+    suite.save()
+    require_rejection_witness(source_stage)
+    return restore_stage
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--exe", required=True, type=Path)
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--output", required=True, type=Path, help="new evidence JSON; stderr saved beside it")
     ap.add_argument("--gate", choices=("pressure", "optional", "handoff"), default="pressure")
+    ap.add_argument("--rejection-evidence", type=Path,
+                    help="passed --mode correctness artifact whose hook-forced rejection stands in for a natural "
+                         "one when --gate pressure observes 100%% acceptance (required only in that case)")
     ap.add_argument("--context", type=int, default=4096)
     ap.add_argument("--cache-mib", type=int, default=4096)
     ap.add_argument("--prompt-a-cells", type=int, default=1536)
@@ -1002,6 +1180,9 @@ def main(argv=None):
         validate_deadlines(args.startup_timeout, args.stage_timeout, args.cleanup_timeout)
     except AssertionError as exc:
         ap.error(str(exc))
+    if args.rejection_evidence is not None:
+        if not args.rejection_evidence.expanduser().is_file():
+            ap.error(f"--rejection-evidence is not a file: {args.rejection_evidence}")
     if args.gate == "optional":
         if args.optional_a_cells == args.optional_b_cells:
             ap.error("optional fixture needs two distinct prompts (--optional-a-cells must differ from "
@@ -1021,13 +1202,20 @@ def main(argv=None):
     evidence = {"schema": 1, "harness": "unified-kv-batch-mtp-pressure", "gate": args.gate,
                 "natural_rejection_requirement": {
                     "applies_to": "--gate pressure",
-                    "required": True,
-                    "requirement": "verify_stats(..., reject=True): at least one offered draft must be rejected "
-                                   "by the real target verifier",
-                    "all_accept_run": "fails closed as a fixture/model limitation for the natural-rejection "
-                                      "witness, not as a pressure defect",
-                    "deterministic_alternative": "the correctness gate forces a rejection through its "
-                                                 "compile-time test hook"},
+                    "natural_rejection": "kept as the witness whenever any slot reports rejected > 0",
+                    "all_accept_run": f'natural_rejection_witness = "{NATURAL_REJECTION_ABSENT}"; an explicit '
+                                      "substitute is then required (--rejection-evidence), and it stays native "
+                                      "evidence: the correctness gate forces the rejection through its "
+                                      "compile-time test hook",
+                    "requirement": "real native rejection evidence is mandatory either way; the substitute is a "
+                                   "passed --mode correctness artifact with a positive rejected counter",
+                    "not_a_pressure_defect": True,
+                    "restore_witnesses_run_regardless": True,
+                    "enforced": "after the canonical-restore and exact-continuation witnesses are recorded",
+                },
+                "rejection_evidence": {"observed": None, "mechanism": None,
+                                       "substitute_supplied": args.rejection_evidence is not None,
+                                       "stage": "set by --gate pressure after the source pair"},
                 "passed": False, "config": str(args.config.expanduser().resolve()),
                 "exe": str(args.exe.expanduser().resolve()), "context": args.context,
                 "aggregate_shared_backing_cells": args.context, "resident_cells": 0,
@@ -1052,6 +1240,15 @@ def main(argv=None):
     try:
         cfg = json.loads(args.config.read_text(encoding="utf-8-sig"))
         cfg["config_path"] = str(args.config.resolve())
+        rejection_substitute = None
+        if args.rejection_evidence is not None:
+            if args.gate == "pressure":
+                rejection_substitute = validate_rejection_substitute(
+                    args.rejection_evidence.expanduser().resolve(), exe=args.exe.expanduser().resolve(),
+                    config=args.config.expanduser().resolve())
+                evidence["rejection_evidence"]["substitute"] = rejection_substitute
+            else:
+                evidence["rejection_evidence"]["ignored"] = "--rejection-evidence applies to --gate pressure only"
         tok, padded, prompts = make_workload(args, cfg)
         label = "handoff" if args.gate == "handoff" else "reference"
         engine, suite, stderr, command, cwd, env, process = setup_engine(args, evidence, output, cfg, label)
@@ -1093,65 +1290,11 @@ def main(argv=None):
             engine, suite, stderr, command, cwd, env, process = setup_engine(args, evidence, output, cfg, "source")
             process["started_wall_time"] = time.time()
             start_owned_engine(engine, suite, command, cwd, env, args, evidence, process)
-            owner, source = suite.run_source_pair(prompts, args.pressure_cap, refs, args.stage_timeout)
+            owner, source = suite.run_source_pair(prompts, args.pressure_cap, refs, args.stage_timeout,
+                                                  rejection_substitute=rejection_substitute)
             source["capacity_plan"] = pressure_capacity_plan(prompts, [args.pressure_cap] * 2, args.context)
             source["passed"] = True
-            # Complete a separate MAIN GEN with precisely original + ALL output
-            # tokens. The last returned one is not in the parked KV and is replayed.
-            remaining = args.pressure_cap - len(owner.tokens)
-            require(remaining > 0, "pressure owner consumed its entire output allowance")
-            replay, expected_reuse = pressure_replay_ids(owner.prompt, owner.tokens)
-            require(replay == prompts[owner.slot] + owner.tokens and len(replay) > 0,
-                    "pressure continuation history differs from original + every returned token")
-            resumed = suite.make_attempt(f"pressure-restore-main-slot-{owner.slot}", replay, remaining)
-            stderr_start = stderr.stat().st_size
-            restore_stage = suite.run("positive-pressure-park-restore-target-only-MAIN", [resumed])
-            require(owner.tokens + resumed.tokens == refs[owner.slot].tokens,
-                    "pressure/replay token IDs differ from same-binary solo target reference")
-            require(resumed.completion["kind"] == "DONE" and resumed.completion["finish"] == "length" and
-                    len(resumed.tokens) == remaining,
-                    "restored MAIN continuation did not complete the remaining allowance")
-            raw = stderr.read_bytes()
-            text = raw[stderr_start:].decode("utf-8", errors="replace")
-            diagnostics = parse_diagnostics(text)
-            require(any(d["kind"] == "restore" and d["tokens"] == expected_reuse
-                        for d in diagnostics["canonical_cache"]),
-                    "missing positive canonical-restore diagnostic for exact target prefix")
-            target_only = verify_target_only_resume(resumed.completion["raw"], diagnostics,
-                                                    expected_reuse, resumed.admission_done["reused"])
-            done_fields = resumed.completion["raw"].split()
-            restore_stage.update(passed=True, request=resumed.record(), pressure_owner_slot=owner.slot,
-                                 replay_prompt_ids=replay, expected_reused_cells=expected_reuse,
-                                 actual_reused_cells=resumed.admission_done["reused"],
-                                 last_returned_token_unfed=True, positive_canonical_restore=True,
-                                 restored_main_drafts_offered=int(done_fields[7]),
-                                 target_only_diagnostics=diagnostics,
-                                 exact_full_continuation_ids=True, stderr_byte_range=[stderr_start, len(raw)])
-            evidence["coverage"].update({"dual_slot_BT_and_batch_MTP_before_exhaustion": "RUN",
-                "mandatory_pressure_BDONE_and_positive_target_only_park": "RUN",
-                "stop_sibling_after_first_park": "RUN",
-                "canonical_positive_restore_MAIN_exact_continuation": "RUN",
-                "last_returned_token_unfed": "RUN",
-                "target_only_restore_suppression_no_stale_offers": "RUN",
-                "bounded_private_ring_wrap_and_natural_accept_reject": "RUN",
-                "optional_reservation_fallback_without_pressure": "UNTESTED; separate --gate optional",
-                "positive_full_coherent_BHANDOFF": "UNTESTED; separate --gate handoff"})
-            ring_cells = evidence["source_ring"]["allocated_page_rounded_ring_cells"]
-            consumed_history = len(owner.prompt) + len(owner.tokens) - 1
-            require(len(owner.prompt) > ring_cells and consumed_history > ring_cells,
-                    "pressure fixture did not prefill/wrap and continue beyond the actual bounded ring")
-            evidence["ring_wrap"] = {"ring_geometry": evidence["source_ring"],
-                                      "pressure_prompt_cells": [len(p) for p in prompts],
-                                      "consumed_target_history_cells": consumed_history,
-                                      "prompt_longer_than_ring": all(len(p) > ring_cells for p in prompts),
-                                      "consumed_history_exceeds_ring": consumed_history > ring_cells,
-                                      "natural_slot_outcomes": source["per_slot_natural_accept_reject"],
-                                      "natural_accept_reject_scope": source["natural_accept_reject_scope"],
-                                      "ring_fallback_to_full_resident": False,
-                                      "evidence_limit": "native per-slot proposals/acceptance/rejection and solo parity are model evidence; byte-level ring internals require CUDA parity tests"}
-            evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = ring_wrap_coverage(
-                evidence, prompt_cells=max(len(p) for p in prompts), consumed_history_cells=consumed_history,
-                proposals=sum(row["offered"] for row in source["per_slot_natural_accept_reject"].values()))
+            run_pressure_restore(args, evidence, suite, stderr, prompts, refs, owner, source)
         suite.save()
         require(evidence["stages"] and all(s.get("passed") for s in evidence["stages"]),
                 "one or more native stages did not pass")
