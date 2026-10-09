@@ -60,7 +60,9 @@ Measured (private subprocesses on an RTX 5060 Ti, validation binary
 joint overlap with exact 16/16 token parity and offered 17 / accepted 13 /
 rejected 4 (including a forced accept and a forced reject); the max-new edge and
 the cancel/same-slot-reuse edges; terminal target-only tails at partial-page
-offsets 1/2/3; a shared-pool pressure park of 2048 tokens with an exact 2048-cell
+offsets 1/2/3 (reuse 105/106/103, exact branch parity) whose divergent branch
+reached measured depths `[8, 8, 8]` with the default `--tail-suffix new-user-turn`;
+a shared-pool pressure park of 2048 tokens with an exact 2048-cell
 canonical restore and zero resumed MAIN drafts; the optional-row
 `fallback_reserve` witness (slot 1 `fallback_reserve=1`, one attributed park,
 sibling cancel); and the coherent full-slot `BHANDOFF` transfer (3-token source
@@ -82,11 +84,14 @@ Historical statements this milestone supersedes: the "no MTP drafts in batch
 windows" limit now applies only without the flag (penalties are still not applied
 in batch windows), and "slot promotion retained upstream's stale MTP-proposal
 history" is superseded by the explicit target-only suppression above. The engine's
-own `--help` line for `--kv-unified` still lists `--batch-mtp` among the options
-it excludes; that string predates this change and no longer matches the measured
-runs (it needs a source edit by the primary). Not claimed: HIP/SYCL builds,
-byte-level ring internals, COW page identity, park ordering, multi-token divergent
-suffix restore (UNTESTED), output quality, and no production deploy or reload.
+own `--help` line for `--kv-unified` listed `--batch-mtp` among the options it
+excludes (audit finding M2); the measured runs use both flags together, and that
+string is a separate source-tree correction. Not claimed: HIP/SYCL builds,
+byte-level ring internals, COW page identity, park ordering, output quality, and no
+production deploy or reload. Divergent-suffix depth is RUN for the default
+`--tail-suffix new-user-turn` (depths `[8, 8, 8]`); the other catalog wordings
+(`open-fence`, `open-list-primer`, `assistant-lead-in`, `meta-instruction`) were
+not swept on hardware.
 
 ## Work units
 
