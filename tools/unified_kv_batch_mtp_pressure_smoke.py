@@ -24,6 +24,13 @@ separate clean process from their source; handoff references run only after the
 continuation. Each process gets a fresh stderr/evidence range. A model/GPU gate
 that cannot demonstrate its condition fails; it is never credited from sizing
 arithmetic or scripted protocol alone.
+
+The pressure gate requires one NATURALLY rejected draft as real native evidence
+(see `natural_rejection_requirement` in the evidence JSON). A run in which the
+model accepts every offered draft therefore fails closed; that is a fixture/model
+limitation for the natural-rejection witness, never a pressure defect. The
+correctness gate obtains its rejection deterministically through the compile-time
+test hook instead.
 """
 from __future__ import annotations
 
@@ -105,7 +112,14 @@ def verify_stats(stats: list[dict], *, offer=False, every_slot_offer=False, acce
     if accept:
         require(sum(s["accepted"] for s in stats) > 0, "no proposal was accepted")
     if reject:
-        require(sum(s["rejected"] for s in stats) > 0, "no proposal was rejected")
+        # Kept as a hard requirement: a natural rejection is real native evidence of
+        # target verification. An all-accept run is a model/fixture limitation for
+        # this witness, not a pressure defect, and still fails closed.
+        require(sum(s["rejected"] for s in stats) > 0,
+                "no naturally rejected proposal was observed: the model accepted every offered draft, so this "
+                "run cannot demonstrate the natural-rejection witness (fixture/model limitation, not a pressure "
+                "defect); the gate stays fail-closed, and the correctness gate forces a rejection via its "
+                "compile-time test hook instead")
     if fallback_reserve:
         require(sum(s["fallback_reserve"] for s in stats) > 0,
                 "no optional speculative-row reservation fallback was observed")
@@ -129,6 +143,49 @@ def ring_capacity_from_source(window: int, spec: int, context: int) -> dict:
             "window_cells": window, "spec_max_t": spec, "target_slot_max_cells": context,
             "requested_private_ring_cells": ring, "allocated_page_rounded_ring_cells": allocated,
             "bounded_ring": ring > 0, "prompt_must_wrap_ring": ring > 0}
+
+
+RING_WRAP_EVIDENCE_LIMIT = ("byte-level private-ring internals are not measured; the verdict rests on "
+                            "helper-derived ring geometry plus native positive proposals")
+
+
+def ring_wrap_verdict(evidence: dict, *, prompt_cells: int, proposals: int,
+                      consumed_history_cells: int | None = None) -> dict:
+    """Real coverage verdict from preserved evidence, never a conditional placeholder.
+
+    Verified inputs: the prompt and (when tracked) the consumed target history exceed the checked-in
+    helper-derived bounded ring, and real proposals were offered. This does not measure byte-level ring
+    internals, which needs CUDA parity tests; that limit is carried in the returned evidence.
+    """
+    geometry = evidence.get("source_ring")
+    if not geometry:
+        # A coverage label is never allowed to crash or imply evidence that was not preserved.
+        return {"verdict": "UNTESTED", "prompt_cells": prompt_cells,
+                "consumed_history_cells": consumed_history_cells, "helper_derived_ring_cells": None,
+                "prompt_exceeds_ring": None, "consumed_history_exceeds_ring": None,
+                "positive_proposals": proposals,
+                "reason": "helper-derived ring geometry was not preserved in this evidence",
+                "evidence_limit": RING_WRAP_EVIDENCE_LIMIT}
+    ring = geometry["allocated_page_rounded_ring_cells"]
+    prompt_exceeds = prompt_cells > ring
+    consumed_exceeds = None if consumed_history_cells is None else consumed_history_cells > ring
+    witnessed = prompt_exceeds and proposals > 0 and consumed_exceeds is not False
+    return {"verdict": "RUN" if witnessed else "UNTESTED",
+            "prompt_cells": prompt_cells, "consumed_history_cells": consumed_history_cells,
+            "helper_derived_ring_cells": ring, "prompt_exceeds_ring": prompt_exceeds,
+            "consumed_history_exceeds_ring": consumed_exceeds, "positive_proposals": proposals,
+            "evidence_limit": RING_WRAP_EVIDENCE_LIMIT}
+
+
+def ring_wrap_coverage(evidence: dict, *, prompt_cells: int, proposals: int,
+                       consumed_history_cells: int | None = None) -> str:
+    verdict = ring_wrap_verdict(evidence, prompt_cells=prompt_cells, proposals=proposals,
+                                consumed_history_cells=consumed_history_cells)
+    evidence.setdefault("coverage_evidence", {})["bounded_private_ring_wrap_with_actual_proposals"] = verdict
+    consumed = "not tracked" if consumed_history_cells is None else str(consumed_history_cells)
+    return (f"{verdict['verdict']} (prompt {prompt_cells} and consumed history {consumed} vs helper-derived ring "
+            f"{verdict['helper_derived_ring_cells']} cells; positive proposals {proposals}; "
+            f"evidence_limit: {RING_WRAP_EVIDENCE_LIMIT})")
 
 
 def pages(cells: int) -> int:
@@ -571,7 +628,9 @@ class PressureSuite(incremental.Suite):
                         stage["bstop_after_seq"] = event["seq"]
                         stage["bstop_reason"] = reason
                         stage["stopped_slots"] = [r.slot for r in survivors]
-            stage["bt_counts_at_bstop"] = {str(r.slot): len(r.tokens) for r in requests}
+            # Recorded after both slots reached a terminal, so this is a post-stop
+            # read-out, not a BSTOP-time snapshot. It is recorded only, never gated.
+            stage["bt_counts_at_stop"] = {str(r.slot): len(r.tokens) for r in requests}
             drifted = [r.slot for r, ref in zip(requests, refs) if r.tokens != ref.tokens[:len(r.tokens)]]
             require(not drifted, f"optional witness: target prefix parity differs for slots {drifted}")
             overlap_ok, overlap_detail = True, None
@@ -782,7 +841,9 @@ def run_optional(args, evidence, suite, stderr, prompts, refs, plans):
         "RUN (source-derived): a pressure terminal in this stage is reachable only from the mandatory reservation "
         "retry (generate.cpp 8739-8748) and the optional probe cannot reclaim or park "
         "(batch_mtp_policy.hpp 35-40). Park ordering is not observable.")
-    evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = "RUN (prompts exceed helper-derived ring capacity)"
+    evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = ring_wrap_coverage(
+        evidence, prompt_cells=max(len(p) for p in prompts),
+        proposals=sum(row["offered"] for row in stage.get("per_slot_counter_rows") or []))
     evidence["coverage"]["positive_full_coherent_BHANDOFF"] = "UNTESTED; run --gate handoff"
     evidence["coverage"]["older_slot_checkpoint_private_draft_restore"] = "UNTESTED; not borrowed"
 
@@ -842,10 +903,27 @@ def run_handoff(args, evidence, suite, stderr, prompts):
         require(len(fields) >= 8 and int(fields[7]) > 0,
                 "coherent full-slot private ring transfer failed to resume MTP proposals")
         # Continuation-scoped claim: only the exclusive snapshot taken before the
-        # reference ran. Never read beyond it for this assertion.
+        # reference ran. Never read beyond it for these assertions.
         main_text = continuation_raw[resume_start:continuation_end].decode("utf-8", errors="replace")
-        require("TARGET_ONLY slot clone" not in main_text,
-                "coherent full-slot transfer was incorrectly downgraded to target-only")
+        # The primary anti-downgrade guard is the resumed-offers counter checked just
+        # above (DONE field 7), together with exact solo-ID parity and precise
+        # unfed-prefix reuse. Corroborating it, no target-only downgrade diagnostic may
+        # appear inside the continuation range. The clone literal is emitted only in
+        # the unified clone branch and the decode literal only for a non-coherent MAIN
+        # decode, so their absence is strong but not a general no-downgrade guarantee.
+        downgrade_literals = ("TARGET_ONLY slot clone",
+                              "TARGET_ONLY decode: T=1, MTP/suffix proposals disabled")
+        downgrades = sorted(literal for literal in downgrade_literals if literal in main_text)
+        stage["continuation_downgrade_guard"] = {
+            "primary_guard": "resumed MAIN draft offers > 0 (DONE field 7) plus exact solo-ID parity and "
+                             "precise unfed-prefix reuse",
+            "diagnostic_absence_check": list(downgrade_literals),
+            "diagnostics_present_in_continuation_range": downgrades,
+            "scope": "corroborating only: the clone literal is emitted only in the unified clone branch and the "
+                     "decode literal only for a non-coherent MAIN decode; absence is not a general "
+                     "no-target-only-downgrade guarantee"}
+        require(not downgrades,
+                "coherent full-slot transfer was incorrectly downgraded to target-only: " + ", ".join(downgrades))
         # Misattribution audit only (not a continuation claim): report the absolute
         # offset and owning stage of every TARGET_ONLY slot-clone line in this run.
         ranges = {"source": (start, resume_start), "continuation": (resume_start, continuation_end),
@@ -872,7 +950,10 @@ def run_handoff(args, evidence, suite, stderr, prompts):
                          item["stage"] == "continuation" for item in suppression_offsets), passed=True)
         main_stage["passed"] = True
         evidence["coverage"]["positive_full_coherent_BHANDOFF"] = "RUN"
-        evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = "RUN if prompt exceeds helper-derived private ring"
+        evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = ring_wrap_coverage(
+            evidence, prompt_cells=len(prompt),
+            consumed_history_cells=len(continuation.prompt) + len(continuation.tokens) - 1,
+            proposals=int(fields[7]) + sum(s["offered"] for s in source_diags["batch_mtp_stats"]))
         evidence["coverage"]["older_slot_checkpoint_private_draft_restore"] = "UNTESTED; older checkpoint remains target-only"
     finally:
         raw = stderr.read_bytes() if stderr.exists() else b""
@@ -938,6 +1019,15 @@ def main(argv=None):
     with output.open("x", encoding="utf-8") as f:
         f.write("{}\n")
     evidence = {"schema": 1, "harness": "unified-kv-batch-mtp-pressure", "gate": args.gate,
+                "natural_rejection_requirement": {
+                    "applies_to": "--gate pressure",
+                    "required": True,
+                    "requirement": "verify_stats(..., reject=True): at least one offered draft must be rejected "
+                                   "by the real target verifier",
+                    "all_accept_run": "fails closed as a fixture/model limitation for the natural-rejection "
+                                      "witness, not as a pressure defect",
+                    "deterministic_alternative": "the correctness gate forces a rejection through its "
+                                                 "compile-time test hook"},
                 "passed": False, "config": str(args.config.expanduser().resolve()),
                 "exe": str(args.exe.expanduser().resolve()), "context": args.context,
                 "aggregate_shared_backing_cells": args.context, "resident_cells": 0,
@@ -1059,6 +1149,9 @@ def main(argv=None):
                                       "natural_accept_reject_scope": source["natural_accept_reject_scope"],
                                       "ring_fallback_to_full_resident": False,
                                       "evidence_limit": "native per-slot proposals/acceptance/rejection and solo parity are model evidence; byte-level ring internals require CUDA parity tests"}
+            evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"] = ring_wrap_coverage(
+                evidence, prompt_cells=max(len(p) for p in prompts), consumed_history_cells=consumed_history,
+                proposals=sum(row["offered"] for row in source["per_slot_natural_accept_reject"].values()))
         suite.save()
         require(evidence["stages"] and all(s.get("passed") for s in evidence["stages"]),
                 "one or more native stages did not pass")

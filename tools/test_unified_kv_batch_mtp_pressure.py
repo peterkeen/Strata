@@ -1,10 +1,12 @@
 """Offline protocol, allocation-geometry and evidence-contract tests for the GPU gate."""
 from __future__ import annotations
 
+from collections import deque
 import json
 import sys
 import tempfile
 from pathlib import Path
+import types
 import unittest
 from unittest import mock
 
@@ -14,6 +16,7 @@ import unified_kv_smoke as common
 
 
 PARK_LINE = "strata serve: pressure parked target-only 2048 tokens; parked=2 bytes=528687156"
+TARGET_ONLY_CLONE_LINE = "strata serve: TARGET_ONLY slot clone: private MTP proposals suppressed until full replay"
 
 
 def counter_row(slot=0, windows=129, offered=128, accepted=128, rejected=0, discarded=0, attempts=1,
@@ -289,7 +292,7 @@ class BatchMtpEvidenceTests(unittest.TestCase):
             self.assertTrue(stage["pressure_park_absence"]["absent"])
             finishes = {record["slot"]: record["completion"]["finish"] for record in stage["requests"]}
             self.assertEqual(finishes, {0: "cancel", 1: "cancel"})
-            self.assertEqual(stage["bt_counts_at_bstop"], {"0": 258, "1": 258})
+            self.assertEqual(stage["bt_counts_at_stop"], {"0": 258, "1": 258})
 
     def test_optional_witness_stage_rejects_shapes_other_than_the_two_measured_ones(self):
         clean = counter_row(slot=0, windows=128, offered=128, accepted=128, attempts=0, reserve=0)
@@ -394,13 +397,67 @@ class BatchMtpEvidenceTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             gate.pressure_capacity_plan((prompts[0], prompts[1]), [3000, 3000], 4096)
 
-    def test_optional_boundary_fixture_fits_initial_headroom_with_one_page_left(self):
+    def test_optional_fixture_sizing_pins_the_gated_page_boundary_contract(self):
+        """The gate depends on per-slot page-boundary sizing, cap margin and context fit.
+
+        The task-14 "pool exactly full / one spare page" derivation was explicitly
+        abandoned in task16, so it is deliberately not pinned here; optional_fixture_sizing
+        labels its arithmetic as sizing, never as the witness.
+        """
         prompts = (list(range(1, 1788)), list(range(5000, 6791)))
-        plan = gate.pressure_capacity_plan(prompts, [320, 320], 4096)
-        self.assertEqual([len(p) % gate.PAGE for p in prompts], [3, 3])
-        self.assertEqual(plan["initial_pages_total"], 1023)
-        self.assertEqual(plan["pool_pages"], 1024)
-        self.assertGreater(plan["individual_final_pages_total"], 1024)
+        cap, context = 320, 4096
+        sizing = gate.optional_fixture_sizing(prompts, cap, context)
+        self.assertTrue(sizing["sizing_is_hypothesis_not_evidence"])
+        self.assertEqual(sizing["pool_pages"], context // gate.PAGE)
+        self.assertEqual(sizing["output_cap"], cap)
+        for prompt, plan in zip(prompts, sizing["slots"]):
+            # run_optional_row_fallback gates len(prompt) == plan["prompt_cells"].
+            self.assertEqual(len(prompt), plan["prompt_cells"])
+            self.assertEqual(plan["prompt_page_offset"], gate.PAGE - 1)
+            self.assertEqual(plan["boundary_output_count"], plan["reserve_ahead_cells"] + 1)
+            self.assertLessEqual(len(prompt) + cap + gate.GUARD, context)
+        self.assertGreaterEqual(cap, max(sizing["bstop_output_counts"]) + gate.OPTIONAL_WITNESS_MIN_MARGIN)
+        # The abandoned full-pool / one-spare-page arithmetic is not part of this contract.
+        self.assertNotIn("initial_pages_total", sizing)
+        self.assertNotIn("one_spare_page", json.dumps(sizing))
+
+    def test_ring_wrap_verdict_is_computed_from_preserved_evidence(self):
+        evidence = {"source_ring": {"allocated_page_rounded_ring_cells": 200}}
+        run = gate.ring_wrap_verdict(evidence, prompt_cells=1536, consumed_history_cells=1596, proposals=3)
+        self.assertEqual(run["verdict"], "RUN")
+        self.assertTrue(run["prompt_exceeds_ring"])
+        self.assertTrue(run["consumed_history_exceeds_ring"])
+        self.assertIn("byte-level private-ring internals are not measured", run["evidence_limit"])
+        self.assertEqual(gate.ring_wrap_verdict(evidence, prompt_cells=200, proposals=3)["verdict"], "UNTESTED")
+        self.assertEqual(gate.ring_wrap_verdict(evidence, prompt_cells=1536, consumed_history_cells=1596,
+                                               proposals=0)["verdict"], "UNTESTED")
+        # The verdict needs BOTH the prompt and the consumed history beyond the ring,
+        # matching the pressure gate's own prefill/continue precondition.
+        short = gate.ring_wrap_verdict(evidence, prompt_cells=100, consumed_history_cells=900, proposals=1)
+        self.assertEqual(short["verdict"], "UNTESTED")
+        self.assertFalse(short["prompt_exceeds_ring"])
+        missing = gate.ring_wrap_verdict({}, prompt_cells=1536, proposals=3)
+        self.assertEqual(missing["verdict"], "UNTESTED")
+        self.assertIn("not preserved", missing["reason"])
+        text = gate.ring_wrap_coverage(evidence, prompt_cells=1536, consumed_history_cells=1596, proposals=3)
+        self.assertTrue(text.startswith("RUN ("))
+        self.assertIn("evidence_limit", text)
+        self.assertEqual(evidence["coverage_evidence"]
+                         ["bounded_private_ring_wrap_with_actual_proposals"]["verdict"], "RUN")
+
+    def test_natural_rejection_failure_names_a_fixture_limitation_but_still_fails(self):
+        all_accept = gate.parse_batch_stats(counter_row(slot=0, windows=4, offered=3, accepted=3, rejected=0,
+                                                        discarded=0, attempts=1, limits=1, reserve=0))
+        with self.assertRaises(AssertionError) as caught:
+            gate.verify_stats(all_accept, reject=True)
+        message = str(caught.exception)
+        self.assertIn("fixture/model limitation", message)
+        self.assertIn("not a pressure defect", message)
+        self.assertIn("fail-closed", message)
+        # The requirement is unchanged: a natural rejection still satisfies it.
+        with_reject = gate.parse_batch_stats(counter_row(slot=0, windows=4, offered=3, accepted=2, rejected=1,
+                                                         discarded=0, attempts=1, limits=1, reserve=0))
+        self.assertEqual(gate.verify_stats(with_reject, reject=True)["rejected"], 1)
 
     def test_ring_helper_dimensions_at_bounded_and_full_context_boundaries(self):
         bounded = gate.ring_capacity_from_source(128, 2, 4096)
@@ -560,6 +617,145 @@ class BatchMtpEvidenceTests(unittest.TestCase):
             self.assertIsNone(engine.reader)
             self.assertTrue(process["finalized"])
             self.assertEqual(len(evidence["processes"]), 1)
+
+
+# --- production run_handoff scoping regression ------------------------------
+# These tests drive the real unified_kv_batch_mtp_pressure_smoke.run_handoff
+# path (not a copy) with a fake native process and a real stderr file, so the
+# continuation-vs-reference byte-range scoping is exercised end to end.
+HANDOFF_REFERENCE_IDS = list(range(1000, 1064))
+HANDOFF_SOURCE_IDS = HANDOFF_REFERENCE_IDS[:3]
+HANDOFF_CONTINUATION_IDS = HANDOFF_REFERENCE_IDS[3:]
+HANDOFF_SOURCE_STATS = counter_row(slot=0, windows=4, offered=3, accepted=3, rejected=0,
+                                   discarded=0, attempts=1, limits=1, reserve=0)
+HANDOFF_SUPPRESSION_LINES = "\n".join([
+    TARGET_ONLY_CLONE_LINE,
+    "strata batch: slot 0 gave back 1529 tokens of this conversation (its turn checkpoint) in 19.7 ms",
+    "strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled",
+])
+
+
+class FakeHandoffEngine:
+    """Scripted native stdout plus real stderr writes for the production gate."""
+
+    def __init__(self, suite):
+        self.suite = suite
+        self.stage = None
+        self.queue = deque()
+
+    def _write(self, text):
+        with self.suite.stderr.open("a", encoding="utf-8") as handle:
+            handle.write(text + "\n")
+
+    def send(self, *lines, deadline=None):
+        for line in lines:
+            if line.startswith("BGEN"):
+                self._write(HANDOFF_SOURCE_STATS)
+                self.queue.extend([
+                    f"T {HANDOFF_SOURCE_IDS[0]}",
+                    f"DONE 1 {len(self.suite.last_attempt.prompt)} 10 5 length 0 0 0 0 0 0 0.0 98 0",
+                    "BADM 0 1",
+                    f"BT 0 {HANDOFF_SOURCE_IDS[1]}",
+                    f"BT 0 {HANDOFF_SOURCE_IDS[2]}",
+                    "BDONE 0 3 handoff 91.9"])
+            elif line.startswith("GEN"):
+                prompt_len = len(self.suite.last_attempt.prompt)
+                self._write("strata serve: prompt %d tokens = %d reused + 1 read in 37 ms, 61 generated, "
+                            "drafts accepted 30 of 30, 0 checkpoints" % (prompt_len, prompt_len - 1))
+                if self.suite.suppression_in_continuation:
+                    self._write(HANDOFF_SUPPRESSION_LINES)
+                self.queue.extend(f"T {token}" for token in HANDOFF_CONTINUATION_IDS)
+                self.queue.append(f"DONE {len(HANDOFF_CONTINUATION_IDS)} {prompt_len} 36.9 1960.5 length "
+                                  f"30 30 {prompt_len - 1} 4797 29280 0 0 0.0 {prompt_len} 0")
+
+    def next_event(self, deadline=None):
+        raw = self.queue.popleft()
+        seq = self.suite.sequence
+        self.suite.sequence += 1
+        return common.parse_line(raw) | {"raw": raw, "seq": seq, "wall_s": seq / 100}
+
+
+class FakeHandoffSuite:
+    """Minimal suite surface used by production run_handoff."""
+
+    def __init__(self, stderr, evidence, *, suppression_in_continuation=False):
+        self.stderr = stderr
+        self.evidence = evidence
+        self.suppression_in_continuation = suppression_in_continuation
+        self.last_attempt = None
+        self.sequence = 0
+        self.engine = FakeHandoffEngine(self)
+
+    def make_attempt(self, name, prompt, cap, slot=None):
+        self.last_attempt = common.Request(name, list(prompt), cap, slot)
+        return self.last_attempt
+
+    def run(self, name, requests):
+        stage = {"name": name, "passed": False, "requests": []}
+        self.evidence.setdefault("stages", []).append(stage)
+        protocol = common.Protocol(requests)
+        self.engine.send(*(req.command() for req in requests))
+        while not protocol.finished:
+            protocol.consume(self.engine.next_event())
+        stage["requests"] = [req.record() for req in requests]
+        return stage
+
+    def solo(self, name, prompt, cap):
+        # The same-binary reference legitimately reuses a turn checkpoint and
+        # goes target-only. Its diagnostics must never be read as the
+        # continuation's own downgrade.
+        self.engine._write(HANDOFF_SUPPRESSION_LINES)
+        req = common.Request(name, list(prompt), cap)
+        req.tokens = list(HANDOFF_REFERENCE_IDS)
+        return req
+
+    def save(self):
+        pass
+
+
+class HandoffScopingTests(unittest.TestCase):
+    def drive(self, *, suppression_in_continuation=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            stderr = Path(tmp) / "handoff.stderr.log"
+            stderr.write_text("", encoding="utf-8")
+            # Geometry is supplied so the handoff ring-wrap verdict is computed for real.
+            evidence = {"stages": [], "coverage": {},
+                        "source_ring": {"allocated_page_rounded_ring_cells": 50}}
+            suite = FakeHandoffSuite(stderr, evidence,
+                                     suppression_in_continuation=suppression_in_continuation)
+            args = types.SimpleNamespace(handoff_cap=64, stage_timeout=30)
+            gate.run_handoff(args, evidence, suite, stderr, [list(range(1, 101))])
+            return evidence["stages"][0], evidence
+
+    def test_reference_suppression_after_the_continuation_is_not_misattributed(self):
+        stage, evidence = self.drive(suppression_in_continuation=False)
+        self.assertTrue(stage["passed"])
+        continuation = stage["continuation_byte_range"]
+        reference = stage["reference_byte_range"]
+        self.assertLess(continuation[0], continuation[1])
+        self.assertEqual(continuation[1], reference[0])
+        self.assertLess(reference[0], reference[1])
+        self.assertTrue(stage["continuation_range_clean"])
+        self.assertEqual([item["stage"] for item in stage["suppression_offsets"]], ["reference"])
+        self.assertTrue(all(reference[0] <= item["offset"] < reference[1]
+                            for item in stage["suppression_offsets"]))
+        # L8: the diagnostic absence check is recorded as corroborating, with the
+        # resumed-offers counter named as the primary anti-downgrade guard.
+        guard = stage["continuation_downgrade_guard"]
+        self.assertIn("resumed MAIN draft offers", guard["primary_guard"])
+        self.assertEqual(guard["diagnostics_present_in_continuation_range"], [])
+        self.assertIn("corroborating only", guard["scope"])
+        # L4: the coverage value is a real computed verdict, not a conditional string.
+        coverage = evidence["coverage"]["bounded_private_ring_wrap_with_actual_proposals"]
+        self.assertTrue(coverage.startswith("RUN ("))
+        self.assertIn("evidence_limit", coverage)
+        self.assertNotIn("RUN if", coverage)
+        self.assertEqual(evidence["coverage_evidence"]
+                         ["bounded_private_ring_wrap_with_actual_proposals"]["verdict"], "RUN")
+
+    def test_suppression_inside_the_continuation_range_fails_closed(self):
+        with self.assertRaisesRegex(AssertionError, "incorrectly downgraded to target-only"):
+            self.drive(suppression_in_continuation=True)
 
 
 if __name__ == "__main__":
