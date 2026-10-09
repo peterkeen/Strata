@@ -233,12 +233,16 @@ void invalid_mappings(int format) {
     f.st.shared_page_table.back() = std::numeric_limits<int32_t>::max(); reject("huge physical ID rejected");
     f.st.shared_page_table = {5, 1, 6, 2};
     // This resident fixture has no host pools or streaming metadata.
-    // Hybrid streaming also remains unsupported.
+    // Upstream supports a streamed K8V4 state by reading its host copy (see layout(): "a streamed one reads
+    // its host copy") and refuses only the ring case, so mode 1 validates here. The fork refused every
+    // streamed hybrid because its unified stream owner could not do hybrid; that limitation was dropped in
+    // the port onto upstream, and this expectation moved with it.
     f.st.kv_mode = 1;
     if (format != 3) reject("unprepared shared streaming rejected");
     else {
         std::string error;
-        check(!conversation_kv_validate_image(image, f.st, f.g, 13, true, error), "unsupported hybrid streaming fails closed");
+        check(conversation_kv_validate_image(image, f.st, f.g, 13, true, error),
+              "hybrid streamed image validates against its host copy");
     }
     f.st.kv_mode = 2;
     if (format != 3) reject("shared ring rejected");

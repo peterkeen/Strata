@@ -1,124 +1,140 @@
-# Nibbler branch deployment
+# Nibbler deployment candidate — `kv-unified`
 
-Branch: `feature/incremental-unified-kv`, incorporating the original
-`nibbler/prefill-and-conversation-cache` deployment and upstream batch serving.
-The full-resident, streamed and admission-fix milestones merged in fork PRs #1,
-#2 and #3. Historical evidence: [unified KV work log](../../docs/MULTI_SLOT_UNIFIED_KV.md).
-Current implementation/gates: [incremental allocation work log](../../docs/INCREMENTAL_UNIFIED_KV.md).
+Status: **port in progress; being validated, not a validated port deployment**.
+The unified-KV fork lineage (copied from fork tip `9921eec`) is now ported onto
+upstream main `fb58e0db` on branch `kv-unified`. The initial port commits are
+`1092339f` (runtime/session/serving) and `537f8b35` (CLI integration).
+This is the newer upstream lineage following 0.1.40.x; both the upstream base
+and this checkout's `CMakeLists.txt` identify the engine as **0.1.41**.
 
-This hardware-specific config retains the installed IQ3_S model, sharp tokenizer,
-262144 context, INT8 KV with 32768 resident cells, MTP and GPU vision. It enables:
+The [unified KV work log](../../docs/MULTI_SLOT_UNIFIED_KV.md),
+[incremental allocation work log](../../docs/INCREMENTAL_UNIFIED_KV.md) and
+[deployment record](validation.md) retain the fork's dated measurements and
+rollouts. Those results are evidence for the fork builds tested on
+2026-10-03 through 2026-10-06, **not measurements or deployment verification
+of this port**. No port performance or quality result is claimed here.
 
-- Native fused prompt experts: `STRATA_PF_FUSED=1`.
-- Two serving slots (`parallel: 2`) with `--kv-unified`: one aggregate 262144-cell
-  host backing pool and one 32768-cell GPU cache per attention layer. The logical
-  limit remains 262144 per request; it is not divided between slots.
-- A 2048 MiB VRAM reserve for private state, prefill and lazy graph headroom.
-  The old 700 MiB reserve failed a three-slot graph-instantiation probe.
-- An 8192 MiB host conversation cache, at most four parked entries, and a 4096 MiB
-  physical RAM floor. The budget is not four guaranteed full-context slots: parked
-  target-only images measured 2.0-2.4 GiB for 130k-155k-token conversations
-  (nibbler, 2026-10-06), so the old 4096 MiB budget held `parked=1` and a second
-  pressure event evicted the first entry.
-- Incremental engines reserve known prompts plus at most 256 output cells, then
-  preflight every exact write/COW extent. Optional headroom shortage does not
-  preempt a request. Actual exhaustion releases a safely parked owner and the
-  frontend continues its same stream through original IDs plus all returned
-  tokens. No logical context or omitted-output-limit semantics are changed.
+## Preserved configuration and architecture
 
-The branch fixes speculative output-cap/EOS overcommit in both serving and CLI.
-Verification windows are bounded by remaining output/context, and only inputs
-producing the actually emitted prefix enter persistent state. Unit tests live in
-`src/spec/output_limits_test.cpp`.
+`config.json` retains the nibbler IQ3_S model and sharp tokenizer paths,
+GPU vision, and these budgets:
 
-An experimental `STRATA_PREFILL_FUSED_TAIL=1` path keeps the existing chunks and
-only stages experts routed by a small remainder (64 tokens or more). It batches
-expert-id ranges, skips inactive ids, and uses the already allocated fused ring,
-with at most a third of its slots held per batch so copies can overlap compute.
-Slots are released only after both expert products. A full-size fused arena with
-all native formats supported is required; peers/incompatible layouts retain MMQ.
-Native CUDA tests cover launch widths 1/8/32/128 and null pointers for inactive ids.
+- Two serving slots (`"parallel": 2`) with `--kv-unified`, one shared
+  **262144-cell authoritative pinned host backing pool** (K/V backing per
+  attention layer), and **32768 GPU-resident cells per attention layer**.
+  Neither physical budget is multiplied by the slot count.
+- A logical **262144-cell ceiling per request**, not half that ceiling per slot.
+  Aggregate capacity still limits which histories can coexist.
+- Private recurrence, PLE history, QSA indexer and logical maps. Private MTP
+  ring/draft KV and captured-graph buffers are not part of the shared main
+  attention pool. Ordinary batch windows do not run per-slot MTP drafts.
+- Reference-counted prefix sharing with copy-on-write (COW), last-reference
+  invalidation, and shared GPU CLOCK residency.
+- Incremental admission: known prompt plus at most **256 output cells** of
+  rolling headroom; exact target-write/COW preflight before inference. Optional
+  headroom shortage alone does not preempt a request.
+- Pressure continuation: actual backing exhaustion can safely park/release an
+  owner, then continue the same frontend stream using original prompt IDs plus
+  **all** returned tokens and the remaining allowance. Optional parking failure
+  or eviction falls back to replay. Logical context and omitted-output-limit
+  semantics are unchanged by the reservation policy.
+- Warm `HANDOFF`/`BHANDOFF` transfers preserve valid completed-prefill prefixes;
+  actual `STOP`/`BSTOP` cancellation still releases ownership. Target-only
+  transfers suppress private MTP/suffix proposals until coherent full residual
+  prompt replay rebuilds draft history; the private ring remains allocated.
+- **2048 MiB VRAM reserve**, **8192 MiB conversation parking budget**, at most
+  **four parked entries**, and a **4096 MiB available-RAM floor**. Parking is
+  separate from authoritative host KV and does not guarantee four full-context
+  images or reserve OS RAM. These are retained settings, not newly measured
+  safe headroom on the port.
 
-It is **not enabled** (`STRATA_PREFILL_FUSED_TAIL=0`): the final matched 9k median
-was 5.479 s versus 5.451 s with fused full chunks and existing MMQ tails. The initial
-one-expert version was about 4% slower; batching removed most of that regression
-but did not produce a reliable speed win. Keep the established fallback for this
-hardware. As with other kernel changes, bitwise identity with MMQ is not promised.
+## Port restrictions and config acceptance
 
-An experimental `STRATA_PREFILL_BALANCE_TAIL=1` schedule is also retained for
-reproducible comparison, with host-only tests in `src/prefill/chunk_schedule_test.cpp`.
-It is **not enabled**: forcing the short remainder above the 1024 streaming floor
-made the matched 9k probes about 11% slower than fused experts alone. Streaming every
-expert outweighed the kernel savings. Do not enable it for this deployment.
+The port's unified serving path is single-GPU. The config selects GPU 0;
+keep it single-GPU and do not add a layer split or helper-GPU configuration.
+The real parser in `src/program/generate.cpp` enforces:
 
-Per-run prefill profiling now prints deltas for host staging and PLE, instead of
-mixing cumulative counters with local CUDA-event/wall timings.
+- `--serve`, `--batch 2..8`, and `--batch-groups 1` (the default); group `auto`
+  is rejected.
+- **No layer split**, including `--layer-split auto`. Rejection happens before
+  split resolution, even if `auto` would eventually choose only one GPU.
+- **No `--batch-mtp` or `STRATA_BATCH_MTP=1`**. Any nonempty environment value
+  whose first character is not `0` also requests batch MTP and is rejected.
+  This does not reject ordinary `--mtp`/`--spec` for coherent solo execution.
+- **Unified and elastic KV are mutually exclusive**: no `--kv-grow`,
+  `--kv-elastic`, or enabled `STRATA_KV_GROW`. This concerns elastic K/V, not
+  expert caching. An explicit elastic-KV flag is rejected even if the
+  environment says `STRATA_KV_GROW=0`.
+- Failure to allocate at least two slot sessions is fatal in unified mode;
+  it must not silently fall back to independent/solo KV.
 
-## Build and launch
+`"parallel": 2` is a **server config key**, not an engine `--parallel` flag.
+`serve/server.py` translates it to `--batch 2` and starts the engine with
+`--serve`. Passing `--parallel` directly to the engine is an unknown-argument
+error. Every flag in the tracked `args` has a compatible parser entry; the
+flag-by-flag source check is recorded in [validation.md](validation.md).
 
-Use nibbler's existing CUDA 13.3/GCC 15 Release build configuration. Enable the
-standalone tests with `-DSTRATA_BUILD_CONVERSATION_TESTS=ON`. Build target `strata`;
-install a copy as `engine/strata-nibbler`, not over the original `engine/strata`.
-Set executable permission on `deploy/nibbler/start-strata`.
+The environment now contains only `STRATA_PF_FUSED=1`, which the ported fused
+expert code reads. The fork's `STRATA_PREFILL_FUSED_TAIL` and
+`STRATA_PREFILL_BALANCE_TAIL` experiments **are not in this port**; the inert
+`STRATA_PREFILL_FUSED_TAIL=0` config entry has been removed. Their measured
+2026-10-03/04 comparisons remain in the historical deployment record. Do not
+infer their availability, fallback behavior or timings for the upstream prompt
+path. Likewise, the old README's `src/spec/output_limits_test.cpp` and
+`src/prefill/chunk_schedule_test.cpp` references do not exist in this checkout.
+Upstream's `--prefill auto` and `--expert-cache auto` retain compatible syntax,
+but flag acceptance is not proof of the fork's exact chunk sizing, output bytes
+or performance on this newer engine.
 
-The router runs as `native-inference`, while the checkout is root-owned. Create
-`/data/llm/Strata-run/nibbler` owned by `native-inference:native-inference`, mode 0700.
-On initial deployment, copy the existing
-`strata-iq3_s-sharp-medium.shared-settings.json` into that directory as
-`config.shared-settings.json`, with the same service ownership. This preserves the
-existing shared Chat defaults (including medium reasoning). Do not recopy the
-shared settings on every restart: clearing/updating them must persist.
+The server inherits its parent environment before overlaying `config.env`.
+Ensure `STRATA_BATCH_MTP` and `STRATA_KV_GROW` are unset or disabled when
+launching this candidate; the tracked config does not override them.
 
-The launcher refreshes the tracked config into the runtime directory on each start.
-The web app can write/clear its shared settings and append logs there, without write
-access to source files or the tracked deployment config.
+## Deployment prerequisites — not completed
 
-llama-swap still invokes `/opt/native-inference/bin/start-strata-sharp-medium`.
-That script delegates to this branch's `deploy/nibbler/start-strata PORT` after
-validation. Original production JSON remains unchanged. Requests retain the same
-model name and aliases. The branch engine log is
-`/data/llm/Strata-run/nibbler/engine.log`.
+This task checks source/config compatibility only. JSON can be checked locally:
 
-Do not run upstream `update.sh`/setup on this deployment without reviewing its
-checkout/build/config rewriting behavior. Fetch upstream and merge/rebase this branch
-intentionally; the external launcher expects this branch's deployment files.
+```sh
+python3 -m json.tool deploy/nibbler/config.json
+```
 
-## Rollback
+It does not establish that the configured model, tokenizer, expert profile,
+CUDA libraries, engine/vision binaries or runtime directories exist on nibbler,
+or that the port starts and passes GPU/model/HTTP gates there.
 
-For the incremental-allocation rollout, restore only its saved binary and Python
-server from `/data/llm/Strata-tests/multislot-20261005/`:
-`incremental-baseline.strata` and `incremental-baseline.server.py`. The operator
-script `rollback-incremental.sh` unloads/reloads only the Qwen backend and uses
-atomic replacements. This rollout does **not** change tracked/runtime configs or
-shared Chat settings; do not overwrite them with older copies. Final gate results
-and installation hashes are recorded in the incremental allocation work log.
+The old fork used a CUDA 13.3/GCC 15 Release build, installed a separate
+`engine/strata-nibbler`, and enabled standalone conversation tests with
+`-DSTRATA_BUILD_CONVERSATION_TESTS=ON`. The target and test option still exist,
+but that historical toolchain/build evidence must be repeated for the port.
+Do not overwrite the original engine or install this candidate before the
+required validation and an explicitly authorized rollout.
 
-For the earlier shared-streaming rollout, restore the immediately preceding binary and
-both tracked/runtime configs from `/data/llm/Strata-tests/multislot-20261005/`.
-The launcher refreshes the tracked config on each start: restoring only the
-runtime JSON is insufficient. Keep `config.shared-settings.json` unchanged.
-Unload/reload only `qwen3.8-flash-next-iq3_s` through the running
-`llama-swap.service`; do not start the inactive standalone `strata.service`.
-Exact rollout hashes and restore commands are recorded in the unified KV work
-log after deployment.
+**Launcher integration is missing from this checkout:**
+`deploy/nibbler/start-strata`, referenced by the fork's external
+`/opt/native-inference/bin/start-strata-sharp-medium`, has not been ported here.
+The old claim that the launcher refreshes the runtime config on every start
+therefore is not a verified property of this branch. Restoring/reviewing that
+integration and confirming frontend/proxy ports are deployment prerequisites,
+not actions performed by this documentation task.
 
-For the older fused-prefill rollout, pre-change binary, config and launcher were saved in
-`/data/llm/Strata-tests/implementation-20261003/`:
-`strata.before`, `production-config.before.json`, `launcher.before`.
+The historical layout kept writable logs/config/shared Chat settings under
+`/data/llm/Strata-run/nibbler`, owned by `native-inference`, rather than in the
+root-owned checkout. Preserve existing shared Chat settings; do not replace
+user settings on each restart. The candidate retains the old model name,
+loopback host, allowed-host list and engine-log path. No live launcher, alias,
+ownership or service state has been inspected for this port. Keep the server
+on `127.0.0.1`; exposing it elsewhere requires `--api-key`.
 
-1. Wait for idle or arrange a maintenance window; unload only Strata:
-   `curl -X POST http://127.0.0.1:8088/api/models/unload/qwen3.8-flash-next-iq3_s`.
-2. Restore `launcher.before` to `/opt/native-inference/bin/start-strata-sharp-medium`
-   and make it executable. The original `engine/strata` and production JSON have
-   not been replaced; those are what the old launcher uses.
-3. Reload with a request through llama-swap, and verify `/running` and backend health.
-   Switch the checkout to the original main commit while unloaded if desired.
+Do not run upstream `update.sh`/setup blindly against this hardware-specific
+candidate: review its checkout/build/config rewriting first.
 
-Validation evidence and limitations are recorded in `validation.md` when deployment
-is completed. Performance/quality probes are local smoke gates, not proof that every
-model workload has unchanged quality. Shared streaming removes replicated main
-attention KV, not private recurrent/indexer/PLE state or captured graphs. Parallel
-windows retain upstream's restrictions on MTP drafts and penalties. Target-only
-slot/canonical transfers suppress private MTP/suffix proposals until a full
-residual prompt replay rebuilds coherent history; the ring allocation and graph
-addresses remain private and unchanged.
+## Historical rollback evidence
+
+The dated fork rollouts, exact hashes, saved binaries/frontends/configs and
+rollback scripts remain in [validation.md](validation.md) and the linked work
+logs. They are **historical fork recovery procedures**, not a prepared rollback
+for a port rollout. Their paths, hashes and availability have not been rechecked
+here. Save and verify the actual deployment baseline and prepare a rollout-specific
+rollback before any authorized installation; preserve shared Chat settings and
+avoid changing unrelated services. Nothing in these documents authorizes live
+changes.

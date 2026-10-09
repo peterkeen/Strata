@@ -1,8 +1,18 @@
 # Incremental unified KV work log
 
-Status: **validated and deployed on nibbler, 2026-10-05**.
-Branch: `feature/incremental-unified-kv`, based on fork main `cc82936`
-(the merged admission fix `d9f737a`, PR #3).
+Status: **port in progress on `kv-unified`; the port is being validated**.
+Port base: upstream main `fb58e0db` (following the 0.1.40.x lineage;
+`CMakeLists.txt` identifies this base and the port as 0.1.41).
+
+Historical status: **fork validated and deployed on nibbler, 2026-10-05**.
+Historical branch: `feature/incremental-unified-kv`, based on fork main `cc82936`
+(the merged admission fix `d9f737a`, PR #3); later fork follow-ups are dated below.
+All measurements, test counts, source/binary hashes and rollout statements below
+belong to that fork lineage and the dates recorded, not to the upstream port.
+The work log is preserved as historical evidence; old source line numbers and
+operator/rollback instructions are not current port validation or authorization
+for live changes. See the [ported deployment candidate](../deploy/nibbler/README.md)
+and its [source/config check](../deploy/nibbler/validation.md) for current status.
 
 ## Reason for the change
 

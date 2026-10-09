@@ -1,6 +1,17 @@
 # Unified KV implementation work log
 
+Status: **port in progress on `kv-unified`; the port is being validated**.
+Port base: upstream main `fb58e0db` (following the 0.1.40.x lineage;
+`CMakeLists.txt` identifies this base and the port as 0.1.41).
+
 Historical branch: `feature/multi-slot-unified-kv`, targeting `peterkeen/strata`.
+All measurements, test counts, source/binary hashes and rollout statements below
+belong to the fork lineage and the recorded 2026-10-05 runs, not to the upstream
+port. The milestone descriptions, including restrictions later lifted, remain
+historical. Old source references and operator/rollback instructions are not
+current port validation or authorization for live changes. See the
+[ported deployment candidate](../deploy/nibbler/README.md) and its
+[source/config check](../deploy/nibbler/validation.md) for current status.
 
 The later [incremental allocation continuation](INCREMENTAL_UNIFIED_KV.md)
 replaces this milestone's full-output reservation policy with known-prompt plus
@@ -8,7 +19,7 @@ rolling headroom, exact writer preflight and internal pressure/replay. Omitted
 output limits no longer require nearly a whole-pool admission reservation.
 Earlier measurements and rollout artifacts below remain historical evidence.
 
-The deployed nibbler branch predates upstream batch serving. Fork main at
+The historical deployed nibbler branch predates upstream batch serving. Fork main at
 `6f32ec0` already implements independent active slots, multiplexed output,
 batched decode, prefill interleaving and cooperative preemption. Merge
 `6346b3e` combines that scheduler with the existing nibbler changes. Initial

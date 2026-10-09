@@ -1,8 +1,130 @@
-# Nibbler validation and deployment — 2026-10-03/04
+# Nibbler validation and deployment
 
-> The branch, binary and source statements in this section describe the
-> 2026-10-03/04 rollout. The current deployment is the dated section at the end
-> of this file.
+## Port status — `kv-unified`
+
+**Port in progress; being validated. No port deployment is claimed.**
+Source/config inspection used upstream main base `fb58e0db`, port commits
+`1092339f` and `537f8b35`, and the real `src/program/generate.cpp` parser.
+Despite the 0.1.40.x lineage description, both the base and current
+`CMakeLists.txt:11` say `project(strata VERSION 0.1.41 LANGUAGES CXX)`.
+The fork snapshot supplying these deployment files was `9921eec`.
+
+This section records local, read-only source checks and the config/doc edits
+for task `str-7ze.6`. No build, engine launch, model inference, SSH, network or
+live deployment inspection was performed. All dated measurements, test counts,
+rollout hashes and operational statements in the remainder of this file describe
+**the historical fork lineage**, not this port or the present live host.
+Historical publish/launch/rollback instructions are retained as records, not
+current port instructions or authorization to change infrastructure.
+
+### Flag-by-flag parser check
+
+All 18 flags in `config.json`'s `args` still exist with compatible arity.
+The corresponding fork-tip parser entries were also inspected: no configured
+flag was found to be removed or repurposed at the parsing level. Values below
+are accepted option syntax; model files and actual memory availability have
+not been checked.
+
+| Flag / config key | Config value | Arity and result | Port parser line(s) |
+|---|---|---|---|
+| `--pack` | IQ3_S pack path | One path; compatible | 1650 |
+| `--native` | IQ3_S GGUF shard path | One path; compatible | 1725 |
+| `--ple-gguf` | PLE GGUF shard path | One path; compatible | 1698 |
+| `--expert-profile` | Expert-profile path | One path; compatible | 1924 |
+| `--expert-cache` | `auto` | One integer or `auto`; `auto` still selects sizing from free VRAM | 1771–1774 |
+| `--prefill` | `auto` | One size or `auto`/`auto:N`; compatible | 1787–1796 |
+| `--spec` | `4` | One integer; verification-window setting retained | 1803 |
+| `--spec-min-p` | `0.5` | One floating-point value; draft extension threshold retained | 1825 |
+| `--mtp` | MTP path | One path; ordinary MTP retained, not batch MTP | 1819 |
+| `--max-context` | `262144` | One integer; logical ceiling and unified aggregate backing budget | 1670 |
+| `--kv` | `int8` | One format; `int8` accepted by format validation | 1705, 2211–2216 |
+| `--kv-resident` | `32768` | One integer; GPU-resident cells per attention layer | 1706, 2225–2231 |
+| `--kv-unified` | Enabled | No value; shared-pool mode, subject to restrictions below | 1804 |
+| `--vision` | Enabled | No value; image input enabled | 1833 |
+| `--vram-reserve-mib` | `2048` | One integer, MiB; explicit VRAM reserve retained | 1784 |
+| `--conversation-cache-mib` | `8192` | One nonnegative integer, MiB; optional parking budget | 1835–1848 |
+| `--conversation-cache-slots` | `4` | One nonnegative integer; parked-entry cap, not active slots | 1835–1848 |
+| `--conversation-cache-min-free-mib` | `4096` | One nonnegative integer, MiB; physical available-RAM floor | 1835–1848 |
+| `"parallel"` (server config) | `2` | Supported config key; becomes one-value `--batch 2` | Engine 1805; `serve/server.py:2552–2570` |
+| `--serve` (server-added) | Enabled | No value; added when the server launches the engine | Engine 1832; `serve/server.py:651` |
+
+**`--parallel` is not an engine flag**, in either the fork-tip or ported parser.
+It would hit the unknown-argument error at `generate.cpp:1963–1969`. The tracked
+config correctly uses `"parallel": 2` instead. A local AST-extracted execution
+of the actual `parallel_args` function returned `["--batch", "2"]`, without
+importing or starting the server. Every tracked argument/value boundary and
+the conversation-cache integer ranges were checked locally.
+
+Unified-mode startup checks (`generate.cpp:1971–1992`) require `--serve`,
+`--batch 2..8`, no `--layer-split` (even `auto`), and `--batch-groups 1`, not
+`auto`. The latter defaults to 1. They explicitly reject `--batch-mtp` and
+`STRATA_BATCH_MTP=1` (also any nonempty value not beginning with `0`). They
+also reject elastic K/V (`--kv-grow`/`--kv-elastic`, or enabled
+`STRATA_KV_GROW`): the unified and elastic pools are mutually exclusive.
+The config selects only GPU 0 and requests none of those incompatible options.
+Failure to allocate at least two unified slot sessions is fatal, not a silent
+independent/solo fallback (`generate.cpp:4007–4011`).
+
+Thus the server-generated command has compatible parser syntax and satisfies
+the static unified prerequisites **provided the inherited environment does not
+enable batch MTP or elastic KV**. This is not an executed startup test: loading
+GGUF shards/profiles, GPU allocation and other runtime gates can still fail.
+`--prefill auto`/`--expert-cache auto` remain automatic choices on the new
+upstream engine; compatibility does not establish byte-identical output,
+identical memory/chunk sizing, or the fork's measured performance.
+
+### Environment and JSON check
+
+`serve/server.py:2703–2722` copies the parent environment and overlays
+`config.env`. The port reads `STRATA_PF_FUSED` in
+`src/prefill/moe_fused.cu:657,668`; value `1` explicitly requests native fused
+experts on supported devices/formats.
+
+No reader for `STRATA_PREFILL_FUSED_TAIL` exists in the port's `src/` or
+`include/` (nor in serving/SYCL sources). Its old config value `0` was inert and
+has been removed; the resulting env block is:
+
+```json
+"env": {
+  "STRATA_PF_FUSED": "1"
+}
+```
+
+The fork's `STRATA_PREFILL_BALANCE_TAIL` path is also absent. Neither experiment
+is available just because historical records below describe it. Engine flags,
+slot count, memory budgets, model/tokenizer/vision paths, hosts and other config
+fields are unchanged.
+
+Validation command and output: `python3 -m json.tool deploy/nibbler/config.json`
+printed the complete formatted JSON object with the env block above, no error
+output, and **exit status 0**. A separate source/config check passed all 18
+argument arities, the server's parallel translation, static unified prerequisites,
+conversation-cache value ranges and the remaining environment reader.
+
+### Old claims that do not carry over
+
+- The old current branch names and "validated/deployed" status describe fork
+  builds. They are not the port's status, and the old SHA-256 values do not
+  identify a tested port binary/frontend/config.
+- The old README's tail-experiment availability and its
+  `src/spec/output_limits_test.cpp` / `src/prefill/chunk_schedule_test.cpp`
+  references are wrong for this checkout: those knobs/tests are absent.
+  Historical timings and checks are preserved below, with their fork dates.
+- `deploy/nibbler/start-strata` is absent from this checkout. External launcher
+  delegation, runtime-config refresh and frontend/proxy port integration are
+  therefore not ready/verified for the port. No launcher was added by this task.
+- Configured `/data/llm/...` artifacts, CUDA 13.3 libraries, ownership/settings,
+  live service/alias/host behavior, saved rollback files and the documented
+  hardware/toolchain have not been inspected on the live host here.
+- No port build/backend, GPU parity, long-context pressure/handoff, model quality,
+  HTTP/vision or deployment gate has been run in this task. Historical successes
+  and limitations must not be promoted into port validation results.
+
+## Historical fork validation and deployment — 2026-10-03/04
+
+> The branch, binary and source statements in this section describe the fork's
+> 2026-10-03/04 rollout. Later dated sections describe subsequent fork rollouts;
+> none establishes the port's deployment or current live-host state.
 
 Branch: `nibbler/prefill-and-conversation-cache`. Upstream was fetched and verified
 at `99f3dbd0b21d1401b3769e0c0d963913607f380b`. No fork or upstream push was made.
@@ -121,7 +243,7 @@ To publish later, create your GitHub fork, add it as a separate remote, and push
 `nibbler/prefill-and-conversation-cache`. Do not use upstream's auto-update script
 blindly on this deployment; build/install the branch binary deliberately.
 
-## Current deployment — 2026-10-06
+## Historical fork deployment — 2026-10-06
 
 Native source: `feature/kv-warm-handoff` at `3e98524`. Live artifacts, re-hashed
 on nibbler with a root shell:
