@@ -826,3 +826,223 @@ production restored hash-identical after each window. `coherence-v2` is the gate
 caught the unguarded deferral. The same gate set was re-run for the eviction-order change
 (candidate `f5f8b42a…`): `ctest` 81/81 and all seven gates passed again, and `coherence-v2`
 logs no `no image` lines.
+
+## Unified batch-MTP on the incremental path (opt-in, 2026-10-09)
+
+Status: **opt-in and measured on isolated hardware; off by default.** This port
+adds no default behaviour: without `--batch-mtp` (or `STRATA_BATCH_MTP=1`) batch
+windows carry no drafts and the solo path is unchanged. It is the batch mode
+that also reserves the optional proposal row, so the optional-row fallback and the
+target-only suppression rules below are part of this reservation policy, not a
+separate scheduler.
+
+### What it enables, and what it needs
+
+`--batch-mtp` lets **each batch slot verify one MTP proposal per window**: the
+slot's own private drafter proposes the token after its current one, and the
+verifier commits both rows when they agree. Requirements (the engine warns
+`--batch-mtp is off: ...` and batches as usual when one is missing):
+
+- `--serve` with `--batch 2..8` (a window holds at most eight rows, which is also
+  what `--kv-unified` requires), `--mtp`, and `--spec T` with `T >= 2`;
+- **one GPU**: no `--layer-split` and no helper GPU (the draft ring is private to
+  the slot's own device);
+- `--kv-unified --batch-groups 1` for the measured configuration. Without unified
+  KV a slot still offers one proposal per window, but there is no shared-pool
+  reservation to preflight, so the `fallback_reserve` witness below does not apply.
+
+Restrictions that remain: **one proposal per slot** (not a chain), **one GPU**,
+and no repetition / frequency / presence penalties in batch windows.
+
+### The private ring, and when the resident fallback applies
+
+Each slot's drafter keeps a bounded private ring sized from the MTP window:
+
+    mtp_kv_ring_cells(window, max_cells, max_t) = window + 4*max_t + 64   if 0 < window < max_cells
+                                               = -1  (private, fully resident)  otherwise
+
+`window` is `--mtp-window` (default 32768 cells), `max_cells` the slot's logical
+context, and `max_t` the MTP window (`--spec`, capped by `--mtp-max-t`). A default
+window is at least the context on a small pool, so `-1` applies and the draft K/V
+is fully resident; a bounded ring needs an explicit smaller window. Measured
+(RTX 5060 Ti, `--max-context 4096`, `--mtp-window 128`, `max_t = 2`):
+128 + 8 + 64 = **200 cells** requested and 200 cells allocated, with 1536/1540-cell
+prompts and 2048 consumed cells - well beyond the 200-cell ring, so the run
+exercised ring wrap rather than the resident fallback. If the ring cannot get
+pinned RAM the native warns and keeps the draft K/V in VRAM.
+
+### Main versus per-slot drafters, and what they cost
+
+Without `--batch-mtp` a slot has no drafter at all: the main owner's drafter (`--mtp`)
+is used by the solo path only, which is why a request alone is not put into a slot.
+With `--batch-mtp` the engine loads one additional drafter per batch slot and caps
+each at **one draft per window** (`set_max_drafts(1)`), while the solo path keeps
+its full `--spec` window. The per-slot drafters **share the main drafter's loaded
+weights** (its dense and expert tensors, `MtpDrafter::load(..., shared)`) but keep
+their own K/V, buffers and bind, so the extra memory is the ring and buffers, not a
+second copy of the weights. A slot's draft K/V is always its own: it is never read
+by another slot or by the main owner, and a transfer between them is allowed only
+when that slot's draft state is shown to match the exact source prefix - otherwise
+the owner stays target-only (above).
+
+Memory tradeoff, measured on the RTX 5060 Ti A/B below: the two batch slot sessions
+take 1.00 GiB of VRAM that the expert cache would otherwise hold (native line
+`strata generate: --batch 2: the slot sessions take 1.00 GiB of VRAM on CUDA0 that
+the expert cache would otherwise hold`), which is why this is opt-in and why a
+smaller card should check the free-memory log first. The MTP feature's own extra
+cost was about 21 MiB and 8 expert slots (expert cache 6407 MiB / 2430 slots
+without it against 6386 MiB / 2422 slots with it, both arms already running
+`--batch 2 --kv-unified`). A default `--mtp-window` that is at least the context
+makes each slot's draft K/V fully resident; a bounded window keeps it to
+`window + 4*max_t + 64` cells.
+
+### Row reservation: the optional row falls back, and never pressures
+
+A window first reserves its **mandatory** target row `[p, p+1)` through the
+ordinary reclaim-then-retry path. Only then does the production policy helper
+(`include/strata/core/batch_mtp_policy.hpp`) choose: `incoherent`, `not_ready`,
+`limits`, `capacity`, or the optional row. The optional probe asks once for the
+exact two-row extent `[p, p+2)`; a shortage becomes
+`BatchMtpFallback::reservation` - a **target-only window with no reclaim retry and
+no pressure escalation**. Only the mandatory row's shortage after its reclaim retry
+reaches `finish_shared_slot(..., "pressure")` and parks an owner.
+
+So a per-slot `fallback_reserve` counter is a real optional-row shortage: not a
+completed response, not a park, and not a token mismatch. Measured (context 4096,
+4096 MiB parking, `--mtp-window 128`, two 1787/1791-cell prompts, cap 320): slot 1
+reported `fallback_reserve=1` with every other fallback reason zero
+(`offered=128 accepted=128`), slot 0 reported `fallback_reserve=0`
+(`offered=130 accepted=130`), and the single park was the witness slot's own
+mandatory row (`BDONE 1 258 pressure`, sibling `BDONE 0 261 cancel`, one park of
+2048 tokens / 528687156 bytes). The gate accepts two shapes: one slot falls back
+and then parks while the other cancels, or both slots fall back and cancel with no
+park. The measured run observed the first; the second is accepted and not yet
+observed.
+
+Timing caveat that belongs to the contract: `batch_mtp_stats` lines and the park
+line are printed at the terminal only, so the *order* of a park relative to the
+optional window is not observable. The attribution above comes from the source
+(only the mandatory reservation's shortage retry can reach
+`finish_shared_slot(..., "pressure")`; the optional probe cannot reclaim or park)
+plus the slot's own parked prefix, not from timing.
+
+### The per-slot counter line
+
+Emitted once per slot MTP lifecycle (opt-in; terminal, pressure, cancel and handoff
+paths):
+
+    strata batch_mtp_stats slot=N windows=N offered=N accepted=N rejected=N discarded=N
+        fallback_attempts=N fallback_incoherent=N fallback_not_ready=N
+        fallback_limits=N fallback_capacity=N fallback_reserve=N
+
+`offered == accepted + rejected + discarded`; a target-only window has exactly one
+reason counter; `offered` counts proposal rows passed to a successful verifier
+call, so it is verifier evidence rather than an intent counter.
+
+### Target-only restore and checkpoint hand-back
+
+A restored or cloned owner whose private draft history cannot be shown coherent
+decodes target-only until a full residual replay rebuilds it. The native says so
+and stops offering:
+
+    strata serve: TARGET_ONLY restore: private MTP proposals suppressed until full replay
+    strata serve: TARGET_ONLY slot clone: private MTP proposals suppressed until full replay
+    strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled
+
+The ring stays allocated and is simply not used. Measured (`tails` mode, context
+1024, offsets 1/2/3): each offset restored its exact shared prefix
+(`reused 105/106/103`, equal to the expected prefix), printed all three
+diagnostics, and its clone `DONE` reported `drafts accepted 0 of 0`. Shared-prefix
+reuse, the source-slot give-back line, cap 8 and token parity all stayed hard.
+
+One accounting gap is documented rather than papered over: the native emits **no
+per-slot `batch_mtp_stats` row** for a suppressed owner that never ran a verifier
+window (the restore/clone runs on the main path), so the gate witnesses the three
+diagnostics plus the owner's own `DONE` draft counters and the reused-cell count.
+It never requires, fabricates or synthesizes a zero-window row; a zero-offer row is
+tolerated if a future native emits one, and losing any diagnostic fails closed. The
+same run also showed the divergent branch returning to EOS after a single token at
+every offset, so `multi_token_divergent_suffix_restore` remains **UNTESTED**
+(candidate continuations are prepared and await a hardware sweep).
+
+### Pressure park, canonical restore, resumed continuation
+
+Measured (context 4096, 4096 MiB parking, `--mtp-window 128`, 1536/1540-cell
+prompts, cap 768): `BDONE 0 513 pressure`, a positive target-only park of 2048
+tokens (`parked=2 bytes=524904832`), the sibling cancelled by `BSTOP`
+(`BDONE 1 509 cancel`), and per-slot rows `256 offered / 256 accepted / 0 rejected`
+and `252 / 251 / 1` (507 accepted and 1 rejected across both slots). The
+re-submitted MAIN continuation then reused the whole consumed prefix exactly
+(`restored 2048 tokens (live) in 14.6 ms`, `actual_reused_cells == expected ==
+2048`, the last returned token unfed), reported `TARGET_ONLY restore` and `T=1`
+suppression, offered **0** MAIN drafts, and reproduced the same-binary solo
+reference exactly. This run is also the ring-wrap evidence above: 200 ring cells
+against a 2048-cell consumed history.
+
+### Coherent full-slot hand-off (the transfer that resumes drafts)
+
+`BHANDOFF <slot>` ends an active slot with a target-only idle cache and its
+checkpoints. The engine copies the slot's sessions back and, with `--batch-mtp`,
+also transfers the slot's private draft image for the exact `upto`; MAIN resumes
+drafting only when that transfer is shown coherent, otherwise it stays target-only
+(the clone path above). Measured (context 4096, `--mtp-window 128`, 1536-cell
+prompt, cap 64): `BDONE 0 3 handoff 83.7` with a nonterminal 3-token prefix and
+source slot `offered=1 accepted=1`; the MAIN continuation then reused exactly its
+unfed prefix (`reused 1538 == expected 1538` of a 1539-cell prompt), generated 61
+tokens that continue the same-binary solo reference exactly (3 + 61 = 64), and
+resumed **30 MAIN draft offers, all accepted** (`DONE ... length 30 30 1538 ...`). The
+run's only `TARGET_ONLY slot clone` line lies in the same-binary reference stage's
+byte range; the continuation range was audited clean.
+
+Not claimed by this: byte-level ring internals, COW page identity, and that every
+checkpoint path resumes drafts. The checkpoint path measured in the same run went
+target-only, as documented above.
+
+### Identity of the measured gates
+
+Every gate ran a private subprocess, one native process at a time, behind an
+artifact-only guard that pinned these hashes:
+
+- validation binary (test hook ON)
+  `e14c60c7f1a892b2bbafe029a5a527261b6a9d2311063aba2a7eca8d17f29874`;
+- performance binary (hook OFF)
+  `ced3cedb7b5089b8f02249acc4789bbf2179e89fe9194a727b1e6a03f68bfa94`;
+- config `nvfp4-trial-model.json`
+  `5dcb8e1202140f114e34daae5e056f7ef2e2ac956dbfbfcada9e64b56d2f8913`;
+- runtime base `ff48f4b761169aff62b1c2e3e8f4c1158f251326`: every run verified
+  `git diff --quiet ff48f4b7 -- src include CMakeLists.txt` empty, and no rebuild
+  was performed;
+- build (CUDA 13.3, GCC 15, `CMAKE_CUDA_ARCHITECTURES=120`, Release): 10/10 host
+  ctest targets, `shared_kv_stream_parity` for fp16/int8/q4_0,
+  `verify_parity --selftest`, `spec_verify_parity` (1296 rows, 0 mismatches) and
+  `verify_batch_parity` passed on the RTX 5060 Ti.
+
+Correctness gates (context 1024 unless noted; `--batch-mtp` explicit):
+
+- `correctness`: joint overlap (BADMs 8 and 15; 15 and 12 interleaved `BT` events
+  before the first `BDONE`), exact 16/16 token parity, offered 17 / accepted 13 /
+  rejected 4, a forced accept and a forced reject on each slot's first offer, and
+  natural follow-on offers (7 and 8).
+- `limits`: `windows=1 offered=0 accepted=0 fallback_attempts=1 fallback_limits=1`,
+  output identical to the solo 2-token reference.
+- `lifecycle`: cancel one slot (slot 0 `offered=1 accepted=1`) while its sibling
+  completes, then same-slot reuse with exact parity.
+- `tails`: the three target-only diagnostics and zero-offer clone counters at
+  offsets 1/2/3 (above).
+- pressure / optional / handoff (context 4096): the three subsections above.
+
+### What was not run, and what is not claimed
+
+- HIP and SYCL: skipped (unavailable/not configured in the build environment).
+- Byte-level ring internals and COW page identity: not claimed; the ring witnesses
+  are the helper-derived size, the counters and the token parity.
+- Park ordering inside a stage: not observable (terminal-only diagnostics).
+- `multi_token_divergent_suffix_restore`: UNTESTED (depth 1 at every offset).
+- `coherent_shared_tail_cow_speculation`: UNTESTED - it needs a live/coherent-source
+  fixture; the tails path is target-only restore and does not claim COW. The
+  coherent *full-slot* transfer above is a different witness.
+- Partial-yield preservation with batch-MTP, the logical-context edge, and the
+  steady batch CPU fraction: not measured.
+- Output quality: not measured (the throughput work is a synthetic workload), and
+  no production deployment, reload or launcher recovery is authorized or performed
+  by this work.
