@@ -56,6 +56,52 @@ class SemanticTokenizer:
         return ids
 
 
+class DivergentSuffixTests(unittest.TestCase):
+    """Honest depth recording and coverage marking for the partial-tail branch continuations."""
+
+    def test_tail_suffix_catalog_encodes_and_rejects_unknown_candidates(self):
+        tok = SemanticTokenizer()
+        self.assertIn(smoke.TAIL_SUFFIX_DEFAULT, smoke.TAIL_SUFFIX_CANDIDATES)
+        for name, entry in smoke.TAIL_SUFFIX_CANDIDATES.items():
+            with self.subTest(candidate=name):
+                ids = smoke.tail_suffix_ids(tok, name)
+                self.assertTrue(ids)
+                self.assertTrue(entry['text'])
+                self.assertTrue(entry['why'])
+        self.assertEqual(smoke.tail_suffix_ids(tok), smoke.tail_suffix_ids(tok, smoke.TAIL_SUFFIX_DEFAULT))
+        with self.assertRaisesRegex(AssertionError, 'unknown tail-suffix candidate'):
+            smoke.tail_suffix_ids(tok, 'no-such-candidate')
+
+    def test_partial_tail_branches_append_distinct_candidates_to_the_same_prefix(self):
+        tok = SemanticTokenizer()
+        shared = list(range(20))
+        offset = len(shared) % smoke.PAGE_CELLS
+        branches = smoke.partial_tail_branches(tok, shared, offset, 512)
+        self.assertEqual(len(branches), len(smoke.TAIL_SUFFIX_BRANCH_PAIR))
+        self.assertEqual(len(set(smoke.TAIL_SUFFIX_BRANCH_PAIR)), len(smoke.TAIL_SUFFIX_BRANCH_PAIR))
+        for branch in branches:
+            self.assertEqual(branch[:len(shared)], shared, 'shared partial-page prefix changed')
+        self.assertNotEqual(branches[0][len(shared):], branches[1][len(shared):])
+        with self.assertRaisesRegex(AssertionError, 'shared prefix ending at the requested offset'):
+            smoke.partial_tail_branches(tok, shared, (offset + 1) % smoke.PAGE_CELLS, 512)
+        with self.assertRaisesRegex(AssertionError, 'output guard exceeds context'):
+            smoke.partial_tail_branches(tok, shared, offset, len(shared) + 16 + 7)
+
+    def test_multi_token_coverage_marks_run_only_when_every_branch_grew(self):
+        evidence = {}
+        status = smoke.apply_multi_token_coverage(evidence, [2, 3])
+        self.assertIn('RUN', status)
+        self.assertIn('depths [2, 3]', status)
+        self.assertIs(evidence['coverage']['multi_token_divergent_suffix_restore'], status)
+        for depths in ([1, 5], [1], []):
+            with self.subTest(depths=depths):
+                evidence = {}
+                status = smoke.apply_multi_token_coverage(evidence, depths)
+                self.assertIn('UNTESTED', status)
+                self.assertIn(f'depths {depths}', status)
+                self.assertIn('<= 1 token', status)
+
+
 class PartialTailSeedTests(unittest.TestCase):
     def test_user_background_padding_preserves_generation_header_and_exact_offsets(self):
         tok = SemanticTokenizer()

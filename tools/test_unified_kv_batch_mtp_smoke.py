@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline parser/config/protocol tests for unified_kv_batch_mtp_smoke (no GPU/models)."""
 from collections import deque
+import io
 import os
 from pathlib import Path
 import sys
@@ -8,6 +9,7 @@ import tempfile
 import time
 import types
 import unittest
+from contextlib import redirect_stderr
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -218,7 +220,7 @@ class FakeTails:
                           "conversation (all it holds) in 33.4 ms",
                           "strata serve: TARGET_ONLY decode: T=1, MTP/suffix proposals disabled"])
 
-    def execute(self, evidence, *, branch_tokens=None, inject_offers=False):
+    def execute(self, evidence, *, branch_tokens=None, inject_offers=False, tail_suffix=None):
         if branch_tokens is not None:
             self.branch_tokens = branch_tokens
         if inject_offers:
@@ -235,7 +237,8 @@ class FakeTails:
                     patch.object(smoke, "close_engine")]
         with patchers[0], patchers[1], patchers[2], patchers[3]:
             smoke.run_tails(evidence, Path("/tmp/fake-tails.json"), {"tokenizer": "unused", "cwd": "/tmp"},
-                            Path("/tmp/fake-engine"), 1024, "0", 1, 1, 1)
+                            Path("/tmp/fake-engine"), 1024, "0", 1, 1, 1,
+                            **({} if tail_suffix is None else {"tail_suffix": tail_suffix}))
         return self, self.stages
 
 
@@ -314,6 +317,46 @@ class TargetOnlyRestoreTests(unittest.TestCase):
                 self.assertEqual(witness["source_slot"], 0)
                 self.assertEqual(branch_stage["divergence_depth"], branch_tokens)
                 self.assertIn(expected, evidence["coverage"]["multi_token_divergent_suffix_restore"])
+                # The default continuation candidate is recorded with its rationale, and the
+                # witness names it, so a hardware depth result is always attributable to wording.
+                self.assertEqual(evidence["tail_suffix_candidate"]["name"], common.TAIL_SUFFIX_DEFAULT)
+                self.assertTrue(evidence["tail_suffix_candidate"]["why"])
+                self.assertTrue(evidence["tail_suffix_candidate"]["shared_prefix_unchanged"])
+                self.assertIn("meta-instruction", evidence["tail_suffix_candidate"]["alternatives"])
+                self.assertEqual(witness["tail_suffix_candidate"], common.TAIL_SUFFIX_DEFAULT)
+
+    def test_run_tails_records_a_selected_suffix_candidate_and_uses_it(self):
+        evidence = {"coverage": smoke.coverage_for("tails"), "processes": []}
+        _, stages = FakeTails().execute(evidence, branch_tokens=3, tail_suffix="open-list-primer")
+        self.assertEqual(evidence["tail_suffix_candidate"]["name"], "open-list-primer")
+        self.assertIn("non-terminal assistant primer", evidence["tail_suffix_candidate"]["why"])
+        self.assertIn(common.TAIL_SUFFIX_DEFAULT, evidence["tail_suffix_candidate"]["alternatives"])
+        branch_stage = next(stage for stage in stages if stage["name"].startswith("partial-tail"))
+        self.assertEqual(branch_stage["target_only_restore_witness"]["tail_suffix_candidate"],
+                         "open-list-primer")
+        self.assertEqual(len(branch_stage["target_only_restore_witness"]["divergent_suffix_ids"]),
+                         evidence["tail_suffix_candidate"]["prompt_tokens"])
+
+    def test_tail_suffix_catalog_is_complete_and_candidates_are_distinct(self):
+        tok = WordTokenizer()
+        self.assertIn(common.TAIL_SUFFIX_DEFAULT, common.TAIL_SUFFIX_CANDIDATES)
+        encoded = {}
+        for name, entry in common.TAIL_SUFFIX_CANDIDATES.items():
+            with self.subTest(candidate=name):
+                self.assertTrue(entry["text"])
+                self.assertTrue(entry["why"])
+                ids = common.tail_suffix_ids(tok, name)
+                self.assertTrue(ids)
+                encoded[name] = tuple(ids)
+        self.assertEqual(len(set(encoded.values())), len(encoded), "candidates must not duplicate wording")
+        with self.assertRaisesRegex(AssertionError, "unknown tail-suffix candidate"):
+            common.tail_suffix_ids(tok, "no-such-candidate")
+        # The CLI itself must reject an unknown wording before any model work starts.
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stderr(stderr):
+            smoke.main(["--exe", "x", "--config", "y", "--output", "/tmp/never.json", "--mode", "tails",
+                        "--tail-suffix", "no-such-candidate"])
+        self.assertIn("invalid choice", stderr.getvalue())
 
     def test_run_tails_end_to_end_fake_fails_on_contradicting_offers(self):
         evidence = {"coverage": smoke.coverage_for("tails"), "processes": []}

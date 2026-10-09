@@ -237,15 +237,14 @@ def divergence_record(suffix_ids, reference) -> dict:
 
 
 def apply_divergence_coverage(evidence: dict, records: list[dict]) -> str:
-    """Mark multi-token divergent-suffix restore RUN only when every branch grew."""
-    depths = [record["divergence_depth"] for record in records]
-    if depths and all(depth >= 2 for depth in depths):
-        status = f"RUN (every partial-tail branch generated >= 2 tokens; depths {depths})"
-    else:
-        status = ("UNTESTED (divergent branch returned to EOS after <= 1 token; shared-prefix reuse and "
-                  f"target parity are still enforced; depths {depths})")
-    evidence.setdefault("coverage", {})["multi_token_divergent_suffix_restore"] = status
-    return status
+    """Mark multi-token divergent-suffix restore RUN only when every branch grew.
+
+    The depth verdict is the shared honest rule (tools/unified_kv_smoke.py); this
+    wrapper only adapts the per-branch records to it, so the two smokes can never
+    disagree about when the coverage may be credited.
+    """
+    return common.apply_multi_token_coverage(evidence,
+                                             [record["divergence_depth"] for record in records])
 
 
 def verify_batch_startup(info: dict, context: int, stderr: str) -> dict:
@@ -572,8 +571,18 @@ def run_core(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_ti
     require(not any(e.get("kind") == "ERR" for e in proc["stdout"]), "unexpected native ERR in correctness run")
 
 
-def run_tails(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_timeout, cleanup_timeout):
+def run_tails(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_timeout, cleanup_timeout,
+              tail_suffix: str = common.TAIL_SUFFIX_DEFAULT):
     tok = tokenizer(common.resolve_path(cfg["tokenizer"], str(Path(cfg.get("cwd") or os.getcwd()).expanduser().resolve())))
+    suffix = common.tail_suffix_ids(tok, tail_suffix)
+    evidence["tail_suffix_candidate"] = {
+        "name": tail_suffix,
+        "why": common.TAIL_SUFFIX_CANDIDATES[tail_suffix]["why"],
+        "text": common.TAIL_SUFFIX_CANDIDATES[tail_suffix]["text"],
+        "prompt_tokens": len(suffix),
+        "shared_prefix_unchanged": True,
+        "alternatives": {name: entry["why"] for name, entry in common.TAIL_SUFFIX_CANDIDATES.items()
+                         if name != tail_suffix}}
     prepared = []
     ref_engine, ref_suite, ref_proc, _ = open_engine(evidence, output, cfg, exe, context, gpu, None,
                                                        startup_timeout, cleanup_timeout)
@@ -584,14 +593,11 @@ def run_tails(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_t
             require(len(seed_ref.tokens) == 8, "tail seed must complete its bounded cap")
             shared = seed + seed_ref.tokens[:-1]
             require(len(shared) % PAGE == offset, "shared cached prefix does not end at requested partial-page offset")
-            # Explicit continuation instruction, matching the seed's own final
-            # instruction, so the divergent branch is less likely to end its turn
-            # immediately. This changes only appended prompt text; the shared
-            # prefix and its partial-page offset are untouched.
-            suffix = tok.encode("\nContinue the numbered integer list here, one integer per line, "
-                                "and do not stop early:\n")
-            require(suffix, "divergent branch suffix tokenized to an empty prompt segment")
-            branch = shared + suffix
+            # Appended branch continuation, selected from the shared candidate catalog.
+            # This changes only appended prompt text; the shared prefix, its exact
+            # partial-page offset, cap 8 and the eight-token seed precondition are
+            # untouched, and the branch depth is still what the reference measured.
+            branch = shared + list(suffix)
             require(len(branch) + 8 + 8 <= context, "partial-tail branch exceeds logical context plus safety margin")
             branch_ref = ref_suite.solo(f"tail-{offset}-branch-reference", branch, 8)
             require(branch_ref.tokens, "divergent branch reference is empty; cannot prove shared-prefix reuse")
@@ -630,6 +636,7 @@ def run_tails(evidence, output, cfg, exe, context, gpu, startup_timeout, stage_t
             divergence_records.append(divergence)
             witness.update({"offset_cells": offset, "shared_prefix_cells": len(shared),
                             "source_slot_copy": copies[-1], "divergent_suffix_ids": branch[len(shared):],
+                            "tail_suffix_candidate": tail_suffix,
                             "divergence": divergence})
             branch_stage["target_only_restore_witness"] = witness
             branch_stage["divergence_depth"] = divergence["divergence_depth"]
@@ -765,6 +772,10 @@ def main(argv=None):
     ap.add_argument("--config", required=True, type=Path)
     ap.add_argument("--output", required=True, type=Path, help="NEW evidence JSON path; never overwritten")
     ap.add_argument("--mode", choices=("correctness", "tails", "limits", "lifecycle"), default="correctness")
+    ap.add_argument("--tail-suffix", choices=sorted(common.TAIL_SUFFIX_CANDIDATES),
+                    default=common.TAIL_SUFFIX_DEFAULT,
+                    help="branch continuation appended after the shared prefix in --mode tails "
+                         "(the shared prefix, its partial-page offset and the eight-token seed are unchanged)")
     ap.add_argument("--context", type=int, default=1024, help="small fully resident shared pool; 512..4096, page aligned")
     ap.add_argument("--gpu", help="one physical CUDA/HIP ordinal; default first configured device")
     ap.add_argument("--startup-timeout", type=float, default=900)
@@ -802,7 +813,8 @@ def main(argv=None):
                      args.startup_timeout, args.stage_timeout, args.cleanup_timeout)
         elif args.mode == "tails":
             run_tails(evidence, output, cfg, args.exe.expanduser().resolve(), args.context, args.gpu,
-                      args.startup_timeout, args.stage_timeout, args.cleanup_timeout)
+                      args.startup_timeout, args.stage_timeout, args.cleanup_timeout,
+                      tail_suffix=args.tail_suffix)
         elif args.mode == "limits":
             run_limits(evidence, output, cfg, args.exe.expanduser().resolve(), args.context, args.gpu,
                        args.startup_timeout, args.stage_timeout, args.cleanup_timeout)
