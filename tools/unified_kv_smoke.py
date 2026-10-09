@@ -439,10 +439,25 @@ def parity(req, reference):
 
 
 def verify_pressure(active, waiter, context, cancelled):
-    # Different requests; no common cached prefix can reduce this admission.
-    require(active.cap > context // 2, 'output reservation alone must exceed half the pool')
-    reserve = lambda r: (len(r.prompt) + r.cap + PAGE_CELLS - 1) // PAGE_CELLS
+    pages = lambda cells: (cells + PAGE_CELLS - 1) // PAGE_CELLS
+
+    def reserve(req):
+        # Prefer native admission evidence, not Request.record()'s nominal
+        # prompt + full cap (also used by incremental_kv_smoke.Attempt).
+        for record in (req.badm, req.admission_done):
+            if record and 'reservation_pages' in record:
+                return record['reservation_pages']
+            if record and 'reservation_cells' in record:
+                return pages(record['reservation_cells'])
+        return pages(len(req.prompt) + min(req.cap, 256))
+
     require(all(reserve(r) <= context // PAGE_CELLS for r in (active, waiter)), 'request cannot fit alone')
+    # At BADM the active has produced one unfed token: p + 1 = prompt + 1.
+    # Later decoding only increases this required extent. The waiter must at
+    # least back its whole known prompt, even with ALL optional headroom gone.
+    # Do not use final output counts to claim a shortage existed at admission.
+    required_pages = [pages(len(active.prompt) + 1), pages(len(waiter.prompt))]
+    require(all(p <= context // PAGE_CELLS for p in required_pages), 'required extent cannot fit alone')
     common = 0
     for left, right in zip(active.prompt, waiter.prompt):
         if left != right:
@@ -451,8 +466,9 @@ def verify_pressure(active, waiter, context, cancelled):
     # Even hypothetical sharing of ALL common prompt pages cannot make these
     # overlap. Actual runtime never uses an active slot as a cached source.
     shared_upper_bound = (common + PAGE_CELLS - 1) // PAGE_CELLS
-    require(reserve(active) + reserve(waiter) - shared_upper_bound > context // PAGE_CELLS,
-            'reservations can overlap after prefix sharing')
+    require(sum(required_pages) - shared_upper_bound > context // PAGE_CELLS,
+            f'fixture cannot force a shortage: required pages {required_pages} minus '
+            f'{shared_upper_bound} shared pages <= pool {context // PAGE_CELLS}')
     require(active.badm and active.badm['continues'], 'active request never reached batch windows (early EOS)')
     require(active.completion and active.completion['kind'] == 'BDONE', 'missing active BDONE')
     require(waiter.badm is not None and waiter.tokens, 'waiting request never admitted')
@@ -469,6 +485,7 @@ def verify_pressure(active, waiter, context, cancelled):
         normal(active)
     normal(waiter)
     return {'reserved_pages': [reserve(active), reserve(waiter)], 'pool_pages': context // PAGE_CELLS,
+            'required_pages_lower_bound': required_pages,
             'common_prompt_pages_upper_bound': shared_upper_bound, 'active_badm_seq': active.badm['seq'], 'progress_before_completion': len(progress),
             'active_bdone_seq': end, 'waiting_first_t_seq': waiter.token_events[0]['seq'],
             'waiting_badm_seq': waiter.badm['seq'], 'cancelled': cancelled}
@@ -674,10 +691,27 @@ def run_suite(suite, tok):
     stage['passed'] = True
     suite.save()
 
+    # Incremental admission trims optional active headroom to p + 1, so a
+    # large output cap cannot force waiting. Use a large, distinct prompt:
+    # at 512 cells, active prompt/cap = 320/128 (448 cells = 112 admission
+    # pages), waiter = 256/16 (272 cells = 68 pages). After trimming, even
+    # required extents alone need ceil(321/4) + ceil(256/4) = 81 + 64 = 145
+    # pages > 128. At 1024: 161 + 128 = 289 > 256. Each fits alone.
+    pressure_head = tok.encode('Capacity-wait active source. Read the data, then follow the instructions:\n')
+    pressure_cells, pressure_cap = 5 * context // 8, context // 4
+    padding = pressure_cells - len(pressure_head) - len(a)
+    require(padding >= 0, 'pressure prompt template too large')
+    pressure_prompt = pressure_head + (filler * context)[:padding] + a
+    require(pressure_prompt[0] != waiter[0], 'pressure fixture must have distinct initial tokens')
+    require(len(pressure_prompt) + pressure_cap + 8 <= context and len(waiter) + 16 + 8 <= context,
+            'pressure request cannot fit alone')
+    required_pages = [(n + PAGE_CELLS - 1) // PAGE_CELLS for n in (len(pressure_prompt) + 1, len(waiter))]
+    require(sum(required_pages) > context // PAGE_CELLS,
+            f'fixture cannot force a shortage: required pages {required_pages} <= pool {context // PAGE_CELLS}')
     sw = suite.solo('solo-pressure-waiter', waiter, 16)
     for cancelled in (False, True):
         name = 'capacity-wait-bstop' if cancelled else 'capacity-wait-completion'
-        active = Request(name + '-active', a, 3 * context // 4, 0)
+        active = Request(name + '-active', pressure_prompt, pressure_cap, 0)
         waiting = Request(name + '-waiting', waiter, 16, 1)
         stage = suite.run(name, [active, waiting], cancel=cancelled)
         stage['pressure'] = verify_pressure(active, waiting, context, cancelled)
