@@ -13,6 +13,12 @@ Strata runs **[Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Nex
 large, smart AI model that usually needs a server. It chats, writes code, reads pictures and works with your apps
 and coding agents. Nothing leaves your PC.
 
+**Branches in this fork.** `main` is pinned to upstream Strata (`Niko1221/Strata`) and is not developed here.
+Development happens on **`kv-unified`**, the fork's main line, which carries the unified-KV port, the NVFP4 kernels
+and expert cache, and the opt-in unified batch-MTP work. No pull requests are opened from this fork; changes land on
+`kv-unified`. See [docs/INCREMENTAL_UNIFIED_KV.md](docs/INCREMENTAL_UNIFIED_KV.md), [docs/BATCHING.md](docs/BATCHING.md)
+and [docs/NVFP4.md](docs/NVFP4.md).
+
 ## How fast is it?
 
 We measured it on two ordinary gaming PCs. A token is about ¾ of a word.
