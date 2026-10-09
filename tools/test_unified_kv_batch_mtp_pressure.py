@@ -13,6 +13,103 @@ import unified_kv_batch_mtp_pressure_smoke as gate
 import unified_kv_smoke as common
 
 
+PARK_LINE = "strata serve: pressure parked target-only 2048 tokens; parked=2 bytes=528687156"
+
+
+def counter_row(slot=0, windows=129, offered=128, accepted=128, rejected=0, discarded=0, attempts=1,
+                incoherent=0, not_ready=0, limits=0, capacity=0, reserve=1):
+    return (f"strata batch_mtp_stats slot={slot} windows={windows} offered={offered} accepted={accepted} "
+            f"rejected={rejected} discarded={discarded} fallback_attempts={attempts} "
+            f"fallback_incoherent={incoherent} fallback_not_ready={not_ready} fallback_limits={limits} "
+            f"fallback_capacity={capacity} fallback_reserve={reserve}")
+
+
+class FakeWitnessEngine:
+    """Native-protocol stand-in: admission rows, BT rows, then a terminal once BSTOP lands."""
+
+    def __init__(self, stderr_path, prompt_len, cap, tokens, *, terminal="cancel", park=False,
+                 rows=None, parks=(), stop_at=None):
+        self.stderr_path = Path(stderr_path)
+        self.stage = "startup"
+        self.sent = []
+        self.prompt_len = prompt_len
+        self.cap = cap
+        self.tokens = list(tokens)
+        self.terminal = terminal
+        self.stop_at = stop_at
+        self.seq = 0
+        self.produced = 0
+        self._rows = list(rows) if rows is not None else [counter_row()]
+        self._parks = list(parks)
+        self._park = park
+        self._admission = ["T", "DONE", "BADM"]
+        self._done = False
+        self._stderr_written = False
+
+    def _write_stderr(self):
+        if self._stderr_written:
+            return
+        lines = list(self._rows) + list(self._parks)
+        if self._park and PARK_LINE not in lines:
+            lines.append(PARK_LINE)
+        with self.stderr_path.open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        self._stderr_written = True
+
+    def send(self, *lines, deadline=None):
+        self.sent.extend(lines)
+
+    def _bstop_sent(self):
+        return any(line.startswith("BSTOP") for line in self.sent)
+
+    def next_event(self, deadline=None):
+        self.seq += 1
+        base = {"seq": self.seq, "wall_s": float(self.seq)}
+        if self._admission:
+            kind = self._admission.pop(0)
+            if kind == "T":
+                self.produced = 1
+                return {**base, "kind": "T", "token": self.tokens[0]}
+            if kind == "DONE":
+                return {**base, "kind": "DONE", "count": 1, "prompt_count": self.prompt_len,
+                        "prompt_ms": 1.0, "decode_ms": 1.0, "finish": "length", "reused": None}
+            return {**base, "kind": "BADM", "slot": 0, "continues": True}
+        if self._done:
+            raise AssertionError("fake native emitted an event after its terminal")
+        if self._bstop_sent() or (self.stop_at is not None and self.produced >= self.stop_at):
+            self._done = True
+            self._write_stderr()
+            return {**base, "kind": "BDONE", "slot": 0, "count": self.produced,
+                    "finish": self.terminal, "decode_ms": 1.0}
+        if self.produced >= len(self.tokens):
+            raise AssertionError("fake native ran out of scripted tokens before any terminal")
+        self.produced += 1
+        return {**base, "kind": "BT", "slot": 0, "token": self.tokens[self.produced - 1]}
+
+
+def run_witness_stage(tmp, *, cap=320, terminal="cancel", park=False, rows=None, parks=(), stop_at=None,
+                      plan=None, prompt_cells=None, reference_tokens=None, stream_tokens=None):
+    """Drive PressureSuite.run_optional_row_fallback (the production gate path) with a fake native."""
+    plan = plan or gate.optional_witness_plan(4096)
+    prompt_cells = prompt_cells or plan["prompt_cells"]
+    prompt = list(range(1, prompt_cells + 1))
+    reference_tokens = reference_tokens or list(range(10_000, 10_000 + cap))
+    stream_tokens = stream_tokens or list(reference_tokens)
+    stderr = Path(tmp) / "witness.stderr"
+    stderr.write_text("", encoding="utf-8")
+    evidence = {"stdout": [], "commands": [], "stages": [], "processes": []}
+    engine = FakeWitnessEngine(stderr, len(prompt), cap, stream_tokens, terminal=terminal, park=park,
+                               rows=rows, parks=parks, stop_at=stop_at)
+    output = Path(tmp) / "witness-evidence.json"
+    suite = gate.PressureSuite(engine, evidence, output, 30.0, plan["context_cells"], 0.0, 12345,
+                               stderr_path=stderr)
+    reference = common.Request("fake-optional-reference", prompt, cap)
+    reference.tokens = list(reference_tokens)
+    reference.completion = {"kind": "DONE", "finish": "length"}
+    suite.run_optional_row_fallback(prompt, cap, reference, plan, 30.0)
+    return suite, evidence, output
+
+
 class BatchMtpEvidenceTests(unittest.TestCase):
     def test_counter_invariants_and_per_attempt_scope(self):
         line = ("strata batch_mtp_stats slot=0 windows=5 offered=4 accepted=2 rejected=1 discarded=1 "
@@ -48,53 +145,96 @@ class BatchMtpEvidenceTests(unittest.TestCase):
         proof = gate.verify_stats(rows, offer=True)
         self.assertEqual(proof["offered"], 1)
 
-    def test_optional_stop_guard_handles_slot_drift_but_pressure_terminal_fails(self):
-        reqs = [common.Request("fast", [1], 320, 0), common.Request("slow", [2], 320, 1)]
-        for req, count in zip(reqs, (267, 258)):
-            req.badm = {"continues": True}
-            req.tokens.extend(range(count))
-        self.assertTrue(gate.optional_stop_ready(reqs))
-        reqs[1].tokens.pop()
-        self.assertFalse(gate.optional_stop_ready(reqs))
-        reqs[1].tokens.append(257)
-        reqs[0].completion = {"kind": "BDONE", "finish": "pressure"}
-        self.assertFalse(gate.optional_stop_ready(reqs))
+    def test_optional_witness_plan_fills_the_pool_at_a_page_boundary(self):
+        plan = gate.optional_witness_plan(4096)
+        self.assertEqual(plan["prompt_cells"], 1919)
+        self.assertEqual(plan["prompt_page_offset"], gate.PAGE - 1)
+        self.assertEqual(plan["prompt_pages"], 480)
+        self.assertEqual(plan["witness_mapping_cells"], 2176)
+        self.assertEqual(plan["witness_mapping_pages"], 544)
+        self.assertEqual(plan["pages_in_use_at_boundary"], plan["pool_pages"])
+        self.assertEqual(plan["free_pages_at_boundary"], 0)
+        self.assertEqual(plan["spare_pages"], 0)
+        self.assertEqual(plan["boundary_output_count"], 257)
+        self.assertEqual(plan["bstop_output_count"], 258)
+        self.assertEqual(plan["boundary_output_count"], plan["reserve_ahead_cells"] + 1)
 
-    def test_optional_result_requires_counter_and_no_pressure_terminal(self):
-        reqs = [common.Request("a", [1], 320, 0), common.Request("b", [2], 320, 1)]
-        for req in reqs:
-            req.badm = {"continues": True}
-            req.tokens.append(3)
-            req.token_events.append({"kind": "BT", "seq": 10 + req.slot})
-            req.completion = {"kind": "BDONE", "finish": "cancel"}
-        stats = [
-            {"slot": 0, "windows": 2, "offered": 1, "accepted": 1, "rejected": 0, "discarded": 0,
-             "fallback_attempts": 1, "fallback_incoherent": 0, "fallback_not_ready": 0,
-             "fallback_limits": 0, "fallback_capacity": 0, "fallback_reserve": 1},
-            {"slot": 1, "windows": 2, "offered": 2, "accepted": 1, "rejected": 1, "discarded": 0,
-             "fallback_attempts": 0, "fallback_incoherent": 0, "fallback_not_ready": 0,
-             "fallback_limits": 0, "fallback_capacity": 0, "fallback_reserve": 0},
-        ]
-        diagnostics = gate.parse_diagnostics("")
-        diagnostics["batch_mtp_stats"] = stats
-        proof = gate.validate_optional_result(reqs, stats, diagnostics)
-        self.assertEqual(proof["fallback_slots"], [0])
-        reqs[0].completion["finish"] = "pressure"
+    def test_optional_witness_plan_is_derived_per_context_and_rejects_unsplittable_pools(self):
+        for context in (1024, 2048, 4096):
+            plan = gate.optional_witness_plan(context)
+            self.assertEqual(plan["pages_in_use_at_boundary"], plan["pool_pages"])
+            self.assertEqual(plan["free_pages_at_boundary"], 0)
+            self.assertEqual(plan["prompt_page_offset"], gate.PAGE - 1)
+            self.assertEqual(plan["prompt_pages"] + plan["witness_mapping_pages"], plan["pool_pages"])
+        # 1023 pool pages cannot split into two equal prompt/headroom halves.
         with self.assertRaises(AssertionError):
-            gate.validate_optional_result(reqs, stats, diagnostics)
+            gate.optional_witness_plan(4092)
 
-    def test_optional_row_fallback_is_not_mandatory_pressure(self):
-        text = ("strata batch_mtp_stats slot=1 windows=3 offered=2 accepted=1 rejected=1 discarded=0 "
-                "fallback_attempts=1 fallback_incoherent=0 fallback_not_ready=0 fallback_limits=0 "
-                "fallback_capacity=0 fallback_reserve=1\n")
-        diagnostics = gate.parse_diagnostics(text)
-        proof = gate.verify_stats(diagnostics["batch_mtp_stats"], offer=True, fallback_reserve=True)
-        self.assertEqual(proof["fallback_reserve"], 1)
-        self.assertFalse(any(d["kind"] == "pressure_target_only" for d in diagnostics["pressure"]))
-        # A mandatory shortage has a different protocol terminal and a positive park.
-        with self.assertRaises(AssertionError):
-            gate.require_pressure_terminal(type("Req", (), {
-                "completion": {"kind": "BDONE", "finish": "length"}, "tokens": [7], "cap": 8})())
+    def test_optional_bstop_trigger_comes_from_the_boundary_arithmetic(self):
+        plan = gate.optional_witness_plan(4096)
+        self.assertFalse(gate.optional_bstop_ready(plan["boundary_output_count"] - 1, plan))
+        self.assertFalse(gate.optional_bstop_ready(plan["boundary_output_count"], plan))
+        self.assertTrue(gate.optional_bstop_ready(plan["bstop_output_count"], plan))
+        self.assertTrue(gate.optional_bstop_ready(plan["bstop_output_count"] + 32, plan))
+
+    def test_optional_witness_stage_passes_with_isolated_fallback_and_cancel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            suite, evidence, _ = run_witness_stage(Path(tmp))
+            stage = evidence["stages"][-1]
+            self.assertTrue(stage["passed"])
+            self.assertEqual(stage["fixture_isolation"], "isolated_optional_witness")
+            self.assertEqual(stage["bt_counts_at_bstop"], {"0": 258})
+            self.assertTrue(stage["pressure_park_absence"]["absent"])
+            self.assertEqual(stage["per_slot_counter_rows"][0]["fallback_reserve"], 1)
+            self.assertTrue(all(check["observed"] for check in stage["witness"]["checks"].values()))
+            self.assertEqual(stage["fixture_arithmetic"]["free_pages_at_boundary"], 0)
+            self.assertEqual([record["slot"] for record in stage["requests"]], [0])
+            self.assertEqual(stage["requests"][0]["completion"]["finish"], "cancel")
+
+    def test_optional_witness_stage_fails_closed_when_a_pressure_park_appears(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            with self.assertRaises(AssertionError) as caught:
+                run_witness_stage(tmp, terminal="pressure", park=True)
+            message = str(caught.exception)
+            self.assertIn("no_pressure_park", message)
+            self.assertIn("fixture non-isolation", message)
+            stage = json.loads((tmp / "witness-evidence.json").read_text())["stages"][-1]
+            self.assertEqual(stage["fixture_isolation"], "fixture_non_isolation")
+            self.assertFalse(stage["passed"])
+
+    def test_optional_witness_stage_fails_closed_on_zero_offers_or_a_second_reason(self):
+        cases = (([counter_row(offered=0, accepted=0, windows=1)], "positive_offers"),
+                 ([counter_row(capacity=1, reserve=1, attempts=2, windows=130)], "no_other_fallback_reason"))
+        for rows, missed in cases:
+            with self.subTest(missed=missed):
+                with tempfile.TemporaryDirectory() as tmp:
+                    with self.assertRaises(AssertionError) as caught:
+                        run_witness_stage(Path(tmp), rows=rows)
+                    self.assertIn(missed, str(caught.exception))
+                    self.assertIn("fixture non-isolation", str(caught.exception))
+
+    def test_optional_witness_stage_fails_closed_when_the_boundary_window_never_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(AssertionError) as caught:
+                run_witness_stage(Path(tmp), terminal="stop", stop_at=100)
+            message = str(caught.exception)
+            for missed in ("boundary_output_count_reached", "bstop_before_mandatory_shortage",
+                           "healthy_cancel_terminal"):
+                self.assertIn(missed, message)
+            self.assertIn("fixture non-isolation", message)
+
+    def test_optional_witness_stage_rejects_parity_drift(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            plan = gate.optional_witness_plan(4096)
+            clean = [10_000 + index for index in range(plan["bstop_output_count"] + 64)]
+            drifted = list(clean)
+            drifted[200] += 7  # the gate observes this row before its bounded stop point
+            with self.assertRaises(AssertionError) as caught:
+                run_witness_stage(Path(tmp), plan=plan, reference_tokens=clean, stream_tokens=drifted)
+            self.assertIn("parity", str(caught.exception))
+            stage = json.loads((Path(tmp) / "witness-evidence.json").read_text())["stages"][-1]
+            self.assertEqual(stage["fixture_isolation"], "fixture_non_isolation")
 
     def test_pressure_restore_retains_all_ids_but_leaves_last_unfed(self):
         original, returned = [10, 11, 12], [20, 21, 22]
