@@ -531,3 +531,51 @@ growth), and the earlier swap-exhaustion failures happened at repeated **fresh m
 serving - each load re-reads the 63 GiB expert arena - so added swap protects loads/reloads, not long-context
 serving. Note also the per-slot session cost at this context (0.50 GiB each) and the expert-cache reduction
 (1890 -> 1845 slots) that the fuller context and the private MTP ring cause.
+
+## 2026-10-10 — non-abliterated GPTQ NVFP4 pack, froggeric v22.5 template, router relabel
+
+Production moved off the abliterated `huihui-nvfp4` pack. The replacement is
+`Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata` (revision `640a1db9`), quantized from
+`Qwen/Qwen3.8-Flash-Next` (BF16, revision `de4b8e4d`) by GPTQ; its published expert error is 44.8 % of NVIDIA's
+NVFP4 and 33.3 % of plain RTN, best in 48 of 48 layers, and it carries Qwen's own MTP draft head rather than the
+abliterated one. All 17 `SHA256SUMS` entries and every `SIZES.txt` size were verified before use. The pack lives at
+`/data/llm/models/qwen-nvfp4-gptq`; the previous pack is untouched on disk.
+
+Validation before the swap (isolated harness, production unloaded): default baseline 26/26, `--mode correctness`
+offered 19 / accepted 11 / rejected 8 with exact intra-pack parity, `--mode tails` (depths 8/8/8, reuse
+105/106/103, clone offers 0), `--mode limits`, `--mode lifecycle`. Full-context A/B (262144, 125 000-token prompts,
+cap 128) against the abliterated pack: solo decode 29.62 on / 23.46 off tok/s with prefill 1837.8 / 1902.4, dual sum
+per-stream 38.42 / 29.79, drafts 63/63 - within about 1 % of 29.81 / 23.62, 1827 / 1888 and 38.19 / 29.82, i.e. the
+"same decode cost" claim holds. The pack author's suggested `--spec 6 --spec-min-p 0.7` measured 29.57 tok/s against
+29.62 at `--spec 4 --spec-min-p 0.5`, so the deployment keeps `--spec 4`.
+
+The chat template is now froggeric `v22.5` (`/data/llm/models/qwen3.6-chat-template.jinja`), installed as
+`chat_template.jinja` in a copy of the pack's tokenizer, `pack/tokenizer-froggeric-v22.5`. Verified live: the
+served `/props.chat_template` is byte-identical to that file. Rendering differences measured with the server's own
+renderer: the pack's own template prepends "Reasoning effort is set to xhigh…" (default effort xhigh), froggeric
+`v22.4.1` drops that and adds a four-sentence style directive (default medium), and `v22.5` drops both, leaving the
+client's system message verbatim - so the reasoning-effort default now comes from the client, not the template.
+
+Router (`/data/llama-swap/config/config.yaml`, hot-reloaded through `--watch-config`, `llama-swap` PID unchanged):
+the model key is `qwen3.8-flash-next-nvfp4-gptq`, `useModelName` and the `resident-inference` group and the
+`on_startup` preload follow it, the aliases `qwen3.8`, `qwen3.8-flash-next`, `qwen3.8:instruct`,
+`qwen3.8:thinking-coding` stay and the old id `qwen3.8-flash-next-iq3_s` is kept as an alias. The launcher is now
+`/opt/native-inference/bin/start-strata` with the old `start-strata-sharp-medium` name kept as a symlink. Live:
+`/v1/models` lists the new id plus every alias, `/running` shows `qwen3.8-flash-next-nvfp4-gptq ready` beside
+`pocket-tts ready`, and completions work through both the new id and the old alias.
+
+The per-request draft counters now work for concurrent batch requests (finding F5): two simultaneous requests
+reported `draft_n 24 / accepted 22` and `draft_n 24 / accepted 23`, exactly matching the engine's own per-slot rows
+(`slot=0 offered=24 accepted=22 rejected=2`, `slot=1 offered=24 accepted=23 rejected=1`).
+
+Two honest notes from the rollout: the router config was written about a second before the renamed launcher existed,
+so the hot-reload logged one failed preload (`no such file or directory`, status 500) and the model simply stayed
+down until the next request started it - create the launcher before pointing the config at it; and llama-swap's own
+reload cycled `pocket-tts` (the `on_startup` preload runs on reload), restarting `audiocpp_server` (PID 1436043 ->
+3441892, ~2 s, entry untouched, `/health` 200).
+
+Rollback: the abliterated pack is still installed, so reverting `deploy/nibbler/config.json` to the previous pack
+paths and reloading restores it. The router can be reverted with
+`cp -p /data/llama-swap/config/config.yaml.before-relabel-20261010T005439Z /data/llama-swap/config/config.yaml` and
+the launcher from the saved `start-strata-sharp-medium.orig`. Resources after the swap: `MemAvailable` 29 GiB, swap
+free 2 GiB, GPU 13 964 MiB, `/data` 306 GiB free.
