@@ -579,3 +579,52 @@ paths and reloading restores it. The router can be reverted with
 `cp -p /data/llama-swap/config/config.yaml.before-relabel-20261010T005439Z /data/llama-swap/config/config.yaml` and
 the launcher from the saved `start-strata-sharp-medium.orig`. Resources after the swap: `MemAvailable` 29 GiB, swap
 free 2 GiB, GPU 13 964 MiB, `/data` 306 GiB free.
+
+## 2026-10-10 — restore GPU vision on the GPTQ NVFP4 deployment
+
+The owner requested that vision be restored if the pack supports it. It does: the
+[GPTQ pack's model card](https://huggingface.co/Maximilian228/Qwen3.8-Flash-Next-NVFP4-GPTQ-Strata)
+explicitly instructs using `mmproj-Qwen3.8-Flash-Next-BF16.gguf` from ISTA-DASLab, with
+`vision.model` pointing at `qwen-nvfp4-gptq-dense.gguf`; the encoder opens that GGUF
+vocabulary-only. The projector is separate from the pack, not a reason to disable
+vision. The previous rollout omitted this compatible, already-installed component.
+
+Config commit `3872727d` adds `--vision` and restores the GPU vision section using
+`engine/strata-vision`, the existing `Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf`
+(907543008 bytes), the GPTQ dense GGUF, and the previous 1024 image-token limit.
+Everything else is unchanged: parallel 2, batch MTP, context 262144, INT8 unified KV,
+32768 GPU-resident cells, 2048 MiB reserve, conversation-cache budget 0, pack and template.
+
+Checks: homelab preflight passed; scoped nibbler triage completed with no unhealthy
+containers (its host-reboot monitor separately reports failing); 11 targeted Python
+vision/config tests passed on both the VM and host; the config invariant and
+`git diff --check` passed. Only Qwen was unloaded/reloaded through
+`POST /api/models/unload/qwen3.8-flash-next-nvfp4-gptq`; no router or audio restart.
+Final live checks on `http://127.0.0.1:5801/props` returned `modalities.vision: true`,
+`total_slots: 2`, `kv_capacity_cells: 262144`, `kv_resident_capacity_cells: 32768`.
+The process runs `strata-vision ... --gpu --max-tokens 1024`. Through the router's
+`/v1/chat/completions`, image fixtures returned "A red circle is centered on a blue
+background." and "A green square sits on a white background." A final circle request
+after the last reload again returned HTTP 200 / stop with the correct description.
+`/running` lists Qwen and pocket-tts ready; audio `/health` returns `status: ok`.
+Router/audio PIDs stayed 1435174 / 3441892. Tracked and runtime config hashes match
+(`61874201...`); shared settings remain `b61e757d...`.
+
+One transient rollback occurred because a verification assertion required positive
+API draft counts for both simultaneous text requests. The API reported 0 and 9,
+but the native engine reported slot 0 offered/accepted 52/52 and slot 1 53/53.
+The owner identified this as the known API reporting bug and instructed leaving
+vision enabled. No inference-code changes were made for it. Evidence is in
+`Strata-tests/vision-20261010T124321Z/` and `vision-20261010T124538Z/`, including
+`final-image-circle.json`; the second verification driver was interrupted by the
+owner, so its complete scripted pass is not claimed. Final checks above were run
+independently. Rollback config snapshots are in the matching `Strata-backups/vision-*`
+directories; restore their `deploy-config.json` to the tracked deployment config and
+reload Qwen through the router (the launcher refreshes runtime config).
+
+**Slot files:** not enabled (`slot_save_path` absent). The server's `slot_action`
+and the engine's session-file command both reject save/restore with parallel/batch
+requests. The documented API is explicit `POST /slots/0?action=save|restore`, not an
+automatic disk prompt cache. Using it as-is requires single-request serving; enabling
+it for the current two-slot batch-MTP deployment requires implementation work. No
+slot-file setting, concurrency downgrade, or extra RAM cache was introduced here.
