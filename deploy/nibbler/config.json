@@ -33,6 +33,7 @@
     "32768",
     "--kv-unified",
     "--no-kv-grow",
+    "--vision",
     "--vram-reserve-mib",
     "2048",
     "--conversation-cache-mib",
@@ -61,5 +62,12 @@
     "nibbler",
     "nibbler.tailnet-a578.ts.net",
     "nibbler.local.keen.land"
-  ]
+  ],
+  "vision": {
+    "exe": "/data/llm/Strata/engine/strata-vision",
+    "mmproj": "/data/llm/Strata-data/models/mmproj-Qwen3.8-Flash-Next-BF16.gguf",
+    "model": "/data/llm/models/qwen-nvfp4-gptq/qwen-nvfp4-gptq-dense.gguf",
+    "gpu": true,
+    "max_tokens": 1024
+  }
 }
