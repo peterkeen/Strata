@@ -1,0 +1,16 @@
+{
+  "config_sha256": "e40b838be023cae1c69016fa52332e8556baad711cd67a7c864269c1575a79e4",
+  "dependencies_resolved": true,
+  "gid": 979,
+  "kernel_children": {
+    "supported": true
+  },
+  "memlock": [
+    -1,
+    -1
+  ],
+  "mode": "preflight-only",
+  "python": "/data/llm/Strata/.venv/bin/python",
+  "ready": true,
+  "uid": 996
+}

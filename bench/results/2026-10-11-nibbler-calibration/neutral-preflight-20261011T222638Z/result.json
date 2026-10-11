@@ -1,0 +1,74 @@
+{
+  "launch_checks": [
+    {
+      "config_sha256": "e40b838be023cae1c69016fa52332e8556baad711cd67a7c864269c1575a79e4",
+      "dependencies_resolved": true,
+      "gid": 979,
+      "kernel_children": {
+        "supported": true
+      },
+      "memlock": [
+        -1,
+        -1
+      ],
+      "mode": "preflight-only",
+      "python": "/data/llm/Strata/.venv/bin/python",
+      "ready": true,
+      "uid": 996
+    }
+  ],
+  "measurement_kind": "readiness only; no performance evidence",
+  "mode": "preflight-only",
+  "passed": false,
+  "plan": {
+    "long_words": 8192,
+    "max_tokens": 96,
+    "mode": "preflight-only",
+    "port": 18089,
+    "production_mutations": "none; preparation and GET readiness only",
+    "repeats": 1,
+    "reserve_gates": false,
+    "run": true,
+    "sequence": "prepare/check all arms; no model requests or measurements",
+    "settings": [
+      {
+        "frac": null,
+        "reserve": 2048,
+        "workers": 11
+      }
+    ],
+    "short_words": 128,
+    "window_minutes": 10
+  },
+  "production_mutations": "none",
+  "production_unchanged": true,
+  "readiness": {
+    "audio": {
+      "backend": "cpu",
+      "status": "ok"
+    },
+    "hashes_unchanged": true,
+    "identities": {
+      "audio": {
+        "pid": 1643128,
+        "start_ticks": "54686907"
+      },
+      "router": {
+        "pid": 1435174,
+        "start_ticks": "18877666"
+      }
+    },
+    "running": [
+      {
+        "model": "pocket-tts",
+        "state": "ready"
+      },
+      {
+        "model": "qwen3.8-flash-next-nvfp4-gptq",
+        "state": "ready"
+      }
+    ]
+  },
+  "ready": true,
+  "runs": []
+}

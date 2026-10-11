@@ -1,0 +1,91 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/nibbler_perf.py",
+    "--run",
+    "--preflight-only",
+    "--fractions",
+    "baseline",
+    "--repeats",
+    "1",
+    "--tag",
+    "neutral-preflight-20261011T222638Z",
+    "--window-minutes",
+    "10"
+  ],
+  "artifacts": [
+    {
+      "bytes": 706,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/stage-manifest.json",
+      "sha256": "031005019a46f4cb7a1f776ca9f45bb55574f33a5719251bac61e64233aee709"
+    },
+    {
+      "bytes": 537,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/invocation-start.json",
+      "sha256": "1205a181a03cf5fe9dfb1f8a62113c03267b79f9a6c6869af1abbd593ff8fd2a"
+    },
+    {
+      "bytes": 2600,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/operator-before.json",
+      "sha256": "7b831af4452c6136f0c2dfd48c0d8ab1526f7c3cc73595769c612406332ad7b8"
+    },
+    {
+      "bytes": 2600,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/operator-after.json",
+      "sha256": "2b69b8c9c52527eef22a74e816020d35bdb546539d585c28b65bede1df07c5d6"
+    },
+    {
+      "bytes": 619,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/operator-verification.json",
+      "sha256": "750f7b178f050153ef6d1612fb2101886dd270f4822b677259c609a2dee662c7"
+    },
+    {
+      "bytes": 2892,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z/before.json",
+      "sha256": "1b2bd80b25fba687f6d429ec796b75873c8849f0c7e4833ca3e175f3b32a0e74"
+    },
+    {
+      "bytes": 1616,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z/result.json",
+      "sha256": "6a9003e065900ed1dc862e23bbba446e7ddb79264508bec5a5cda890289c6fc3"
+    },
+    {
+      "bytes": 330,
+      "path": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z/run-00/preflight.json",
+      "sha256": "3d07582e742762c36712e9926cda0442332e90dd42968f3687f229b360a2d9ae"
+    }
+  ],
+  "invocation_utc": "2026-10-11T22:29:39Z",
+  "neutral_invocations": 1,
+  "outcome_utc": "2026-10-11T22:29:39Z",
+  "output": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z",
+  "phase": "neutral-finished",
+  "runner_returncode": 0,
+  "stage": "/data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools",
+  "start_utc": "2026-10-11T22:29:39Z",
+  "tag": "neutral-preflight-20261011T222638Z",
+  "truncated": false,
+  "verification": {
+    "checks": {
+      "both_ready_and_audio_cpu_ok": true,
+      "gpu_consumer_identities_unchanged": true,
+      "model_process_identities_unchanged": true,
+      "neutral_result_contract": true,
+      "no_private_frontend_start_artifacts": true,
+      "no_private_model_processes": true,
+      "no_supervisor_unload_or_restoration_artifacts": true,
+      "router_audio_identities_unchanged": true,
+      "six_production_hashes_unchanged": true
+    },
+    "kind": "read-only neutral verification; not performance",
+    "neutral_invocations": 1,
+    "ready": true,
+    "runner_returncode": 0,
+    "utc": "2026-10-11T22:29:39Z",
+    "verified": true
+  },
+  "verified_sha256": {
+    "nibbler_lifecycle.py": "3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177",
+    "nibbler_perf.py": "1852695e3e6d962567d24264f51c053a37836b63eefc9d86357452c5141041b3"
+  }
+}
