@@ -98,6 +98,20 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt AND EXISTS ${CMAKE_CU
 endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+option(STRATA_BUILD_ARENA_LOAD_TESTS "Build GPU-free Linux startup arena I/O fixtures" OFF)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP OR STRATA_BUILD_TESTS OR STRATA_BUILD_ARENA_LOAD_TESTS))
+  find_package(Threads REQUIRED)
+  add_library(strata_linux_arena_load STATIC src/platform/linux_arena_load.cpp)
+  target_include_directories(strata_linux_arena_load PUBLIC include)
+  target_link_libraries(strata_linux_arena_load PUBLIC Threads::Threads)
+  if(STRATA_BUILD_TESTS OR STRATA_BUILD_ARENA_LOAD_TESTS)
+    enable_testing()
+    add_executable(linux_arena_load_test tests/platform/linux_arena_load_test.cpp)
+    target_link_libraries(linux_arena_load_test PRIVATE strata_linux_arena_load)
+    add_test(NAME linux_arena_load_test COMMAND linux_arena_load_test)
+    set_tests_properties(linux_arena_load_test PROPERTIES TIMEOUT 30)
+  endif()
+endif()
 option(STRATA_ENABLE_BATCH_MTP_TEST_HOOK "Compile the explicit test-only batch-MTP proposal substitution hook" OFF)
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 # #2027: defined here, before the GPU section reads it to register the native-expert tests (it was defined at the
@@ -239,6 +253,10 @@ if(STRATA_WERROR)
     $<$<COMPILE_LANGUAGE:HIP>:-Werror>)
 endif()
 
+if(TARGET strata_linux_arena_load)
+  target_link_libraries(strata_linux_arena_load PRIVATE strata_warnings)
+endif()
+
 # ---- strata_artifact -------------------------------------------------------
 # Header-only, and that is a deliberate property rather than an unfinished split: the GGUF reader and the
 # scalar dequantizers hold no state worth hiding, and a header-only boundary cannot introduce a
@@ -309,6 +327,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   add_library(strata_core STATIC src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp src/core/weights.cpp
                                src/core/layout.cpp)
   target_include_directories(strata_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  if(TARGET strata_linux_arena_load)
+    target_link_libraries(strata_core PUBLIC strata_linux_arena_load)
+  endif()
   if(STRATA_ENABLE_CUDA AND STRATA_EXPERIMENTAL_SM60)
     # the runtime device check (src/core/device.cu) admits the cards this build was made for (#236)
     target_compile_definitions(strata_core PRIVATE STRATA_EXPERIMENTAL_SM60=1)
@@ -317,6 +338,13 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   # cudaEventQuery: the .cu sources get cudart through the CUDA language rules, a .cpp does not, and the
   # linker error ("unresolved external symbol cudaGraphInstantiate") names the function rather than the cause.
   target_link_libraries(strata_core PUBLIC strata_plan strata_warnings ${_strata_gpu_runtime_target})
+
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (STRATA_BUILD_TESTS OR STRATA_BUILD_ARENA_LOAD_TESTS))
+    add_executable(linux_arena_parity tests/platform/linux_arena_parity.cpp)
+    target_link_libraries(linux_arena_parity PRIVATE strata_core)
+    add_test(NAME linux_arena_native_parity COMMAND linux_arena_parity)
+    set_tests_properties(linux_arena_native_parity PROPERTIES TIMEOUT 60)
+  endif()
 
   add_executable(strata-device src/core/device_main.cpp)
   target_link_libraries(strata-device PRIVATE strata_core)
