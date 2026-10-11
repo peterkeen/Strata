@@ -445,3 +445,121 @@ The three failed controls ran none of native arena parity, full model gates,
 token/logit parity or loader A/B. Separate source builds do not satisfy those
 measurement gates. These remain for primary review; no candidate install or
 configuration recommendation follows from this lifecycle fix.
+
+## `str-inn.3` authorized neutral target outcome — 2026-10-11 22:29:39 UTC
+
+**One neutral preflight passed. No benchmark, control or private model window ran.**
+This timestamped outcome supersedes earlier “not run on target” wording for the
+neutral mode only; **live baseline remains paused** and needs separate fresh
+primary authorization plus human presence/manual recovery readiness.
+
+Primary separately authorized exactly one root-on-nibbler neutral invocation of
+commit `fa8c13f099cf3b4db47f150b8011150d2c05fbb1`. This owner's homelab mandatory
+`scripts/agent-preflight.sh` passed all required checks. History inspection confirmed no unknown target dispatch before the
+provider-disconnect resumption. No second neutral invocation was made.
+
+Only the frozen runner/lifecycle module were staged in a new root-owned test leaf
+(created mode 0700, files uid 0 / mode 0444), not candidate source/build or installed
+production tools. Their exact SHA-256 was verified after write and again before
+execution:
+
+```text
+1852695e3e6d962567d24264f51c053a37836b63eefc9d86357452c5141041b3  nibbler_perf.py
+3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177  nibbler_lifecycle.py
+```
+
+Exact root command, with a ten-minute budget:
+
+```sh
+/usr/bin/python3 /data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z-tools/nibbler_perf.py \
+  --run --preflight-only --fractions baseline --repeats 1 \
+  --tag neutral-preflight-20261011T222638Z --window-minutes 10
+```
+
+Staging/execution used existing homelab `RemoteShell.exec_stdin`, hostname
+`nibbler.ts.keen.land`, strict host keys, `retries: 0`, no raw-SSH fallback.
+The exclusive invocation marker and execution receipt each record one invocation.
+The command returned **0**, `mode: preflight-only`, **`ready: true`, `passed: false`,
+`runs: []`**, and `production_mutations: none`. The prepared arm remained baseline
+split, 11 workers, 2048 MiB reserve, port 18089. The same second-resolution start
+and outcome timestamp is not a loader-time or performance result.
+
+### Target launch facts and unchanged production
+
+- Actual post-runuser/PAM child **uid 996 / gid 979**, matching native-inference.
+  Effective soft/hard memlock **`[-1, -1]` (unlimited)**; coordinator also unlimited.
+  No PAM/limit-policy change was made to obtain this result.
+- Absolute launcher `/usr/sbin/runuser`, dependency probe `/usr/bin/ldd`, venv
+  Python `/data/llm/Strata/.venv/bin/python`; `dependencies_resolved: true`.
+  Kernel direct-child-list support was true in coordinator and post-PAM child.
+  Prepared config hash:
+  `e40b838be023cae1c69016fa52332e8556baad711cd67a7c864269c1575a79e4`.
+- GET `/running`: Qwen and pocket-tts both **ready**, before and after. Audio GET
+  `/health`: **`status: ok`, `backend: cpu`**, before and after. Neutral idle GETs
+  verified two idle slots only after the early already-ready gate.
+- Unchanged router PID/start **1435174 / 18877666**; audio
+  **1643128 / 54686907**; installed production frontend **2880993 / 65583967**.
+- Only GPU compute consumers before and after were installed vision
+  **2881000 / 65583992** and engine **2881053 / 65584100**, using reported
+  1268/12560 MiB respectively. No new private frontend/native/vision or GPU
+  consumer was found. Total GPU used/free was 13981/1909 MiB in both snapshots.
+- MemAvailable **23388459008 → 23332052992 bytes** (21.78 → 21.73 GiB), SwapFree
+  **8785260544 → 8787292160 bytes** (8.18 GiB). Snapshots are not peak headroom.
+- All six installed engine/vision/BUILD/tracked-config/runtime-config/shared-settings
+  hashes were identical before/after; exact values are in the bounded operator
+  snapshots and evidence README. Shared-settings contents/config env, production
+  logs, process arguments and binary copies were not exported into results.
+- All nine operator verification checks were true. No supervisor/sampler,
+  private frontend/native model, GPU fixture, completion, unload/reload/control
+  POST or restoration was invoked. No corresponding start/unload/recovery
+  artifacts exist. Frozen tool code, production config, services, PAM and global
+  memory policies were left unchanged.
+
+### Bounded proof retrieval and its local warning caveat
+
+[Neutral evidence](../bench/results/2026-10-11-nibbler-calibration/neutral-preflight-20261011T222638Z/)
+contains the complete captured `before.json`, `result.json`, arm proof, operator
+before/after/verification, exclusive invocation marker and execution receipt.
+All **eight captured** host-file responses from existing `hl peek path_read` were
+**`truncated: false`**, with local SHA verified against execution-receipt hashes
+where available. `retrieval.json` preserves exact commands, paths, bytes and hashes;
+`probe-audit.json` preserves only this task's local audit entries. Old failed
+control artifacts were not changed.
+
+The unmodified hl CLI used an invocation-local RemoteShell constructor adapter to
+force strict host keys and zero retries (its library defaults do not enforce
+these). Representative retrieval, not another preflight invocation:
+
+```sh
+cd /home/pete/devel/homelab
+RUBYOPT=-W0 bundle exec ruby /tmp/str-inn.3-peek-strict.rb peek host nibbler path read \
+  /data/llm/Strata-tests/perf-audit-20261011/neutral-preflight-20261011T222638Z/result.json
+```
+
+The first `stage-manifest.json` probe succeeded (`status: 0`, `error: null`,
+141 ms, 22:29:40 UTC), but the initial local collector discarded stdout when
+Ruby/Bundler compatibility warnings appeared on stderr. That successful path was
+**not re-read**, and its content/truncated field is not claimed as retained.
+Local audit established this was not a target transport failure. The remaining
+**eight distinct** authorized reads completed with local Ruby warning suppression
+only; nine task-scoped path probes all had status 0 / no error. No target
+transport/probe retry, raw-SSH fallback, frozen-code/host repair, second preflight
+or additional model operation occurred.
+
+Key captured evidence SHA-256:
+
+```text
+6a9003e065900ed1dc862e23bbba446e7ddb79264508bec5a5cda890289c6fc3  result.json
+3d07582e742762c36712e9926cda0442332e90dd42968f3687f229b360a2d9ae  arm-00-preflight.json
+7b831af4452c6136f0c2dfd48c0d8ab1526f7c3cc73595769c612406332ad7b8  operator-before.json
+2b69b8c9c52527eef22a74e816020d35bdb546539d585c28b65bede1df07c5d6  operator-after.json
+750f7b178f050153ef6d1612fb2101886dd270f4822b677259c609a2dee662c7  operator-verification.json
+```
+
+**Limits:** this establishes target neutral launch readiness for this frozen
+invocation, not actual private native/vision descendant recovery, private GPU
+release, arena registration, loader timing, token/logit parity, full-context
+pressure/park/handoff or performance. Published manifest identity is not a fresh
+63 GiB payload verification. Previous failed controls remain failed; no tuning
+claim or production-setting recommendation follows. Primary owns Beads and any
+separate future baseline authorization.

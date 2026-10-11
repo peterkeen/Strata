@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "both_ready_and_audio_cpu_ok": true,
+    "gpu_consumer_identities_unchanged": true,
+    "model_process_identities_unchanged": true,
+    "neutral_result_contract": true,
+    "no_private_frontend_start_artifacts": true,
+    "no_private_model_processes": true,
+    "no_supervisor_unload_or_restoration_artifacts": true,
+    "router_audio_identities_unchanged": true,
+    "six_production_hashes_unchanged": true
+  },
+  "kind": "read-only neutral verification; not performance",
+  "neutral_invocations": 1,
+  "ready": true,
+  "runner_returncode": 0,
+  "utc": "2026-10-11T22:29:39Z",
+  "verified": true
+}
