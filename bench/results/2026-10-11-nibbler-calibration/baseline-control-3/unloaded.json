@@ -1,0 +1,23 @@
+{
+  "gpu": {
+    "free_mib": 15888,
+    "link_gen": 5,
+    "link_width": 8,
+    "used_mib": 2,
+    "util_percent": 0
+  },
+  "memory": {
+    "AnonPages": 27660042240,
+    "Cached": 16778297344,
+    "MemAvailable": 101845049344,
+    "MemFree": 85041868800,
+    "SwapFree": 8697974784,
+    "SwapTotal": 25786576896
+  },
+  "running": [
+    {
+      "model": "pocket-tts",
+      "state": "ready"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "passed": false,
+  "plan": {
+    "long_words": 8192,
+    "max_tokens": 96,
+    "port": 18089,
+    "production_mutations": "model-only unload/reload; no install/config edits",
+    "repeats": 1,
+    "reserve_gates": false,
+    "run": true,
+    "sequence": "alternate solo/dual, fresh then exact warm repeat; actual API prompt tokens recorded",
+    "settings": [
+      {
+        "frac": null,
+        "reserve": 2048,
+        "workers": 11
+      }
+    ],
+    "short_words": 128,
+    "window_minutes": 10
+  },
+  "restored": true,
+  "runs": [],
+  "stop": {
+    "memory": {
+      "AnonPages": 30423146496,
+      "Cached": 8196603904,
+      "MemAvailable": 101269815296,
+      "MemFree": 90510114816,
+      "SwapFree": 9297047552,
+      "SwapTotal": 25786576896
+    },
+    "reason": "Expecting value: line 1 column 1 (char 0)",
+    "type": "JSONDecodeError"
+  }
+}
