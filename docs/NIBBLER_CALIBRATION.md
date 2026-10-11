@@ -726,3 +726,182 @@ All four frozen tool hashes remain unchanged. Only this append-only doc section
 and the fresh evidence leaf changed in the shared checkout; no Beads/git mutations,
 agents or worktrees were made. **STAGE 1 is complete. Do not start the sweep or
 any further model window without separate primary authorization.**
+
+## STAGE 2 authorized split sweep — stopped, 2026-10-11 23:26:07 UTC
+
+**One sweep invocation failed at the second arm's pre-exec port check; production
+was restored. `passed: false`, `restored: true`. No patch, rerun or further stage.**
+This dated outcome records the separately authorized STAGE 2 after primary
+committed STAGE 1 at `2139033df3d89ffe461aff91f6400fe32803b1c7`. Pete's live-window
+authorization and manual recovery presence continued. This owner remained sole
+target operator; no manual recovery was needed.
+
+Homelab agent preflight passed; initial checkout was clean and all four frozen
+tool hashes matched. Local side-effect-free dry run confirmed default eight-arm
+order, two repeats, 11 workers, 2048 reserve, port 18089, max-tokens 96 and
+long-words 8192. Conservative estimate `8 × 2 × 108 s = 1728 s = 28.8 min` was
+below the requested 45-minute cutoff, so repeats 2 remained the default. This
+was an estimate, not a runtime guarantee; the frozen independent 50-minute stop
+remained authoritative.
+
+Fresh root-owned staging leaf mode 0700, module files uid 0/mode 0444, transferred
+via existing homelab RemoteShell with strict host keys and zero retries. SHA was
+verified after write and immediately before execution. Exact root command:
+
+```sh
+/usr/bin/python3 /data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/nibbler_perf.py \
+  --run --tag split-sweep-20261011T232607Z --window-minutes 50
+```
+
+One exclusive invocation marker. Coordinator PID/start/session
+**3268495 / 66386919 / 3268495** used its own session, DEVNULL stdin and private
+file stdout/stderr; no timeout/group-kill wrapper. Reviewed supervisor separately
+detached, PID/start **3268685 / 66387089**. Launch was **23:26:07 UTC**; first
+sampler stop **23:28:17.464086 UTC**, phase **run-01-load**. Final result/restoration
+mtimes were **23:28:46 UTC**; independent recovery proof **23:29:41 UTC**. Both
+processes exited; detached coordinator numeric exit status was not retained.
+
+### Exact refusal and arm coverage
+
+Baseline arm 00 completed **16 groups / 24 requests**, both repeats. Arm 01's
+0.10 Python launcher then refused in `launch_check` **before frontend exec,
+native model execution or GPU allocation**:
+
+```text
+nibbler_perf.py line 440: s.bind(("127.0.0.1", cfg["port"]))
+OSError: [Errno 98] Address already in use
+```
+
+The generic stop reason `allocation/native error in server.log` was the monitor's
+Traceback gate; it is not evidence of a CUDA allocation failure. Exact trace is
+in the captured arm-01 server tail, and sampler-stop records run-01-load. No
+port-holder/TCP-state snapshot was captured; do not claim a live listener or
+TIME_WAIT as established cause. No port clearing, code/host patch or retry was
+attempted. Initial `runs: 1` status was refined by this attempted-launch evidence:
+no explicit-fraction **frontend/native model/measurement** ran, but the arm-01
+pre-exec launcher did. All eight neutral preparation proofs exist, uid 996/gid
+979, unlimited effective memlock and kernel child lists; preparation is not model
+execution or performance success.
+
+| Arm | Fraction label | Execution / measurements | Load s | GPU peak MiB | Client TTFT p95 s | API decode tok/s range | API hit % / PCIe share % |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 00 | baseline, probed effective 0.25 | 24 requests recorded; baseline arm complete inside failed sweep | 27.023 | 14043 | 16.049 | 9.2–62.0 | 34.4–67.5 / 6.1–13.3, latest 12 only |
+| 01 | explicit 0.10 | pre-exec bind refused; no frontend/native model/measurements | — | — | — | — | — |
+| 02 | explicit 0.40 | not started; preparation only | — | — | — | — | — |
+| 03 | explicit 0.55 | not started; preparation only | — | — | — | — | — |
+| 04 | explicit 0.55 | not started; preparation only | — | — | — | — | — |
+| 05 | explicit 0.40 | not started; preparation only | — | — | — | — | — |
+| 06 | explicit 0.10 | not started; preparation only | — | — | — | — | — |
+| 07 | explicit 0.25 | not started; preparation only | — | — | — | — | — |
+
+### Retained baseline numbers and observed within-arm variation
+
+Descriptive data from the **failed window**, not a successful split comparison.
+Measured on nibbler's installed 0.1.41 engine, unchanged published GPTQ NVFP4 pack
+identity, 9900X / RTX 5060 Ti. Buffered loader, 64800 MiB arena,
+`cudaHostRegister PORTABLE ok`; observed cache state, not proven cold. Retained
+native startup PCIe probe reported **28.9 GB/s host→device** (best of
+28.9/28.8/28.9/28.8), effective fraction **0.25**. No worker/reserve, candidate
+loader/binary, reserve-gate, parity-fixture, clock/affinity/cache policy change.
+
+Within each repeat, short then long inputs, fresh then exact warm repeat. Repeat
+0 runs solo before dual; repeat 1 reverses that order. The same word/stream/state
+buckets below pair those two different order/cache histories. Actual rendered
+prompts **178 / 8243 tokens**, 96 output tokens each. Slash separates requests;
+semicolon separates repeat 0 from repeat 1. Mean averages two group wall rates,
+not a pooled token/time rate. Repeat difference is absolute wall-rate difference
+and percent of their mean; these are descriptive ranges, not confidence bounds.
+
+| Prompt tokens | Streams | State | Wall tok/s r0 / r1 | Mean wall tok/s | Repeat difference tok/s (% mean) | Client TTFT s r0 ; r1 | API decode tok/s r0 ; r1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 178 | 1 | fresh | 27.39 / 34.92 | 31.15 | 7.528 (24.16%) | 1.297 ; 1.230 | 42.6 ; 61.7 |
+| 178 | 1 | warm | 52.01 / 56.48 | 54.25 | 4.465 (8.23%) | 0.191 ; 0.190 | 56.7 ; 62.0 |
+| 178 | 2 | fresh | 33.74 / 33.81 | 33.77 | 0.071 (0.21%) | 1.289 / 2.688 ; 2.640 / 1.234 | 22.8 / 32.8 ; 32.2 / 22.3 |
+| 178 | 2 | warm | 44.29 / 45.30 | 44.80 | 1.010 (2.25%) | 0.170 / 0.564 ; 0.153 / 0.486 | 24.1 / 26.1 ; 36.7 / 39.0 |
+| 8243 | 1 | fresh | 11.31 / 11.32 | 11.31 | 0.011 (0.10%) | 6.957 ; 6.956 | 61.2 ; 61.6 |
+| 8243 | 1 | warm | 55.08 / 54.65 | 54.86 | 0.427 (0.78%) | 0.211 ; 0.199 | 61.2 ; 60.2 |
+| 8243 | 2 | fresh | 10.39 / 10.38 | 10.38 | 0.014 (0.14%) | 16.101 / 7.025 ; 6.978 / 16.049 | 59.7 / 9.3 ; 9.2 / 58.5 |
+| 8243 | 2 | warm | 42.38 / 42.37 | 42.38 | 0.004 (0.01%) | 0.212 / 0.603 ; 0.206 / 0.602 | 36.2 / 37.1 ; 23.2 / 25.0 |
+
+Across 24 requests, nearest-rank descriptive p95 TTFT/wall was
+**16.04890423209872 / 18.476183643913828 s**. API/native hit/PCIe ranges in the
+arm table cover **latest twelve requests, repeat 1 only**, not all 24. Native
+counters can cover last segments, and warm dual target-only paths/variable cache
+state remain caveated as in STAGE 1. API decode TPS is not full-request wall TPS.
+Warm repeats reused 171/8236 prompt tokens; cache snapshot records twelve reused
+requests, twenty-seven parks, fourteen evictions and two restores. These counters
+do not establish canonical full-context park/restore/handoff gates.
+
+**Which split differences exceed repeat variation: not assessable. Which do not:
+also not assessable, not evidence of equivalence.** Planned repeated-arm pairs
+01/06 (0.10), 02/05 (0.40), 03/04 (0.55), and probed/explicit 0.25 endpoints did
+not produce paired model measurements. The only observed repeat variation is
+inside baseline arm 00, **0.004–7.528 wall tok/s** by bucket, with reversed
+solo/dual order and changing cache state. Do not use it to manufacture a split
+ranking, statistical claim or production recommendation.
+
+Main window's 126 approximately one-second samples had minimum MemAvailable
+**22932238336 bytes (21.36 GiB)**, SwapFree **8145944576 bytes (7.59 GiB)**,
+GPU peak/minimum free **14043 / 1847 MiB**. Restoration's 28 samples had minimum
+MemAvailable **24910196736 bytes (23.20 GiB)** and SwapFree
+**7619219456 bytes (7.10 GiB)**. Resource thresholds did not fire; the launcher
+traceback did. Samples are not sub-second peaks, full-context/vision safety,
+audio responsiveness or token/logit parity proof.
+
+### Original production restored, failed sweep preserved
+
+Final journal **restored**, `children: []`, restoration attempt **1**. All
+**thirteen production-restoration checks passed**. Two sweep completion/success
+checks failed as expected: not all eight arms ran and `passed` is false.
+`operator-verification.json` therefore retains **verified: false**, not a false
+all-clear for the failed experiment. Its expected-schedule check includes eight
+completed runs; the actual CLI/default plan was correct, not misconfigured.
+
+Qwen and pocket-tts were ready; audio ok/CPU. Router/audio identities and six
+production hashes were unchanged, and actual new native executable hashes match
+the originals. Restored frontend uses original installed cwd/runtime config.
+Published manifest/tokenizer/template identity matches, not a new payload hash.
+No private processes/GPU consumers remain; port 18089 is closed.
+
+| Process | Before PID / start ticks | Restored PID / start ticks |
+| --- | --- | --- |
+| Router | 1435174 / 18877666 | 1435174 / 18877666 |
+| Audio | 1643128 / 54686907 | 1643128 / 54686907 |
+| Qwen frontend | 3176081 / 66208703 | 3275561 / 66399925 |
+| Qwen vision | 3176084 / 66208726 | 3275568 / 66399950 |
+| Qwen engine | 3176141 / 66208830 | 3275635 / 66400061 |
+
+Only installed vision/engine were post-window GPU consumers, uid 996,
+1268/12538 MiB. Health completion ended CALIBRATION READY, finish stop, five
+output tokens; restoration health wall time **28.142920011887327 s**, including
+reload/loading banners, not model TTFT or benchmark data. No manual cleanup or
+live model operation outside the single approved invocation/built-in recovery.
+
+### Evidence and freeze
+
+[Stopped split-sweep evidence](../bench/results/2026-10-11-nibbler-calibration/split-sweep-20261011T232607Z/)
+contains **33 target-derived files**, captured in **53 successful existing hl
+path_read responses**, all **truncated: false**, strict keys, retries 0. The
+receipt helper's planned-count display had a redundant +1; actual recorded probe
+count is 53, not 54. Result/arm measurements were reconstructed from 12/10
+additive host base64 chunks (24576 raw bytes per full chunk); whole original
+byte counts/SHA matched. No original runner artifact was edited. Before is an
+allowlisted sanitized export retaining original SHA provenance; private synthetic
+logs are at most 32768 source bytes / 160 lines, credential-like lines scrubbed.
+No production log/config env/shared-settings body or binary exported. Exact
+paths/commands/hashes are in retrieval.json; SHA256SUMS covers local evidence.
+
+```text
+d1c7a0af963bc20195780f24b2d18106919981f0339effd2519115526bb3fee6  result.json
+6684d94affe8958e90ef81c8a9863f2b7c65f82d3eca62eb5ba8ae68fe6de586  lifecycle.json
+faa79e3046cd25e2afe73537c6fa48c8c71cc5a1382ca68959cd7d43bf502244  restoration.json
+a8b262b4e249440810af51259d8cb22df1ca6caab58ccd4ec04b5a1dfe0d1691  arm-01-server.log.tail.txt
+```
+
+Local parsed-evidence assertions passed, including failed/restored flags, baseline
+24 outputs/16 groups, positive dual overlaps, all eight neutral memlock proofs
+and the thirteen production checks. All frozen tool hashes are unchanged; only
+this append and the fresh evidence leaf changed. No code/host patch, rerun,
+Beads/git mutation, agents or worktrees. **Stopped after the first refusal.
+Production stays 0.25 / 11 workers / 2048 reserve. No further stage is authorized
+by this report; primary decides any future action.**

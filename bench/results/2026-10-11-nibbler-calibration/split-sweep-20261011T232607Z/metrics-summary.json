@@ -1,0 +1,463 @@
+{
+  "arm_statuses": [
+    {
+      "arm": 0,
+      "mode": "probed",
+      "requested_frac": null,
+      "status": "24 requests recorded; baseline arm complete inside failed sweep"
+    },
+    {
+      "arm": 1,
+      "mode": "explicit",
+      "requested_frac": 0.1,
+      "status": "pre-exec bind refused; frontend/native model/measurements not started"
+    },
+    {
+      "arm": 2,
+      "mode": "explicit",
+      "requested_frac": 0.4,
+      "status": "not started; neutral preparation only"
+    },
+    {
+      "arm": 3,
+      "mode": "explicit",
+      "requested_frac": 0.55,
+      "status": "not started; neutral preparation only"
+    },
+    {
+      "arm": 4,
+      "mode": "explicit",
+      "requested_frac": 0.55,
+      "status": "not started; neutral preparation only"
+    },
+    {
+      "arm": 5,
+      "mode": "explicit",
+      "requested_frac": 0.4,
+      "status": "not started; neutral preparation only"
+    },
+    {
+      "arm": 6,
+      "mode": "explicit",
+      "requested_frac": 0.1,
+      "status": "not started; neutral preparation only"
+    },
+    {
+      "arm": 7,
+      "mode": "explicit",
+      "requested_frac": 0.25,
+      "status": "not started; neutral preparation only"
+    }
+  ],
+  "baseline": {
+    "api_native_hit_rate_range_latest12": [
+      0.344,
+      0.675
+    ],
+    "api_native_metrics_scope": "latest 12 requests: repeat 1 only, not all 24; native segment counters may be partial",
+    "api_native_pcie_share_range_latest12": [
+      0.061,
+      0.133
+    ],
+    "conversation_cache_as_recorded": {
+      "budget_mib": 8192,
+      "bytes": 1315612784,
+      "enabled": true,
+      "evictions": 14,
+      "last_at": 1791761295.1220493,
+      "last_event": "parked",
+      "last_prompt": 8243,
+      "last_reused": 8236,
+      "last_tokens": 8338,
+      "parked": 4,
+      "parks": 27,
+      "prompt_tokens": 101052,
+      "requests": 24,
+      "requests_reused": 12,
+      "restores": 2,
+      "reused_tokens": 50442,
+      "slots": 4
+    },
+    "effective_pcie_frac": "0.25",
+    "group_count": 16,
+    "load_s": 27.02327433100436,
+    "min_free_vram_mib": 1847,
+    "paired_groups": [
+      {
+        "absolute_repeat_difference_tps": 7.527600099903253,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            42.6
+          ],
+          [
+            61.7
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            1.2971822919789702
+          ],
+          [
+            1.2299701030133292
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": null,
+        "mean_of_two_group_rates": 31.1534179879595,
+        "prompt_tokens": 178,
+        "r0_aggregate_wall_tps": 27.389617938007873,
+        "r1_aggregate_wall_tps": 34.91721803791113,
+        "repeat_difference_percent_of_mean": 24.162999073849935,
+        "state": "fresh",
+        "streams": 1,
+        "words_generator_only": 128
+      },
+      {
+        "absolute_repeat_difference_tps": 4.46510555885812,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            56.7
+          ],
+          [
+            62.0
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            0.1913690040819347
+          ],
+          [
+            0.19022159394808114
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": null,
+        "mean_of_two_group_rates": 54.245498897519994,
+        "prompt_tokens": 178,
+        "r0_aggregate_wall_tps": 52.01294611809094,
+        "r1_aggregate_wall_tps": 56.47805167694906,
+        "repeat_difference_percent_of_mean": 8.231292272366318,
+        "state": "warm",
+        "streams": 1,
+        "words_generator_only": 128
+      },
+      {
+        "absolute_repeat_difference_tps": 0.07050727481963293,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            22.8,
+            32.8
+          ],
+          [
+            32.2,
+            22.3
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            1.2886289809830487,
+            2.688008708995767
+          ],
+          [
+            2.6399404499679804,
+            1.2343032420612872
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": [
+          2.908776483964175,
+          2.966039492050186
+        ],
+        "mean_of_two_group_rates": 33.77125318437441,
+        "prompt_tokens": 178,
+        "r0_aggregate_wall_tps": 33.73599954696459,
+        "r1_aggregate_wall_tps": 33.806506821784225,
+        "repeat_difference_percent_of_mean": 0.20877897078529462,
+        "state": "fresh",
+        "streams": 2,
+        "words_generator_only": 128
+      },
+      {
+        "absolute_repeat_difference_tps": 1.0099116462915276,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            24.1,
+            26.1
+          ],
+          [
+            36.7,
+            39.0
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            0.1703628449467942,
+            0.5635773240355775
+          ],
+          [
+            0.1528000629041344,
+            0.48634490405675024
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": [
+          3.6806885979603976,
+          2.532109622959979
+        ],
+        "mean_of_two_group_rates": 44.79857730699841,
+        "prompt_tokens": 178,
+        "r0_aggregate_wall_tps": 44.29362148385265,
+        "r1_aggregate_wall_tps": 45.303533130144174,
+        "repeat_difference_percent_of_mean": 2.2543386576112536,
+        "state": "warm",
+        "streams": 2,
+        "words_generator_only": 128
+      },
+      {
+        "absolute_repeat_difference_tps": 0.011349037445473442,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            61.2
+          ],
+          [
+            61.6
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            6.956724463030696
+          ],
+          [
+            6.9559270170284435
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": null,
+        "mean_of_two_group_rates": 11.313465445482517,
+        "prompt_tokens": 8243,
+        "r0_aggregate_wall_tps": 11.30779092675978,
+        "r1_aggregate_wall_tps": 11.319139964205254,
+        "repeat_difference_percent_of_mean": 0.10031442178492823,
+        "state": "fresh",
+        "streams": 1,
+        "words_generator_only": 8192
+      },
+      {
+        "absolute_repeat_difference_tps": 0.4266032275281688,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            61.2
+          ],
+          [
+            60.2
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            0.21129619295243174
+          ],
+          [
+            0.19893904402852058
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": null,
+        "mean_of_two_group_rates": 54.86428889228803,
+        "prompt_tokens": 8243,
+        "r0_aggregate_wall_tps": 55.07759050605211,
+        "r1_aggregate_wall_tps": 54.65098727852394,
+        "repeat_difference_percent_of_mean": 0.7775608435674705,
+        "state": "warm",
+        "streams": 1,
+        "words_generator_only": 8192
+      },
+      {
+        "absolute_repeat_difference_tps": 0.014088169556101704,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            59.7,
+            9.3
+          ],
+          [
+            9.2,
+            58.5
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            16.100877624936402,
+            7.025301718036644
+          ],
+          [
+            6.978369088028558,
+            16.04890423209872
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": [
+          1.332979389000684,
+          1.446343354997225
+        ],
+        "mean_of_two_group_rates": 10.384612879808174,
+        "prompt_tokens": 8243,
+        "r0_aggregate_wall_tps": 10.391656964586224,
+        "r1_aggregate_wall_tps": 10.377568795030122,
+        "repeat_difference_percent_of_mean": 0.13566388770730897,
+        "state": "fresh",
+        "streams": 2,
+        "words_generator_only": 8192
+      },
+      {
+        "absolute_repeat_difference_tps": 0.004191531689521355,
+        "api_decode_tps_by_repeat_slot": [
+          [
+            36.2,
+            37.1
+          ],
+          [
+            23.2,
+            25.0
+          ]
+        ],
+        "client_ttft_s_by_repeat_slot": [
+          [
+            0.2116393530741334,
+            0.6034392499132082
+          ],
+          [
+            0.20616592396982014,
+            0.6016006310237572
+          ]
+        ],
+        "dual_output_interval_overlap_s_by_repeat": [
+          2.6700991420075297,
+          3.843518972978927
+        ],
+        "mean_of_two_group_rates": 42.376141482337644,
+        "prompt_tokens": 8243,
+        "r0_aggregate_wall_tps": 42.3782372481824,
+        "r1_aggregate_wall_tps": 42.37404571649288,
+        "repeat_difference_percent_of_mean": 0.009891253764263514,
+        "state": "warm",
+        "streams": 2,
+        "words_generator_only": 8192
+      }
+    ],
+    "pci_probe_lines": [
+      "strata generate: PCIe probe: 28.9 GB/s host->device (best of 28.9 28.8 28.9 28.8) -> pcie_frac 0.25 (default 0.25)"
+    ],
+    "peak_vram_mib": 14043,
+    "request_count": 24,
+    "summary_as_recorded": {
+      "context_tokens": [
+        178,
+        178,
+        178,
+        178,
+        178,
+        178,
+        8243,
+        8243,
+        8243,
+        8243,
+        8243,
+        8243,
+        178,
+        178,
+        178,
+        178,
+        178,
+        178,
+        8243,
+        8243,
+        8243,
+        8243,
+        8243,
+        8243
+      ],
+      "decode_tps": [
+        42.6,
+        56.7,
+        22.8,
+        32.8,
+        24.1,
+        26.1,
+        61.2,
+        61.2,
+        59.7,
+        9.3,
+        36.2,
+        37.1,
+        32.2,
+        22.3,
+        36.7,
+        39.0,
+        61.7,
+        62.0,
+        9.2,
+        58.5,
+        23.2,
+        25.0,
+        61.6,
+        60.2
+      ],
+      "requests": 24,
+      "ttft_p95_s": 16.04890423209872,
+      "wall_p95_s": 18.476183643913828
+    }
+  },
+  "differences_exceeding_fraction_repeat_variation": "NOT ASSESSABLE: no explicit fraction produced model measurements",
+  "differences_not_exceeding_fraction_repeat_variation": "NOT ASSESSABLE: not evidence of equivalence",
+  "first_failure": {
+    "exact_launcher_error": "OSError: [Errno 98] Address already in use",
+    "location": "launch_check, s.bind((127.0.0.1, cfg[port])), before frontend exec/model load",
+    "monitor_reason": "allocation/native error in server.log",
+    "phase": "run-01-load",
+    "underlying_port_holder_or_TCP_state": "not captured; no TIME_WAIT/live-listener inference asserted"
+  },
+  "fraction_repeat_pair_comparisons": {
+    "0.10_arms_01_06": "unavailable",
+    "0.40_arms_02_05": "unavailable",
+    "0.55_arms_03_04": "unavailable",
+    "probed_0.25_vs_explicit_0.25_endpoints": "unavailable"
+  },
+  "kind": "descriptive baseline data from a FAILED split sweep; not tuning evidence",
+  "passed": false,
+  "planned_arm_order": [
+    null,
+    0.1,
+    0.4,
+    0.55,
+    0.55,
+    0.4,
+    0.1,
+    0.25
+  ],
+  "production_verification": {
+    "restoration_checks_passed": 13,
+    "sweep_completion_success_checks_failed_as_expected": [
+      "one_invocation_expected_split_schedule",
+      "runner_passed_and_restored"
+    ]
+  },
+  "repeats": 2,
+  "resource_samples": [
+    {
+      "count": 126,
+      "file": "samples.jsonl",
+      "first_utc": "2026-10-11T23:26:09.396744+00:00",
+      "last_utc": "2026-10-11T23:28:17.450746+00:00",
+      "min_MemAvailable_bytes": 22932238336,
+      "min_SwapFree_bytes": 8145944576,
+      "min_gpu_free_mib": 1847,
+      "peak_gpu_used_mib": 14043
+    },
+    {
+      "count": 28,
+      "file": "restore-monitor-1-b6ydo19m-samples.jsonl",
+      "first_utc": "2026-10-11T23:28:17.718362+00:00",
+      "last_utc": "2026-10-11T23:28:45.277259+00:00",
+      "min_MemAvailable_bytes": 24910196736,
+      "min_SwapFree_bytes": 7619219456,
+      "min_gpu_free_mib": 1951,
+      "peak_gpu_used_mib": 13939
+    }
+  ],
+  "restoration_health_wall_s": 28.142920011887327,
+  "restored": true,
+  "source_result_sha256": "d1c7a0af963bc20195780f24b2d18106919981f0339effd2519115526bb3fee6",
+  "sweep_invocations": 1
+}

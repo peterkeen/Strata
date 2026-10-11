@@ -1,0 +1,17 @@
+{
+  "config_sha256": "b3d1b63ec01e46855137ecfbfce9cb60526ea81cde3b4b21094e5e7049fe4f1a",
+  "dependencies": {
+    "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/strata": "\tlinux-vdso.so.1 (0x00007fa677a22000)\n\tlibcudart.so.13 => /usr/local/cuda-13.3/lib64/libcudart.so.13 (0x00007fa672800000)\n\tlibcublas.so.13 => /usr/local/cuda-13.3/lib64/libcublas.so.13 (0x00007fa66f000000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007fa66ec00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007fa6778f2000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007fa6778c4000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007fa66ea0a000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007fa672bfb000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007fa672bf6000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007fa672bf1000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007fa677a24000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.3/lib64/libcublasLt.so.13 (0x00007fa649400000)\n",
+    "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/strata-vision": "\tlinux-vdso.so.1 (0x00007feecbbf9000)\n\tlibgomp.so.1 => /usr/lib/x86_64-linux-gnu/libgomp.so.1 (0x00007feecbb82000)\n\tlibcudart.so.13 => /usr/local/cuda-13.3/lib64/libcudart.so.13 (0x00007feec7600000)\n\tlibcublas.so.13 => /usr/local/cuda-13.3/lib64/libcublas.so.13 (0x00007feec3e00000)\n\tlibcuda.so.1 => /usr/lib/x86_64-linux-gnu/libcuda.so.1 (0x00007feebd200000)\n\tlibstdc++.so.6 => /usr/lib/x86_64-linux-gnu/libstdc++.so.6 (0x00007feebce00000)\n\tlibm.so.6 => /usr/lib/x86_64-linux-gnu/libm.so.6 (0x00007feec78ea000)\n\tlibgcc_s.so.1 => /usr/lib/x86_64-linux-gnu/libgcc_s.so.1 (0x00007feecbb52000)\n\tlibc.so.6 => /usr/lib/x86_64-linux-gnu/libc.so.6 (0x00007feebcc0a000)\n\tlibdl.so.2 => /usr/lib/x86_64-linux-gnu/libdl.so.2 (0x00007feecbb4d000)\n\tlibpthread.so.0 => /usr/lib/x86_64-linux-gnu/libpthread.so.0 (0x00007feecbb48000)\n\tlibrt.so.1 => /usr/lib/x86_64-linux-gnu/librt.so.1 (0x00007feecbb43000)\n\t/lib64/ld-linux-x86-64.so.2 (0x00007feecbbfb000)\n\tlibcublasLt.so.13 => /usr/local/cuda-13.3/lib64/libcublasLt.so.13 (0x00007fee97600000)\n"
+  },
+  "gid": 979,
+  "kernel_children": {
+    "supported": true
+  },
+  "memlock": [
+    -1,
+    -1
+  ],
+  "python": "/data/llm/Strata/.venv/bin/python",
+  "uid": 996
+}
