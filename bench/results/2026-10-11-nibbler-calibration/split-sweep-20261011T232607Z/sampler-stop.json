@@ -1,0 +1,13 @@
+{
+  "memory": {
+    "AnonPages": 26731347968,
+    "Cached": 21932871680,
+    "MemAvailable": 102421184512,
+    "MemFree": 80775614464,
+    "SwapFree": 8147492864,
+    "SwapTotal": 25786576896
+  },
+  "phase": "run-01-load",
+  "reason": "allocation/native error in server.log",
+  "time": 1791761297.4640863
+}

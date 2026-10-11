@@ -1,0 +1,7 @@
+Traceback (most recent call last):
+  File "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/frontend/tools/nibbler_perf.py", line 854, in <module>
+    code = launch_check(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], execute=execute)
+  File "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/frontend/tools/nibbler_perf.py", line 440, in launch_check
+    s.bind(("127.0.0.1", cfg["port"]))
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 98] Address already in use

@@ -1,0 +1,22 @@
+{
+  "files": {
+    "nibbler_lifecycle.py": {
+      "mode": "0o444",
+      "sha256": "3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177",
+      "uid": 0
+    },
+    "nibbler_perf.py": {
+      "mode": "0o444",
+      "sha256": "1852695e3e6d962567d24264f51c053a37836b63eefc9d86357452c5141041b3",
+      "uid": 0
+    }
+  },
+  "hostname": "nibbler",
+  "mode": "0o700",
+  "python": "/usr/bin/python3",
+  "python_resolved": "/usr/bin/python3.14",
+  "python_version": "3.14.8",
+  "stage": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools",
+  "uid": 0,
+  "utc": "2026-10-11T23:26:07Z"
+}

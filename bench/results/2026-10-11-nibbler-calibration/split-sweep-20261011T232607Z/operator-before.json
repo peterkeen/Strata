@@ -1,0 +1,123 @@
+{
+  "audio": {
+    "backend": "cpu",
+    "status": "ok"
+  },
+  "gpu": {
+    "free_mib": 1931,
+    "link_gen": 1,
+    "link_width": 8,
+    "used_mib": 13959,
+    "util_percent": 0
+  },
+  "gpu_consumers": [
+    {
+      "exe": "/data/llm/Strata/engine/strata-vision",
+      "pid": 3176084,
+      "start_ticks": "66208726",
+      "used_mib": 1268
+    },
+    {
+      "exe": "/data/llm/Strata/engine/strata-nibbler",
+      "pid": 3176141,
+      "start_ticks": "66208830",
+      "used_mib": 12538
+    }
+  ],
+  "hashes": {
+    "/data/llm/Strata-run/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+    "/data/llm/Strata-run/nibbler/config.shared-settings.json": "b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a",
+    "/data/llm/Strata/deploy/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+    "/data/llm/Strata/engine/BUILD.json": "ee7ddf6de2a1864b803296ff8b40b857999ffb18fbe412808a6f6035ce91810c",
+    "/data/llm/Strata/engine/strata-nibbler": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+    "/data/llm/Strata/engine/strata-vision": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb"
+  },
+  "identities": {
+    "audio": {
+      "pid": 1643128,
+      "start_ticks": "54686907"
+    },
+    "router": {
+      "pid": 1435174,
+      "start_ticks": "18877666"
+    }
+  },
+  "idle": {
+    "live": {
+      "outside_slots": 0,
+      "queued": 0,
+      "running": 0,
+      "state": "idle",
+      "waiting": 0
+    },
+    "slots": [
+      {
+        "id": 0,
+        "is_processing": false
+      },
+      {
+        "id": 1,
+        "is_processing": false
+      }
+    ],
+    "verified": true
+  },
+  "kernel_children": {
+    "supported": true
+  },
+  "launch_tools": {
+    "ldd": "/usr/bin/ldd",
+    "runuser": "/usr/sbin/runuser",
+    "venv_python": "/data/llm/Strata/.venv/bin/python"
+  },
+  "memory": {
+    "AnonPages": 97617772544,
+    "Cached": 25081053184,
+    "MemAvailable": 24714919936,
+    "MemFree": 5540601856,
+    "SwapFree": 8146116608,
+    "SwapTotal": 25786576896
+  },
+  "model_processes": [
+    {
+      "exe": ".venv/bin/python",
+      "kind": "frontend",
+      "pid": 3176081,
+      "private_test": false,
+      "start_ticks": "66208703",
+      "uid": 996
+    },
+    {
+      "exe": "/data/llm/Strata/engine/strata-vision",
+      "kind": "native",
+      "pid": 3176084,
+      "private_test": false,
+      "start_ticks": "66208726",
+      "uid": 996
+    },
+    {
+      "exe": "/data/llm/Strata/engine/strata-nibbler",
+      "kind": "native",
+      "pid": 3176141,
+      "private_test": false,
+      "start_ticks": "66208830",
+      "uid": 996
+    }
+  ],
+  "native_identity": {
+    "gid": 979,
+    "uid": 996
+  },
+  "private_port_closed": true,
+  "running": [
+    {
+      "model": "pocket-tts",
+      "state": "ready"
+    },
+    {
+      "model": "qwen3.8-flash-next-nvfp4-gptq",
+      "state": "ready"
+    }
+  ],
+  "utc": "2026-10-11T23:26:07Z"
+}

@@ -1,0 +1,58 @@
+{
+  "settings": [
+    {
+      "frac": null,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.1,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.4,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.55,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.55,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.4,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.1,
+      "workers": 11,
+      "reserve": 2048
+    },
+    {
+      "frac": 0.25,
+      "workers": 11,
+      "reserve": 2048
+    }
+  ],
+  "repeats": 2,
+  "port": 18089,
+  "short_words": 128,
+  "long_words": 8192,
+  "max_tokens": 96,
+  "sequence": "alternate solo/dual, fresh then exact warm repeat; actual API prompt tokens recorded",
+  "reserve_gates": false,
+  "window_minutes": 50,
+  "run": true,
+  "production_mutations": "model-only unload/reload; no install/config edits"
+}
+UNLOADED Qwen only; starting private control
+COMPLETE {'frac': None, 'workers': 11, 'reserve': 2048}: load 27.0s, peak VRAM 14043 MiB
+STOP: allocation/native error in server.log
+LIFECYCLE: restored

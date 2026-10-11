@@ -1,0 +1,54 @@
+{
+  "long_words": 8192,
+  "max_tokens": 96,
+  "port": 18089,
+  "production_mutations": "model-only unload/reload; no install/config edits",
+  "repeats": 2,
+  "reserve_gates": false,
+  "run": true,
+  "sequence": "alternate solo/dual, fresh then exact warm repeat; actual API prompt tokens recorded",
+  "settings": [
+    {
+      "frac": null,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.1,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.4,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.55,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.55,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.4,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.1,
+      "reserve": 2048,
+      "workers": 11
+    },
+    {
+      "frac": 0.25,
+      "reserve": 2048,
+      "workers": 11
+    }
+  ],
+  "short_words": 128,
+  "window_minutes": 50
+}

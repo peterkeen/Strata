@@ -1,0 +1,557 @@
+{
+  "after": {
+    "audio": {
+      "backend": "cpu",
+      "status": "ok"
+    },
+    "gpu": {
+      "free_mib": 1931,
+      "link_gen": 1,
+      "link_width": 8,
+      "used_mib": 13959,
+      "util_percent": 0
+    },
+    "gpu_consumers": [
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "pid": 3275568,
+        "start_ticks": "66399950",
+        "uid": 996,
+        "used_mib": 1268
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "pid": 3275635,
+        "start_ticks": "66400061",
+        "uid": 996,
+        "used_mib": 12538
+      }
+    ],
+    "hashes": {
+      "/data/llm/Strata-run/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata-run/nibbler/config.shared-settings.json": "b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a",
+      "/data/llm/Strata/deploy/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata/engine/BUILD.json": "ee7ddf6de2a1864b803296ff8b40b857999ffb18fbe412808a6f6035ce91810c",
+      "/data/llm/Strata/engine/strata-nibbler": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+      "/data/llm/Strata/engine/strata-vision": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb"
+    },
+    "identities": {
+      "audio": {
+        "pid": 1643128,
+        "start_ticks": "54686907"
+      },
+      "router": {
+        "pid": 1435174,
+        "start_ticks": "18877666"
+      }
+    },
+    "journal_phase": "restored",
+    "memory": {
+      "AnonPages": 97104523264,
+      "Cached": 23302651904,
+      "MemAvailable": 25307426816,
+      "MemFree": 8143376384,
+      "SwapFree": 7621316608,
+      "SwapTotal": 25786576896
+    },
+    "model_processes": [
+      {
+        "actual_exe": "/usr/bin/python3.14",
+        "config_path": "/data/llm/Strata-run/nibbler/config.json",
+        "cwd": "/data/llm/Strata",
+        "exe": ".venv/bin/python",
+        "kind": "frontend",
+        "pid": 3275561,
+        "private_test": false,
+        "start_ticks": "66399925",
+        "uid": 996
+      },
+      {
+        "actual_exe": "/data/llm/Strata/engine/strata-vision",
+        "actual_exe_sha256": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb",
+        "cwd": "/tmp/strata-vision-z7v_0qaj",
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "kind": "native",
+        "pid": 3275568,
+        "private_test": false,
+        "start_ticks": "66399950",
+        "uid": 996
+      },
+      {
+        "actual_exe": "/data/llm/Strata/engine/strata-nibbler",
+        "actual_exe_sha256": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+        "cwd": "/data/llm/Strata",
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "kind": "native",
+        "pid": 3275635,
+        "private_test": false,
+        "start_ticks": "66400061",
+        "uid": 996
+      }
+    ],
+    "private_port_closed": true,
+    "private_processes": [],
+    "running": [
+      {
+        "model": "pocket-tts",
+        "state": "ready"
+      },
+      {
+        "model": "qwen3.8-flash-next-nvfp4-gptq",
+        "state": "ready"
+      }
+    ],
+    "utc": "2026-10-11T23:29:41Z"
+  },
+  "artifacts": [
+    {
+      "bytes": 620,
+      "encoding": "utf-8",
+      "name": "stage-manifest.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/stage-manifest.json"
+      ],
+      "sha256": "2e1af69346330bfaaaedab71a32cc2b65a4cbaeb2026206cc8a8de8cbb917a12",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/stage-manifest.json"
+    },
+    {
+      "bytes": 935,
+      "encoding": "utf-8",
+      "name": "invocation-start.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/invocation-start.json"
+      ],
+      "sha256": "1d35616904845453292a09ea826c1e3201f3d1b3544cd1aba5a5190724adc7e5",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/invocation-start.json"
+    },
+    {
+      "bytes": 5724,
+      "encoding": "utf-8",
+      "name": "launch-receipt.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/launch-receipt.json"
+      ],
+      "sha256": "a75b1b0a0ec1dcdc879db6ee2c00ac49272243f25a7f36819d40088d39317fdf",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/launch-receipt.json"
+    },
+    {
+      "bytes": 2978,
+      "encoding": "utf-8",
+      "name": "operator-before.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/operator-before.json"
+      ],
+      "sha256": "f88c92732fc1d98d2da6ff8cd677dbf83c8178fc67a54158118dab014c31d439",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/operator-before.json"
+    },
+    {
+      "bytes": 3034,
+      "encoding": "utf-8",
+      "name": "operator-after.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/operator-after.json"
+      ],
+      "sha256": "0338ba2e74dc6a9c06525ae6641eac37783901722a183012ae3353c02b8f1f3a",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/operator-after.json"
+    },
+    {
+      "bytes": 1343,
+      "encoding": "utf-8",
+      "name": "operator-verification.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/operator-verification.json"
+      ],
+      "sha256": "5f483075be29306cc3108dd2d49a974577abaf9423f64d16cf009e47a87fad40",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/operator-verification.json"
+    },
+    {
+      "bytes": 273680,
+      "encoding": "base64-chunks",
+      "name": "result.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0000.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0001.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0002.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0003.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0004.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0005.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0006.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0007.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0008.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0009.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0010.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/result.json.part-0011.json"
+      ],
+      "sha256": "d1c7a0af963bc20195780f24b2d18106919981f0339effd2519115526bb3fee6",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/result.json"
+    },
+    {
+      "bytes": 1498,
+      "encoding": "utf-8",
+      "name": "lifecycle.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/lifecycle.json"
+      ],
+      "sha256": "6684d94affe8958e90ef81c8a9863f2b7c65f82d3eca62eb5ba8ae68fe6de586",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/lifecycle.json"
+    },
+    {
+      "bytes": 36,
+      "encoding": "utf-8",
+      "name": "unload-control.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/unload-control.json"
+      ],
+      "sha256": "53abc3858c4d688ec400f5f9ff63c638551e3418de34e33a1927a3ad44cf09ea",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/unload-control.json"
+    },
+    {
+      "bytes": 402,
+      "encoding": "utf-8",
+      "name": "unloaded.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/unloaded.json"
+      ],
+      "sha256": "91ad128e537ab89f3101dc9d3c5718863bd05cc40264edf00965d0ea18519ec9",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/unloaded.json"
+    },
+    {
+      "bytes": 4844,
+      "encoding": "utf-8",
+      "name": "restoration.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/restoration.json"
+      ],
+      "sha256": "faa79e3046cd25e2afe73537c6fa48c8c71cc5a1382ca68959cd7d43bf502244",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/restoration.json"
+    },
+    {
+      "bytes": 307,
+      "encoding": "utf-8",
+      "name": "sampler-stop.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/sampler-stop.json"
+      ],
+      "sha256": "cb6de3c1491d603eb6511ad18978a38766b0d160b5f4beed33e272a5484538a5",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/sampler-stop.json"
+    },
+    {
+      "bytes": 45714,
+      "encoding": "utf-8",
+      "name": "samples.jsonl",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/samples.jsonl"
+      ],
+      "sha256": "d2b379636bca686ccea570a2b28346c634fb03e609bb0b3331d3e8e3cd7b9606",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/samples.jsonl"
+    },
+    {
+      "bytes": 970,
+      "encoding": "utf-8",
+      "name": "plan.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/plan.json"
+      ],
+      "sha256": "d1ab0df3057422301f0cd2bee33aba48fd6f9471bc7ec6dec8d1fedd05349299",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/plan.json"
+    },
+    {
+      "bytes": 4305,
+      "encoding": "utf-8",
+      "name": "before.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/before.json"
+      ],
+      "provenance": {
+        "original_sha256": "59e768794f483b14e69758a600ab40f2efb45fee6199d0e31e1781e0860642d8",
+        "original_source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/before.json",
+        "removed": "raw production slot/live/engine payloads and extra audio fields",
+        "sanitized": true
+      },
+      "sha256": "143a2f42f538a10a666972ec4d1a25404a851a5aebd051370c0586fc8cbc6586",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/before.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-00-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/preflight.json"
+      ],
+      "sha256": "34dd59d8251e9a03ffbee2569f11ffa1b55079865b17272c1399e5a6346d7b34",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-00-launch-readiness.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/launch-readiness.json"
+      ],
+      "sha256": "84a36aa8723d45d38ff12fe16f0a5d37dbf8653d3676c4c37200c32cfa907e84",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/launch-readiness.json"
+    },
+    {
+      "bytes": 244081,
+      "encoding": "base64-chunks",
+      "name": "arm-00-measurements.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0000.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0001.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0002.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0003.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0004.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0005.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0006.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0007.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0008.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-measurements.json.part-0009.json"
+      ],
+      "sha256": "f6d211d338968e0b7542821fcb488ed71b85678d4497ee3cf5f3bae9baae5502",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/measurements.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-01-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-01/preflight.json"
+      ],
+      "sha256": "27149a97a0b3a91c7f4e3c0764f5389d483823573e1e30cd2c76cdbac4cd61e5",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-01/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-02-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-02/preflight.json"
+      ],
+      "sha256": "e333a61d2750a3f859afbad14dde9761585906d3bdf3ea25b23869edca85d33a",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-02/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-03-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-03/preflight.json"
+      ],
+      "sha256": "3e8c5a306ba6d73b79cc6c13e597594a98c344bfbac3eb938c99ec4439392db6",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-03/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-04-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-04/preflight.json"
+      ],
+      "sha256": "48dfbc6a11c69aac16226d0bae263e6298dd499c604a80edb4fbc1ce3f3503ef",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-04/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-05-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-05/preflight.json"
+      ],
+      "sha256": "076b808ef49e659ae25a51da265365765c90476c38ad17bbd4326c8330c87190",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-05/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-06-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-06/preflight.json"
+      ],
+      "sha256": "7a824decb4ab9eb65b4ddaf8d122898c2865ef3a957ceb2e1dcffa189e0ba2b5",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-06/preflight.json"
+    },
+    {
+      "bytes": 2433,
+      "encoding": "utf-8",
+      "name": "arm-07-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-07/preflight.json"
+      ],
+      "sha256": "ecac3566684fc8a3a3b39cd81d4f29f2497efb7c6d5e5cd70a6d50e95382c22b",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-07/preflight.json"
+    },
+    {
+      "bytes": 10251,
+      "encoding": "utf-8",
+      "name": "restore-monitor-1-b6ydo19m-samples.jsonl",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/restore-monitor-1-b6ydo19m/samples.jsonl"
+      ],
+      "sha256": "dcab611403b7b95d6a1b266c239bcae278853d80c0d50d3fe9522bc19610020a",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/restore-monitor-1-b6ydo19m/samples.jsonl"
+    },
+    {
+      "bytes": 1168,
+      "encoding": "utf-8",
+      "name": "coordinator.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/coordinator.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/coordinator.log",
+        "source_bytes": 1168,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "831294a3cbb317abf88ff61f1f2f7d7044d00684272d49f97f15d51c664df1a3",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/coordinator.log.tail.txt"
+    },
+    {
+      "bytes": 1,
+      "encoding": "utf-8",
+      "name": "lifecycle.recovery.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/lifecycle.recovery.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/lifecycle.json.recovery.log",
+        "source_bytes": 0,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/lifecycle.recovery.log.tail.txt"
+    },
+    {
+      "bytes": 1,
+      "encoding": "utf-8",
+      "name": "lifecycle.mutation.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/lifecycle.mutation.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/lifecycle.json.mutation.log",
+        "source_bytes": 0,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/lifecycle.mutation.log.tail.txt"
+    },
+    {
+      "bytes": 8677,
+      "encoding": "utf-8",
+      "name": "arm-00-server.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-server.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/server.log",
+        "source_bytes": 8677,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "a7376d2ed57b3d851179854a84bca75ab9e3c6d4afbc7226265458c8cadd39b5",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-server.log.tail.txt"
+    },
+    {
+      "bytes": 24020,
+      "encoding": "utf-8",
+      "name": "arm-00-engine.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-engine.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-00/engine.log",
+        "source_bytes": 50193,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "6fbdb53161a66134f9111d00b5313bcb9f80f0047e2e403f922edd93bb904d2b",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-00-engine.log.tail.txt"
+    },
+    {
+      "bytes": 533,
+      "encoding": "utf-8",
+      "name": "arm-01-server.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-01-server.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z/run-01/server.log",
+        "source_bytes": 533,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "a8b262b4e249440810af51259d8cb22df1ca6caab58ccd4ec04b5a1dfe0d1691",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T232607Z-tools/evidence/arm-01-server.log.tail.txt"
+    }
+  ],
+  "journal_phase": "restored",
+  "passed": false,
+  "phase": "STOP-after-verification-failure-no-repair",
+  "restored": true,
+  "tag": "split-sweep-20261011T232607Z",
+  "utc": "2026-10-11T23:29:41Z",
+  "verification": {
+    "checks": {
+      "audio_ok_cpu": true,
+      "coordinator_and_supervisor_exited": true,
+      "installed_frontend_config_restored": true,
+      "journal_restored_empty_owned_children": true,
+      "no_private_gpu_consumers": true,
+      "no_private_processes": true,
+      "one_invocation_expected_split_schedule": false,
+      "private_port_closed": true,
+      "published_manifest_tokenizer_template_identity_unchanged": true,
+      "qwen_and_pocket_tts_ready": true,
+      "router_audio_identities_unchanged": true,
+      "runner_passed_and_restored": false,
+      "same_installed_native_binary_identities": true,
+      "six_production_hashes_unchanged": true,
+      "three_model_process_identities_changed": true
+    },
+    "final_result_mtime_utc": "2026-10-11T23:28:46Z",
+    "gpu_consumers": [
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "pid": 3275568,
+        "start_ticks": "66399950",
+        "uid": 996,
+        "used_mib": 1268
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "pid": 3275635,
+        "start_ticks": "66400061",
+        "uid": 996,
+        "used_mib": 12538
+      }
+    ],
+    "journal_phase": "restored",
+    "remaining_private_processes": [],
+    "restoration_mtime_utc": "2026-10-11T23:28:46Z",
+    "sweep_invocations": 1,
+    "tag": "split-sweep-20261011T232607Z",
+    "utc": "2026-10-11T23:29:41Z",
+    "verified": false
+  }
+}
