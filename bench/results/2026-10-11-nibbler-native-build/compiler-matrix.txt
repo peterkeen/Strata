@@ -1,0 +1,24 @@
+cmake version 4.3.4
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+1.13.2
+gcc-15 (Debian 15.3.0-4) 15.3.0
+Copyright (C) 2025 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+g++-15 (Debian 15.3.0-4) 15.3.0
+Copyright (C) 2025 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2026 NVIDIA Corporation
+Built on Tue_Jun_09_02:43:40_PM_PDT_2026
+Cuda compilation tools, release 13.3, V13.3.73
+Build cuda_13.3.r13.3/compiler.38244171_0
+MISSING hipcc in PATH
+MISSING icpx in PATH
+MISSING dpcpp in PATH
+MISSING /opt/rocm/bin/hipcc
+MISSING /opt/intel/oneapi/compiler/latest/bin/icpx

@@ -109,6 +109,23 @@ ctest --test-dir build-arena-cpu -R '^linux_arena_load_test$' --output-on-failur
 
 ## Primary-only host build and native gate
 
+The later isolated nibbler **CUDA compile/link passed**: CUDA 13.3.73,
+GCC/G++ 15.3.0, Release arch 120, `-j2`, 166 steps, 219 seconds and exit 0.
+The frozen snapshot contained 597 source files, including the loader and fetch
+header. Nine CPU CTests passed in 0.54 seconds. Exact commands, source/binary
+identities and unchanged dependency/production integrity records are preserved
+in the [native-build archive](../bench/results/2026-10-11-nibbler-native-build/README.md)
+and its original [report](../bench/results/2026-10-11-nibbler-native-build/REPORT.md).
+
+`linux_arena_parity` was compiled and linked but **NEVER EXECUTED**. On nibbler,
+`/tmp` is tmpfs, so the real-file CPU cases correctly used buffered fallback;
+injected direct cases do not prove `/data` direct I/O. The separate independent
+VM ext4 CPU audit observed real direct reads, not production-filesystem or
+registered-arena parity. GPU runtime, full-arena/model parity and startup A/B
+remain pending. The primary reports no Blocker/High findings in independent
+same-code reviews for nibbler readiness; that is not release approval or closure
+of the four performance-audit issues' acceptance gates.
+
 These commands are instructions for the primary/designated live helper, **not
 permission to run them against production**. Use the isolated transferred source
 checkout, not the production checkout. No install, deployment, router restart or
@@ -124,8 +141,9 @@ cmake -S . -B build-str2bg -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_BUILD_TESTS=ON \
   -DSTRATA_BUILD_CONVERSATION_TESTS=ON -DSTRATA_BUILD_ARENA_LOAD_TESTS=ON \
   -DSTRATA_GGML_DIR="$PWD/third_party/llama.cpp"
-cmake --build build-str2bg --target strata linux_arena_load_test linux_arena_parity -j4
-ctest --test-dir build-str2bg -R '^linux_arena_(load_test|native_parity)$' --output-on-failure
+cmake --build build-str2bg --target strata linux_arena_load_test linux_arena_parity -j2
+ctest --test-dir build-str2bg -R '^linux_arena_load_test$' --output-on-failure
+# Native GPU parity is a separate, unperformed gate; do not run it while production is loaded.
 ```
 
 `linux_arena_native_parity` uses a 131209-byte synthetic file, the actual unchanged
@@ -134,11 +152,14 @@ per-range and whole-arena FNV, byte counts and padding canaries. It fails rather
 than claiming a direct-I/O gate passed if registration or direct I/O is unavailable
 (including a tmpfs `/tmp`). The GPU-free test checks exact bytes, not just hashes.
 
-Native CUDA/HIP link/runtime tests, Windows and SYCL builds were not possible in
-the implementation VM. HIP must rebuild `strata`, `linux_arena_load_test` and
-`linux_arena_parity` using the existing backend/toolchain instructions in
-`docs/AMD_HIP.md`; do not reuse a CUDA build directory. Windows/SYCL backend builds
-are still needed before claiming cross-backend validation.
+The earlier implementation VM could only compile the native parity source to
+an object; the later isolated nibbler build linked it and `strata` successfully.
+No native GPU runtime/parity test was executed. HIP/SYCL compilers were absent
+from the checked host paths, and Windows remains unbuilt. HIP must rebuild
+`strata`, `linux_arena_load_test` and `linux_arena_parity` using the existing
+backend/toolchain instructions in `docs/AMD_HIP.md`; do not reuse a CUDA build
+directory. Other backend builds and GPU runtime gates are still needed before
+claiming cross-backend validation.
 
 ## Quiet-window Qwen parity and loader micro A/B
 
@@ -187,7 +208,9 @@ primary's agreed memory/swap/latency stop thresholds before and during each run.
 No claim of lower pressure or acceptable warm-start cost is established by local
 fixtures alone. Keep the option off until host evidence supports using it.
 
-## Local verification recorded
+## Verification recorded
+
+### Earlier implementation VM checks
 
 - Optimized GCC C++20 `-Wall -Wextra -Werror` fixtures: passed.
 - AddressSanitizer + UndefinedBehaviorSanitizer fixtures: passed.
@@ -195,10 +218,25 @@ fixtures alone. Keep the option off until host evidence supports using it.
 - `tools/test_setup_amd.py`: 36 tests passed (existing `/proc/cpuinfo` resource
   warning). Used the explicit Python 3.12.13 interpreter; the unconfigured `python`
   mise shim could not run it.
-- Native parity source: GCC warning-clean compile to object only, **not linked or
-  run**. Native CUDA/HIP/Windows/SYCL and CMake builds: not run; no toolchains/CMake
-  in this VM, and no toolchain installation performed.
+- At that stage, native parity source compiled warning-clean to a GCC object
+  only, **not linked or run**; the VM had no GPU toolchains/CMake. This earlier
+  limitation does not describe the later successful nibbler compile/link.
 - Primary independently reported the loader fixtures and eight existing
   conversation/KV CPU tests passing.
-- No host/production tests, Beads writes, commits, pushes, agents or worktrees were
-  performed by this implementation helper.
+- No host operations were part of those earlier VM checks.
+
+### Later isolated nibbler build and CPU checks
+
+- Native CUDA compile/link: passed with the frozen loader and fetch changes;
+  `strata` and both arena executables linked. Native parity was **not executed**.
+- Nine CPU CTests passed, zero failures/skips, 0.54 seconds. Host tmpfs cases
+  validated fallback, not nibbler `/data` `O_DIRECT`.
+- Recorded production artifact/source hashes, shared dependency hashes and
+  engine/vision process identities were unchanged across that build. This is
+  interval integrity evidence, not a fresh readiness check or performance claim.
+- HIP/SYCL and Windows builds, GPU runtime, full-arena/model parity and startup
+  A/B remain unperformed. No defaults or production configuration changed.
+- Complete original logs and manifests are in the
+  [tracked archive](../bench/results/2026-10-11-nibbler-native-build/README.md).
+  Preserving this evidence and refreshing these docs used local files only:
+  no new build, host/model/GPU operation, Beads mutation or commit/push.

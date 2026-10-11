@@ -1,0 +1,12 @@
+[
+  {
+    "pid": 2881000,
+    "exe": "/data/llm/Strata/engine/strata-vision",
+    "start_ticks": "65583992"
+  },
+  {
+    "pid": 2881053,
+    "exe": "/data/llm/Strata/engine/strata-nibbler",
+    "start_ticks": "65584100"
+  }
+]

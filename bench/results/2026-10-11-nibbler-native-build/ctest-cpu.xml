@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="(empty)"
+	tests="9"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname=""
+	time="0"
+	timestamp="2026-10-11T17:22:12"
+	>
+	<testcase name="linux_arena_load_test" classname="linux_arena_load_test" time="0.0322771" status="run">
+		<properties/>
+		<system-out>parity: buffered-fallback chunk=8192 threads=3 tmpfs ignores O_DIRECT
+parity: buffered-fallback chunk=7777 threads=32 tmpfs ignores O_DIRECT
+parity: buffered-fallback chunk=1 threads=1 tmpfs ignores O_DIRECT
+parity: direct chunk=16384 threads=1 
+parity: direct chunk=16384 threads=1 
+parity: direct chunk=16384 threads=1 
+parity: direct chunk=16384 threads=1 
+parity: buffered-fallback chunk=16384 threads=1 O_DIRECT open failed: Operation not supported
+parity: buffered-fallback chunk=16384 threads=1 O_DIRECT read unsupported/alignment refused: Invalid argument
+parity: buffered-fallback chunk=16384 threads=1 unaligned partial O_DIRECT read; retry requested bytes buffered
+parity: buffered-fallback chunk=16384 threads=1 O_DIRECT open failed: Operation not supported
+parity: mixed-direct-buffered-fallback chunk=4096 threads=1 O_DIRECT read unsupported/alignment refused: Invalid argument
+parity: buffered-fallback chunk=18446744073709551615 threads=1000 tmpfs ignores O_DIRECT
+PASS linux_arena_load: aligned/unaligned by...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="shared_kv_pages_test" classname="shared_kv_pages_test" time="0.00430454" status="run">
+		<properties/>
+		<system-out>shared_kv_pages_test: 135708 checks passed
+</system-out>
+	</testcase>
+	<testcase name="shared_kv_reservation_test" classname="shared_kv_reservation_test" time="0.00102106" status="run">
+		<properties/>
+		<system-out>shared_kv_reservation: 73 checks passed
+</system-out>
+	</testcase>
+	<testcase name="batch_draft_coherence_test" classname="batch_draft_coherence_test" time="0.000938972" status="run">
+		<properties/>
+		<system-out>batch draft coherence transitions: PASS
+</system-out>
+	</testcase>
+	<testcase name="batch_mtp_policy_test" classname="batch_mtp_policy_test" time="0.0010382" status="run">
+		<properties/>
+		<system-out>batch MTP policy/reservation: PASS
+</system-out>
+	</testcase>
+	<testcase name="conversation_cache_test" classname="conversation_cache_test" time="0.00412964" status="run">
+		<properties/>
+		<system-out>conversation_cache_test: 4243 checks passed
+</system-out>
+	</testcase>
+	<testcase name="conversation_split_failure_test" classname="conversation_split_failure_test" time="0.00155628" status="run">
+		<properties/>
+		<system-out>stages 1: allocation-failure cases preserved: 8
+stages 2: allocation-failure cases preserved: 12
+stages 3: allocation-failure cases preserved: 16
+</system-out>
+	</testcase>
+	<testcase name="conversation_memory_test" classname="conversation_memory_test" time="0.000695142" status="run">
+		<properties/>
+		<system-out>conversation_memory_test: 23 checks passed
+</system-out>
+	</testcase>
+	<testcase name="conversation_file_test" classname="conversation_file_test" time="0.495097" status="run">
+		<properties/>
+		<system-out>conversation_file_test: 187 checks passed
+</system-out>
+	</testcase>
+</testsuite>
