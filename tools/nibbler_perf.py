@@ -387,6 +387,15 @@ def interruption_handlers():
             signal.signal(sig, handler)
 
 
+def port_available(port):
+    """Probe with the frontend's own bind semantics (serve.server.Server sets
+    SO_REUSEADDR on Linux). A live listener still refuses; TIME_WAIT left by the
+    previous arm's closed connections does not, matching the real server bind."""
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(("127.0.0.1", port))
+
+
 def launch_check(config_path, uid, gid, ldd, execute=False):
     """Run AFTER runuser/PAM, with exact launch env. Never load a model here.
 
@@ -436,8 +445,7 @@ def launch_check(config_path, uid, gid, ldd, execute=False):
             raise Stop(f"private binary has missing ELF dependencies: {binary}")
         deps[binary] = output
     # Still TOCTOU. Actual frontend checks bind before model load, too.
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", cfg["port"]))
+    port_available(cfg["port"])
     proof = {"uid": os.getuid(), "gid": os.getgid(), "memlock": list(limits),
              "python": sys.executable, "dependencies": deps, "config_sha256": sha(config_path),
              "kernel_children": kernel_children}
