@@ -4211,7 +4211,11 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
     }
     std::string why;
     const bool unbuffered = experts_unbuffered(files, want + (uint64_t) blob, why);
+#if defined(__linux__)
+    const int readers = threads;   // startup scratch/read pressure is bounded; no forced queue-depth increase
+#else
     const int readers = unbuffered ? std::max(threads, 16) : threads;   // 16 keep a PCIe 5 drive's queue full
+#endif
     LoadStats st;
     std::atomic<int> ready{0};
     std::thread reg;
@@ -4232,8 +4236,21 @@ bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int6
             st = load_experts_ranges(path, a->data(), loff, lbytes, threads, /*chunk=*/8u << 20, rp);
     }
     if (reg.joinable()) reg.join();
+#if defined(__linux__)
+    // Requested policy is not the effective I/O path. GGUF scatter loading has no Linux direct implementation.
+    if (!st.io_path.empty()) {
+        std::fprintf(stderr, "strata generate: expert arena read %s (%s; direct payload %llu B, buffered payload %llu B%s%s)\n",
+                     st.io_path.c_str(), why.c_str(), (unsigned long long) st.direct_bytes,
+                     (unsigned long long) st.buffered_bytes, st.io_note.empty() ? "" : "; ", st.io_note.c_str());
+    } else {
+        std::fprintf(stderr, "strata generate: expert arena read through the file cache (%s%s)\n", why.c_str(),
+                     unbuffered ? (from_gguf ? "; override cannot be honored: Linux GGUF scatter loader is buffered"
+                                            : "; direct override could not be honored") : "");
+    }
+#else
     std::fprintf(stderr, "strata generate: expert arena read %s (%s)\n", unbuffered ? "unbuffered" : "through the file cache",
                  why.c_str());
+#endif
     if (!st.ok) {
         delete a;
         err = "ArenaExpertSource: the expert load was refused: " + (st.error.empty() ? std::string("unknown") : st.error);

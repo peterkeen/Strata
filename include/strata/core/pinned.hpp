@@ -86,6 +86,10 @@ struct LoadStats {
     uint64_t bytes = 0;
     uint64_t layers = 0;
     std::vector<uint64_t> layer_checksums;      // one FNV-1a per layer
+    // Linux opt-in startup path only. Counts are requested payload bytes, not rounded physical I/O.
+    std::string io_path;                        // direct / mixed-direct-buffered-fallback / buffered-fallback / failed-before-payload
+    std::string io_note;                        // first fallback reason, if any
+    uint64_t direct_bytes = 0, buffered_bytes = 0;
     double gib_per_second() const { return seconds > 0 ? (double) bytes / (1024.0 * 1024 * 1024) / seconds : 0.0; }
     // Aggregate rate of the readers WHILE THEY WERE INSIDE THE READ CALL: `bytes` over the mean per-thread
     // read time.  `gib_per_second()` above divides the same bytes by the wall clock of the whole loop, which
@@ -117,14 +121,16 @@ LoadStats load_experts_ranges(const std::string& path, uint8_t* dst, const std::
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
                               const std::atomic<int>* ready = nullptr);
 
-/// The same ranges read UNBUFFERED straight into `dst` (Windows): no staging buffer and no file-cache copy - the
-/// drive's DMA lands where the experts live. Every range, `dst` and `chunk` must be 4 KiB aligned; returns ok =
-/// false with an empty `error` when they are not (or off Windows), and the caller falls back to load_experts_ranges.
+/// Windows: UNBUFFERED straight into aligned `dst`; false with an empty error for unaligned ranges.
+/// Linux: opt-in bounded aligned O_DIRECT scratch windows, then copy/hash into arbitrary ranges; unsupported
+/// direct I/O falls back internally to bounded buffered preads. Real I/O errors/EOF refuse the load.
+/// Other platforms: false with an empty error. Caller selects this only when experts_unbuffered requests it.
 LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::vector<uint64_t>& layer_off,
                               const std::vector<uint64_t>& layer_bytes, int threads, uint64_t chunk,
                               const std::atomic<int>* ready = nullptr);
 
-/// Whether the expert files are better read unbuffered (Windows; false elsewhere): a timed probe of random 64 KiB
+/// Windows automatic selection; Linux remains buffered unless STRATA_UNBUFFERED_LOAD=1 is requested.
+/// On Windows, a timed probe of random 64 KiB
 /// reads says they are not in the OS file cache (a cached read takes ~10 us, the drive ~80), and the RAM left
 /// beside the arena (`arena_bytes`) could not keep them cached for the next start either - so a warm restart after
 /// an idle unload never gets slower, and only a start that reads the drive anyway skips the cache's copy.

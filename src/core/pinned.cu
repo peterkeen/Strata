@@ -1,10 +1,13 @@
 // src/core/pinned.cu - P2.S1: the pinned host arena and the parallel expert load.
 #include "strata/core/pinned.hpp"
 #include "strata/platform/memory.hpp"
+#include "strata/platform/linux_arena_load.hpp"
 
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cerrno>
 #include <cstdlib>
@@ -592,6 +595,8 @@ LoadStats load_experts_direct(const std::string& path, uint8_t* dst, const std::
     st.ok = true;
     st.bytes = bytes;
     st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+#elif defined(__linux__)
+    return strata::platform::load_linux_arena_ranges(path, dst, layer_off, layer_bytes, threads, chunk, ready);
 #else
     (void) path; (void) dst; (void) layer_off; (void) layer_bytes; (void) threads; (void) chunk; (void) ready;
 #endif
@@ -662,7 +667,11 @@ bool experts_unbuffered(const std::vector<std::string>& files, uint64_t arena_by
     return (!cached || !cache_counts) && !keepable;
 #else
     (void) files; (void) arena_bytes; (void) cache_counts; (void) read_bytes;
+#if defined(__linux__)
+    why = "buffered (Linux default; STRATA_UNBUFFERED_LOAD=1 opts in to startup O_DIRECT)";
+#else
     why = "buffered (not Windows)";
+#endif
     return false;
 #endif
 }
