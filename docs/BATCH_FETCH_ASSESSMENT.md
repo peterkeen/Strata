@@ -12,8 +12,10 @@ This is an assessment, not a measured optimization. Static inspection suggests
 that a single-GPU serial batch window is a plausible candidate. It does **not**
 establish an inherent flaw in all batch admission. Admission was not enabled:
 the completion/publication invariant below has not been demonstrated across the
-unified lifecycle, and no native backend compiler or GPU validation is available
-in the helper's VM. A CPU policy test cannot establish GPU cache coherence.
+unified lifecycle. The original helper VM had no native backend compiler; the
+later isolated nibbler CUDA compile/link passed, but GPU validation is still
+absent (see the verification section). Neither compilation nor a CPU policy test
+can establish GPU cache coherence.
 
 Ordinary adaptive swaps are a separate mechanism and remain available. Requested
 mode 2 does not suppress their copies while the effective fetch mode is zero.
@@ -256,10 +258,32 @@ Local outcomes:
   reported as passing; no rerun or unrelated failure investigation was attempted.
 - `git diff --check`: passed.
 
-No local `nvcc`, `hipcc` or `icpx` exists. Native builds are **skipped**, not passed.
+Those earlier local checks had no `nvcc`, `hipcc` or `icpx`; native builds were
+skipped at that stage. The later isolated nibbler **CUDA compile/link passed**
+with this same fetch driver/header and the Linux loader: CUDA 13.3.73,
+GCC/G++ 15.3.0, Release arch 120, `-j2`, 166 steps, 219 seconds and exit 0.
+The 597-file source snapshot and linked `strata` identity are preserved in the
+[native-build archive](../bench/results/2026-10-11-nibbler-native-build/README.md)
+and original [report](../bench/results/2026-10-11-nibbler-native-build/REPORT.md).
+Ninja's recorded dependencies confirm the fetch policy header was compiled into
+`generate.cpp.o`; this is not just a standalone policy build.
+
+Nine CPU CTests passed in 0.54 seconds. The native arena parity executable was
+compiled/linked but **NEVER EXECUTED**. Host `/tmp` tmpfs cases used buffered
+fallback; injected direct cases and the separate independent VM ext4 CPU direct
+read audit do not establish nibbler `/data` direct I/O or GPU/model correctness.
+Recorded production/dependency hashes and engine/vision process identities were
+unchanged across the build. No configuration/default or admission policy changed,
+and no inference-output parity, GPU lifecycle gate or speedup was established.
+HIP/SYCL compilers were absent from the checked host paths; Windows remains
+unbuilt. GPU validation and all four performance-audit acceptance gates remain
+pending. The primary reports independent same-code reviews with no Blocker/High
+findings for nibbler readiness, **not release approval**.
+
 The coordinator should use a frozen source snapshot (`SRC`) and fresh disposable
 build directories (`BUILD_ROOT`) on appropriate toolchain hosts, not the live
-engine directory. CUDA 13.x must support the target architecture. Commands:
+engine directory. CUDA 13.x must support the target architecture. The following
+are build instructions, not authorization for fresh host/GPU operations:
 
 ```sh
 cmake -S "$SRC" -B "$BUILD_ROOT/pk5-cuda" -G Ninja \
@@ -292,8 +316,11 @@ target_include_directories(adapt_fetch_policy_test PRIVATE include)
 add_test(NAME adapt_fetch_policy_test COMMAND adapt_fetch_policy_test)
 ```
 
-Only the live calibration helper/primary may operate nibbler. This helper made
-no requests to nibbler, performed no deploy/build/reload there, and did not modify
-Beads, create agents/worktrees, commit or push. The primary's broad Python
-baseline timed out after E/F output without a classified summary; it is not a
-clean baseline and this change does not attempt to repair unrelated failures.
+Only the designated primary/operator may perform subsequent nibbler operations.
+The original fetch-assessment helper made no nibbler requests or host builds;
+the later isolated native compile/link and CPU checks are recorded above.
+This documentation/evidence refresh used already-retrieved local files only:
+no new host/model/GPU operations, builds, Beads mutations, agents/worktrees or
+commits/pushes. The primary's earlier broad Python baseline timed out after E/F
+output without a classified summary; it is not a clean baseline and this change
+does not attempt to repair unrelated failures.

@@ -1,0 +1,4 @@
+PASS production artifact/source hashes unchanged
+PASS shared GGML source hashes unchanged
+PASS frozen candidate source hashes unchanged
+PASS production engine/vision PID and start ticks unchanged
