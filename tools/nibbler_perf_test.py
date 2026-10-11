@@ -551,6 +551,26 @@ class PreflightTests(unittest.TestCase):
         owners.assert_not_called()
         self.assertFalse(any('/unload/' in call.args[0] for call in calls.call_args_list))
 
+    def test_port_probe_refuses_live_listener_but_accepts_time_wait(self):
+        # Real listener, bound like serve.server.Server (SO_REUSEADDR): still refused.
+        with socket.socket() as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listener.bind(('127.0.0.1', 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            with self.assertRaises(OSError):
+                p.port_available(port)
+            # Server-initiated close leaves server-side TIME_WAIT on the port, as after an arm.
+            client = socket.create_connection(('127.0.0.1', port))
+            accepted, _ = listener.accept()
+            accepted.close()
+            client.recv(1)
+            client.close()
+        # Stage-2 regression: TIME_WAIT must not refuse the next arm; a plain bind would.
+        with socket.socket() as plain, self.assertRaises(OSError):
+            plain.bind(('127.0.0.1', port))
+        p.port_available(port)
+
 
 class RestorationTests(unittest.TestCase):
     def test_idempotent_actual_restoration_entry_with_api_and_process_fakes(self):
