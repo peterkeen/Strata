@@ -37,7 +37,11 @@
     "--vram-reserve-mib",
     "2048",
     "--conversation-cache-mib",
-    "0"
+    "8192",
+    "--conversation-cache-slots",
+    "4",
+    "--conversation-cache-min-free-mib",
+    "4096"
   ],
   "env": {
     "CUDA_VISIBLE_DEVICES": "0",
