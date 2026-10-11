@@ -713,7 +713,8 @@ class StrataEngine:
         self.max_context = int(args[args.index("--max-context") + 1]) if "--max-context" in args else 4096
         self.can_stop = False            # the engine honours a STOP line mid-request (READY <ctx> stop)
         self.last = {}
-        self.info = {}                   # INFO key=value facts (engine 0.1.8+): kv, expert slots, ... (Monitor tab)
+        self.info = {}                   # Native INFO facts: includes requested/effective adapt_fetch and reason.
+                                        # Never infer fetch eligibility from the server's environment or slot activity.
         self.prefill_tok_s_mean = None
         self.progress = None             # (read, total) prompt tokens while a prompt is read, from PP lines
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
@@ -976,7 +977,10 @@ class StrataEngine:
         close() ends and waits for the old process first (EngineStuck when it cannot be ended).  A start that still
         exits before READY - a dead engine's VRAM can take a while to come back, notably on ROCm - is retried
         (PR #637)."""
-        info = dict(self.info)
+        # Fetch admission is this process's policy, not persistent model metadata. A replacement
+        # binary that does not report it has unknown state; never retain its predecessor's values.
+        info = {k: v for k, v in self.info.items()
+                if k not in ("adapt_fetch_requested", "adapt_fetch_effective", "adapt_fetch_reason")}
         self.starting = True                     # prepare() answers 503 "starting" meanwhile (#344)
         try:
             self.close()

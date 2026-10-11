@@ -68,6 +68,7 @@
 #include "strata/core/native_dense.hpp"
 #include "strata/program/batch_read.hpp"
 #include "strata/program/logits_selection.hpp"
+#include "strata/program/adapt_fetch_policy.hpp"
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/prefill/share_rules.hpp"
@@ -8680,20 +8681,29 @@ int main(int argc, char** argv) {
             pcie_auto.link_gbps = o.pcie_probe_gbps;
             pcie_auto.blob_bytes = g.n_layers > 0 ? sum / (double) g.n_layers : 0.0;
         }
-        // the serial windows of one GPU, where the pool can admit (expert_pool_dispatch_multi's fetch_on)
-        const char* fetch_off = d_res == nullptr ? "no residency table" : o.spec_split ? "--spec-split"
-                              : multi_gpu || !stages.empty() ? "a layer split" : peer.valid() ? "--peer-device"
-                              : remote_opt || drive.d.remote_count > 0 ? "helper GPUs" : o.adapt_async ? "--adapt-async"
-                              : o.pipeline_windows > 0 ? "--pipeline-windows" : o.batch > 0 ? "--batch" : nullptr;
-        if (adapt_fetch() > 0) {   // STRATA_ADAPT_FETCH (opt-in)
-            const char* off = drive.d.usage.empty() ? "the adaptive tier is off" : fetch_off != nullptr ? fetch_off
-                            : o.pcie_mode == "dma" || o.pcie_mode == "direct" ? "--pcie-mode dma / direct"
-                            : drive.d.plan == nullptr ? "no GPU plan"
-                            : !(drive.d.pcie_num > 0 || (pcie_balance() && n_stages == 1)) ? "no PCIe share"
-                            : src.complement_ready() ? "the resident RAM mode" : nullptr;
-            if (off != nullptr) std::fprintf(stderr, "strata serve: STRATA_ADAPT_FETCH is off (%s)\n", off);
+        // Same admission policy as before: batch remains excluded, including a solo GEN
+        // on a batch-capable engine. See docs/BATCH_FETCH_ASSESSMENT.md before changing it.
+        const auto fetch_state = strata::program::adapt_fetch::evaluate(adapt_fetch(), {
+            .adaptive_tier = !drive.d.usage.empty(),
+            .residency = d_res != nullptr,
+            .spec_split = o.spec_split,
+            .layer_split = multi_gpu || !stages.empty(),
+            .peer = peer.valid(),
+            .helpers = remote_opt != nullptr || drive.d.remote_count > 0,
+            .async = o.adapt_async != 0,
+            .pipeline = o.pipeline_windows > 0,
+            .batch = o.batch > 0,
+            .copy_mode = o.pcie_mode != "dma" && o.pcie_mode != "direct",
+            .gpu_plan = drive.d.plan != nullptr,
+            .pcie_share = drive.d.pcie_num > 0 || (pcie_balance() && n_stages == 1),
+            .resident_ram = src.complement_ready(),
+        });
+        if (fetch_state.requested > 0) {   // STRATA_ADAPT_FETCH (opt-in)
+            if (fetch_state.effective == 0)
+                std::fprintf(stderr, "strata serve: STRATA_ADAPT_FETCH is off (%s)\n",
+                             strata::program::adapt_fetch::description(fetch_state.reason, true));
             else {
-                drive.d.fetch_admit = adapt_fetch();
+                drive.d.fetch_admit = fetch_state.effective;
                 drive.d.res_mut = host_res.data();
                 drive.d.in_flight.assign(host_res.size(), 0);
                 drive.d.fetch_avail.assign((size_t) g.n_layers, 0);
@@ -8705,6 +8715,11 @@ int main(int argc, char** argv) {
                              drive.d.fetch_admit == 2 ? "; the tier's own copies are off" : "");
             }
         }
+        // Native facts, not the requested environment alone. The server forwards INFO fields
+        // unchanged into /metrics.engine; older engines simply omit these fields.
+        std::printf("INFO adapt_fetch_requested=%d adapt_fetch_effective=%d adapt_fetch_reason=%s\n",
+                    fetch_state.requested, drive.d.fetch_admit,
+                    strata::program::adapt_fetch::code(fetch_state.reason));
         // #477 --expert-profile-save: what the adaptive tier learned, kept across restarts (opt-in; off: `heat` stays
         // empty and nothing below runs).  It needs the adaptive tier's counts and the residency table.
         std::vector<double> heat;
@@ -14281,18 +14296,24 @@ int main(int argc, char** argv) {
         const uint64_t fbytes0 = src.file_blob_bytes(), fall0 = src.file_read_bytes();
         const double fms0 = src.file_ms();
         if (o.adapt_every > 0 && o.adapt_swaps > 0) drive.d.usage.assign((size_t) (g.n_layers * g.n_expert), 0.0f);
-        const char* fetch_off = d_res == nullptr ? "no residency table" : o.spec_split ? "--spec-split"
-                              : multi_gpu ? "a layer split" : drive.d.peer != nullptr ? "a peer tier"
-                              : drive.d.remote_count > 0 ? "helper GPUs" : nullptr;
-        if (adapt_fetch() > 0) {   // STRATA_ADAPT_FETCH (opt-in)
-            const char* off = drive.d.usage.empty() ? "the adaptive tier is off" : fetch_off != nullptr ? fetch_off
-                            : o.pcie_mode == "dma" || o.pcie_mode == "direct" ? "--pcie-mode dma / direct"
-                            : drive.d.plan == nullptr ? "no GPU plan"
-                            : !(drive.d.pcie_num > 0 || pcie_balance()) ? "no PCIe share"
-                            : src.complement_ready() ? "the resident RAM mode" : nullptr;
-            if (off != nullptr) std::fprintf(stderr, "strata generate: STRATA_ADAPT_FETCH is off (%s)\n", off);
+        const auto fetch_state = strata::program::adapt_fetch::evaluate(adapt_fetch(), {
+            .adaptive_tier = !drive.d.usage.empty(),
+            .residency = d_res != nullptr,
+            .spec_split = o.spec_split,
+            .layer_split = multi_gpu,
+            .peer = drive.d.peer != nullptr,
+            .helpers = drive.d.remote_count > 0,
+            .copy_mode = o.pcie_mode != "dma" && o.pcie_mode != "direct",
+            .gpu_plan = drive.d.plan != nullptr,
+            .pcie_share = drive.d.pcie_num > 0 || pcie_balance(),
+            .resident_ram = src.complement_ready(),
+        });
+        if (fetch_state.requested > 0) {   // STRATA_ADAPT_FETCH (opt-in)
+            if (fetch_state.effective == 0)
+                std::fprintf(stderr, "strata generate: STRATA_ADAPT_FETCH is off (%s)\n",
+                             strata::program::adapt_fetch::description(fetch_state.reason, false));
             else {
-                drive.d.fetch_admit = adapt_fetch();
+                drive.d.fetch_admit = fetch_state.effective;
                 drive.d.res_mut = host_res.data();
                 drive.d.in_flight.assign(host_res.size(), 0);
                 drive.d.fetch_avail.assign((size_t) g.n_layers, 0);
@@ -14305,6 +14326,9 @@ int main(int argc, char** argv) {
                              drive.d.fetch_admit == 2 ? "; the tier's own copies are off" : "");
             }
         }
+        std::printf("INFO adapt_fetch_requested=%d adapt_fetch_effective=%d adapt_fetch_reason=%s\n",
+                    fetch_state.requested, drive.d.fetch_admit,
+                    strata::program::adapt_fetch::code(fetch_state.reason));
         // before every window: the device's table follows the host's (the tier's evictions, the admissions - see the
         // serve path); the hook's captures live in this block, so it is taken off the verifier when the block ends
         const bool res_checking = std::getenv("STRATA_ADAPT_FETCH_CHECKRES") != nullptr && d_res != nullptr;
