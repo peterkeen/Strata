@@ -1,0 +1,659 @@
+{
+  "all_truncated_false": true,
+  "assembled_files_verified_against_target_sha256": true,
+  "chunk_bytes": 24576,
+  "files": [
+    {
+      "bytes": 627,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/stage-manifest.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/stage-manifest.json",
+      "local_file": "stage-manifest.json",
+      "response_sha256": "dd164d68745a24f4db83b6444293d0ff1f5dbb5b5d8c3eb57c06c161c32a3472",
+      "truncated": false
+    },
+    {
+      "bytes": 1013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/invocation-start.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/invocation-start.json",
+      "local_file": "invocation-start.json",
+      "response_sha256": "eab406d2808e5ba859f09cfe1dc57b4483d49c800b790e2ccc21e1a857e19829",
+      "truncated": false
+    },
+    {
+      "bytes": 4368,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/launch-receipt.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/launch-receipt.json",
+      "local_file": "launch-receipt.json",
+      "response_sha256": "6f70b2326ec78ef26526cebd139ae93288b76dc905c8e35f13cc19327f7c1973",
+      "truncated": false
+    },
+    {
+      "bytes": 2979,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-before.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-before.json",
+      "local_file": "operator-before.json",
+      "response_sha256": "e48db6758f52c7b2f13bd711d1bedd34f9160beaf5b4b789b381902227268940",
+      "truncated": false
+    },
+    {
+      "bytes": 3034,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-after.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-after.json",
+      "local_file": "operator-after.json",
+      "response_sha256": "e909abac06b0d0fe39b7ec5c513b33e68368ec068aae5846ce67119d30246113",
+      "truncated": false
+    },
+    {
+      "bytes": 1343,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-verification.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-verification.json",
+      "local_file": "operator-verification.json",
+      "response_sha256": "0e50dab184ac77f26ea3682089047178e742c12ffccd6a8dd966f44e648e8c21",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0000.json",
+      "local_file": "result.json",
+      "response_sha256": "8f2147c71ec3933aa7d034b7917473cd3da76a54e126fd9770a383e3beea0446",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0001.json",
+      "local_file": "result.json",
+      "response_sha256": "564c6b766774bc182c3df883c046145420cbe45fd04148b1fd1439ce6566990f",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0002.json",
+      "local_file": "result.json",
+      "response_sha256": "5626e49a2534d5ea0801a69e42b604a3fa41223129fc636fb40e96fd05b4d48f",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0003.json",
+      "local_file": "result.json",
+      "response_sha256": "3e9d86e87516d6588ba1b5df0c714de9b103951fe330bfb6bd4785813fbbf479",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0004.json",
+      "local_file": "result.json",
+      "response_sha256": "fca3f179b29a829616311a7f5de29e2795b815df69241babbe64c01d37f8ca0a",
+      "truncated": false
+    },
+    {
+      "bytes": 27767,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0005.json",
+      "local_file": "result.json",
+      "response_sha256": "f18b099c67d52742a71f34d93e6d887b984739ed6d6a11599dadfa255c14ef5b",
+      "truncated": false
+    },
+    {
+      "bytes": 1513,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/lifecycle.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/lifecycle.json",
+      "local_file": "lifecycle.json",
+      "response_sha256": "2ad3d0102deec501fbbe13fb5d0227e23ff8925c4d8a666cd085ea32ce1b93b3",
+      "truncated": false
+    },
+    {
+      "bytes": 36,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unload-control.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unload-control.json",
+      "local_file": "unload-control.json",
+      "response_sha256": "53abc3858c4d688ec400f5f9ff63c638551e3418de34e33a1927a3ad44cf09ea",
+      "truncated": false
+    },
+    {
+      "bytes": 403,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unloaded.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unloaded.json",
+      "local_file": "unloaded.json",
+      "response_sha256": "461155db19a119f706ad7cd07094297e277ca42b138dcf160dfe4f822792e448",
+      "truncated": false
+    },
+    {
+      "bytes": 5276,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restoration.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restoration.json",
+      "local_file": "restoration.json",
+      "response_sha256": "8d6a21a26b4e3baefff6bcb95477ed025f2b4b2fbe58871dfe729465a80e42ca",
+      "truncated": false
+    },
+    {
+      "bytes": 28182,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/samples.jsonl"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/samples.jsonl",
+      "local_file": "samples.jsonl",
+      "response_sha256": "f47178c33e0df2065e0d54ec88a73c6c4480b3cb81207437eaf4e36d9cca7f3c",
+      "truncated": false
+    },
+    {
+      "bytes": 442,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/plan.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/plan.json",
+      "local_file": "plan.json",
+      "response_sha256": "c1f4090fd285243558901b4a528cad61400ea34b12c2c6ed38967130e31b63c3",
+      "truncated": false
+    },
+    {
+      "bytes": 4306,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/before.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/before.json",
+      "local_file": "before.json",
+      "response_sha256": "83f599b038bd02f60f5189393d56130a156b320db6a1b6cfd80fa5d30dff5199",
+      "truncated": false
+    },
+    {
+      "bytes": 2447,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/preflight.json",
+      "local_file": "arm-00-preflight.json",
+      "response_sha256": "0e60a05ba30a640437b2b4d667f27e9103938864421fdb7edc2e0d21bf23e083",
+      "truncated": false
+    },
+    {
+      "bytes": 2447,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/launch-readiness.json",
+      "local_file": "arm-00-launch-readiness.json",
+      "response_sha256": "bcbcaa7fb4f55e1e83d683fbef3ad32af0d5bb4889829966439298fd310d45d6",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0000.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "206b9992bcfaf5bed63a12da5133f16cb496ee4cb86db342f55512ad62b76b1e",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0001.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "591114c450e6e5dab0f09512be56e849638e634d768d9d32fb496c02e7049f2e",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0002.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "336e0ec136e7161f4e8f196452e44e0394808c4d2f4b2008377febb4998fe1a5",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0003.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "7cb72d5c1cdf5256951adb8927d5102eb09d29c7981c13a8246bec58cc0cdbad",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0004.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "365590c222dab7c49ad29f7e7d9d92761d1bbf5add43be21b0c6b635f597e310",
+      "truncated": false
+    },
+    {
+      "bytes": 7158,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0005.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "20f825c629f66b3d152184bfdae4309163515cb356aa1f302be92b96c80b2182",
+      "truncated": false
+    },
+    {
+      "bytes": 10172,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restore-monitor-1-i373ca7p/samples.jsonl"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restore-monitor-1-i373ca7p/samples.jsonl",
+      "local_file": "restore-monitor-1-i373ca7p-samples.jsonl",
+      "response_sha256": "b52174c8dade28280a6d4fef7804431904a51cd4fe8da85f5b0789b7aa587975",
+      "truncated": false
+    },
+    {
+      "bytes": 596,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/coordinator.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/coordinator.log.tail.txt",
+      "local_file": "coordinator.log.tail.txt",
+      "response_sha256": "c4539c355e52d1eecc8f81e9fe76396654cfefa340aa1fda33f6039b1083e713",
+      "truncated": false
+    },
+    {
+      "bytes": 4738,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/server.log.tail.txt",
+      "local_file": "server.log.tail.txt",
+      "response_sha256": "68d8f2b2d33e9f658d10e2d47ac3f88743f1910f83eb1ef840061428072614eb",
+      "truncated": false
+    },
+    {
+      "bytes": 22719,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/engine.log.tail.txt",
+      "local_file": "engine.log.tail.txt",
+      "response_sha256": "d6d4ce8b232b5804a7a51112727de6e7b4d10e0601c10d2639c51f44da212a34",
+      "truncated": false
+    },
+    {
+      "bytes": 1,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.recovery.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.recovery.log.tail.txt",
+      "local_file": "lifecycle.recovery.log.tail.txt",
+      "response_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "truncated": false
+    },
+    {
+      "bytes": 1,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.mutation.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.mutation.log.tail.txt",
+      "local_file": "lifecycle.mutation.log.tail.txt",
+      "response_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "truncated": false
+    },
+    {
+      "bytes": 19167,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/after-receipt.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/after-receipt.json",
+      "local_file": "after-receipt.json",
+      "response_sha256": "e2e49c6600acf769ceb527f7ccc48d4adcb84443de96574ecf52164fb9ad36a8",
+      "truncated": false
+    }
+  ],
+  "host": "nibbler.ts.keen.land",
+  "probe": "existing hl peek path_read with invocation-local strict/zero-retry adapter",
+  "raw_ssh_fallback": false,
+  "retries": 0,
+  "strict_host_key_checking": true,
+  "utc": "2026-10-11T23:02:04Z"
+}

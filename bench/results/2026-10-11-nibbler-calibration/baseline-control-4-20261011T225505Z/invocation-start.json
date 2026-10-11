@@ -1,0 +1,39 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/nibbler_perf.py",
+    "--run",
+    "--fractions",
+    "baseline",
+    "--repeats",
+    "1",
+    "--tag",
+    "baseline-control-4-20261011T225505Z",
+    "--window-minutes",
+    "30"
+  ],
+  "baseline_invocations": 1,
+  "coordinator": {
+    "boot": "582696d9-3af0-4ab7-8c38-044bbe64d560",
+    "pid": 3172811,
+    "start": "66200737"
+  },
+  "coordinator_session": 3172811,
+  "detached_coordinator": true,
+  "launched_utc": "2026-10-11T22:55:05Z",
+  "sha256_verified": {
+    "nibbler_lifecycle.py": {
+      "mode": "0o444",
+      "sha256": "3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177",
+      "uid": 0
+    },
+    "nibbler_perf.py": {
+      "mode": "0o444",
+      "sha256": "1852695e3e6d962567d24264f51c053a37836b63eefc9d86357452c5141041b3",
+      "uid": 0
+    }
+  },
+  "stdin": "DEVNULL",
+  "stdout_stderr": "private coordinator.log",
+  "utc": "2026-10-11T22:55:05Z"
+}
