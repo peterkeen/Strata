@@ -1,0 +1,448 @@
+{
+  "after": {
+    "audio": {
+      "backend": "cpu",
+      "status": "ok"
+    },
+    "gpu": {
+      "free_mib": 1931,
+      "link_gen": 1,
+      "link_width": 8,
+      "used_mib": 13959,
+      "util_percent": 0
+    },
+    "gpu_consumers": [
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "pid": 3176084,
+        "start_ticks": "66208726",
+        "uid": 996,
+        "used_mib": 1268
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "pid": 3176141,
+        "start_ticks": "66208830",
+        "uid": 996,
+        "used_mib": 12538
+      }
+    ],
+    "hashes": {
+      "/data/llm/Strata-run/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata-run/nibbler/config.shared-settings.json": "b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a",
+      "/data/llm/Strata/deploy/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata/engine/BUILD.json": "ee7ddf6de2a1864b803296ff8b40b857999ffb18fbe412808a6f6035ce91810c",
+      "/data/llm/Strata/engine/strata-nibbler": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+      "/data/llm/Strata/engine/strata-vision": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb"
+    },
+    "identities": {
+      "audio": {
+        "pid": 1643128,
+        "start_ticks": "54686907"
+      },
+      "router": {
+        "pid": 1435174,
+        "start_ticks": "18877666"
+      }
+    },
+    "journal_phase": "restored",
+    "memory": {
+      "AnonPages": 97607831552,
+      "Cached": 26343182336,
+      "MemAvailable": 22514835456,
+      "MemFree": 4267945984,
+      "SwapFree": 8087158784,
+      "SwapTotal": 25786576896
+    },
+    "model_processes": [
+      {
+        "actual_exe": "/usr/bin/python3.14",
+        "config_path": "/data/llm/Strata-run/nibbler/config.json",
+        "cwd": "/data/llm/Strata",
+        "exe": ".venv/bin/python",
+        "kind": "frontend",
+        "pid": 3176081,
+        "private_test": false,
+        "start_ticks": "66208703",
+        "uid": 996
+      },
+      {
+        "actual_exe": "/data/llm/Strata/engine/strata-vision",
+        "actual_exe_sha256": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb",
+        "cwd": "/tmp/strata-vision-cfxz2828",
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "kind": "native",
+        "pid": 3176084,
+        "private_test": false,
+        "start_ticks": "66208726",
+        "uid": 996
+      },
+      {
+        "actual_exe": "/data/llm/Strata/engine/strata-nibbler",
+        "actual_exe_sha256": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+        "cwd": "/data/llm/Strata",
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "kind": "native",
+        "pid": 3176141,
+        "private_test": false,
+        "start_ticks": "66208830",
+        "uid": 996
+      }
+    ],
+    "private_port_closed": true,
+    "private_processes": [],
+    "running": [
+      {
+        "model": "pocket-tts",
+        "state": "ready"
+      },
+      {
+        "model": "qwen3.8-flash-next-nvfp4-gptq",
+        "state": "ready"
+      }
+    ],
+    "utc": "2026-10-11T23:00:41Z"
+  },
+  "artifacts": [
+    {
+      "bytes": 627,
+      "encoding": "utf-8",
+      "name": "stage-manifest.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/stage-manifest.json"
+      ],
+      "sha256": "dd164d68745a24f4db83b6444293d0ff1f5dbb5b5d8c3eb57c06c161c32a3472",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/stage-manifest.json"
+    },
+    {
+      "bytes": 1013,
+      "encoding": "utf-8",
+      "name": "invocation-start.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/invocation-start.json"
+      ],
+      "sha256": "eab406d2808e5ba859f09cfe1dc57b4483d49c800b790e2ccc21e1a857e19829",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/invocation-start.json"
+    },
+    {
+      "bytes": 4368,
+      "encoding": "utf-8",
+      "name": "launch-receipt.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/launch-receipt.json"
+      ],
+      "sha256": "6f70b2326ec78ef26526cebd139ae93288b76dc905c8e35f13cc19327f7c1973",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/launch-receipt.json"
+    },
+    {
+      "bytes": 2979,
+      "encoding": "utf-8",
+      "name": "operator-before.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-before.json"
+      ],
+      "sha256": "e48db6758f52c7b2f13bd711d1bedd34f9160beaf5b4b789b381902227268940",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-before.json"
+    },
+    {
+      "bytes": 3034,
+      "encoding": "utf-8",
+      "name": "operator-after.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-after.json"
+      ],
+      "sha256": "e909abac06b0d0fe39b7ec5c513b33e68368ec068aae5846ce67119d30246113",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-after.json"
+    },
+    {
+      "bytes": 1343,
+      "encoding": "utf-8",
+      "name": "operator-verification.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-verification.json"
+      ],
+      "sha256": "0e50dab184ac77f26ea3682089047178e742c12ffccd6a8dd966f44e648e8c21",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/operator-verification.json"
+    },
+    {
+      "bytes": 143521,
+      "encoding": "base64-chunks",
+      "name": "result.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0000.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0001.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0002.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0003.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0004.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/result.json.part-0005.json"
+      ],
+      "sha256": "496ca0979bfde0cb151325c576b72930cd60831c45f24e4c9b4aefe17b9d04ac",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/result.json"
+    },
+    {
+      "bytes": 1513,
+      "encoding": "utf-8",
+      "name": "lifecycle.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/lifecycle.json"
+      ],
+      "sha256": "2ad3d0102deec501fbbe13fb5d0227e23ff8925c4d8a666cd085ea32ce1b93b3",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/lifecycle.json"
+    },
+    {
+      "bytes": 36,
+      "encoding": "utf-8",
+      "name": "unload-control.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unload-control.json"
+      ],
+      "sha256": "53abc3858c4d688ec400f5f9ff63c638551e3418de34e33a1927a3ad44cf09ea",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unload-control.json"
+    },
+    {
+      "bytes": 403,
+      "encoding": "utf-8",
+      "name": "unloaded.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unloaded.json"
+      ],
+      "sha256": "461155db19a119f706ad7cd07094297e277ca42b138dcf160dfe4f822792e448",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/unloaded.json"
+    },
+    {
+      "bytes": 5276,
+      "encoding": "utf-8",
+      "name": "restoration.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restoration.json"
+      ],
+      "sha256": "8d6a21a26b4e3baefff6bcb95477ed025f2b4b2fbe58871dfe729465a80e42ca",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restoration.json"
+    },
+    {
+      "bytes": 28182,
+      "encoding": "utf-8",
+      "name": "samples.jsonl",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/samples.jsonl"
+      ],
+      "sha256": "f47178c33e0df2065e0d54ec88a73c6c4480b3cb81207437eaf4e36d9cca7f3c",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/samples.jsonl"
+    },
+    {
+      "bytes": 442,
+      "encoding": "utf-8",
+      "name": "plan.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/plan.json"
+      ],
+      "sha256": "c1f4090fd285243558901b4a528cad61400ea34b12c2c6ed38967130e31b63c3",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/plan.json"
+    },
+    {
+      "bytes": 4306,
+      "encoding": "utf-8",
+      "name": "before.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/before.json"
+      ],
+      "provenance": {
+        "original_sha256": "363c0274a5cbfccf9608ed34ef1518c1be3e372c645d61c71356f321ad03162d",
+        "original_source": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/before.json",
+        "removed": "raw production slot/live/engine payloads and extra audio fields",
+        "sanitized": true
+      },
+      "sha256": "83f599b038bd02f60f5189393d56130a156b320db6a1b6cfd80fa5d30dff5199",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/before.json"
+    },
+    {
+      "bytes": 2447,
+      "encoding": "utf-8",
+      "name": "arm-00-preflight.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/preflight.json"
+      ],
+      "sha256": "0e60a05ba30a640437b2b4d667f27e9103938864421fdb7edc2e0d21bf23e083",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/preflight.json"
+    },
+    {
+      "bytes": 2447,
+      "encoding": "utf-8",
+      "name": "arm-00-launch-readiness.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/launch-readiness.json"
+      ],
+      "sha256": "bcbcaa7fb4f55e1e83d683fbef3ad32af0d5bb4889829966439298fd310d45d6",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/launch-readiness.json"
+    },
+    {
+      "bytes": 128067,
+      "encoding": "base64-chunks",
+      "name": "arm-00-measurements.json",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0000.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0001.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0002.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0003.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0004.json",
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/arm-00-measurements.json.part-0005.json"
+      ],
+      "sha256": "9493b9953876074d467eec70659325d69ad047f3bec2b31b6d4e3acffec8021e",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/measurements.json"
+    },
+    {
+      "bytes": 10172,
+      "encoding": "utf-8",
+      "name": "restore-monitor-1-i373ca7p-samples.jsonl",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restore-monitor-1-i373ca7p/samples.jsonl"
+      ],
+      "sha256": "b52174c8dade28280a6d4fef7804431904a51cd4fe8da85f5b0789b7aa587975",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/restore-monitor-1-i373ca7p/samples.jsonl"
+    },
+    {
+      "bytes": 596,
+      "encoding": "utf-8",
+      "name": "coordinator.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/coordinator.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/coordinator.log",
+        "source_bytes": 596,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "c4539c355e52d1eecc8f81e9fe76396654cfefa340aa1fda33f6039b1083e713",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/coordinator.log.tail.txt"
+    },
+    {
+      "bytes": 4738,
+      "encoding": "utf-8",
+      "name": "server.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/server.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/server.log",
+        "source_bytes": 4738,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "68d8f2b2d33e9f658d10e2d47ac3f88743f1910f83eb1ef840061428072614eb",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/server.log.tail.txt"
+    },
+    {
+      "bytes": 22719,
+      "encoding": "utf-8",
+      "name": "engine.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/engine.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/run-00/engine.log",
+        "source_bytes": 27491,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "d6d4ce8b232b5804a7a51112727de6e7b4d10e0601c10d2639c51f44da212a34",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/engine.log.tail.txt"
+    },
+    {
+      "bytes": 1,
+      "encoding": "utf-8",
+      "name": "lifecycle.recovery.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.recovery.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/lifecycle.json.recovery.log",
+        "source_bytes": 0,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.recovery.log.tail.txt"
+    },
+    {
+      "bytes": 1,
+      "encoding": "utf-8",
+      "name": "lifecycle.mutation.log.tail.txt",
+      "path_read_paths": [
+        "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.mutation.log.tail.txt"
+      ],
+      "provenance": {
+        "bounded_tail": true,
+        "credential_scrubbing": true,
+        "private_synthetic_only": true,
+        "source": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z/lifecycle.json.mutation.log",
+        "source_bytes": 0,
+        "tail_max_bytes": 32768,
+        "tail_max_lines": 160
+      },
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "source_path": "/data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/evidence/lifecycle.mutation.log.tail.txt"
+    }
+  ],
+  "journal_phase": "restored",
+  "passed": true,
+  "phase": "verified-after-first-outcome",
+  "restored": true,
+  "tag": "baseline-control-4-20261011T225505Z",
+  "utc": "2026-10-11T23:00:41Z",
+  "verification": {
+    "baseline_invocations": 1,
+    "checks": {
+      "audio_ok_cpu": true,
+      "coordinator_and_supervisor_exited": true,
+      "installed_frontend_config_restored": true,
+      "journal_restored_empty_owned_children": true,
+      "no_private_gpu_consumers": true,
+      "no_private_processes": true,
+      "one_invocation_one_baseline_arm": true,
+      "private_port_closed": true,
+      "published_manifest_tokenizer_template_identity_unchanged": true,
+      "qwen_and_pocket_tts_ready": true,
+      "router_audio_identities_unchanged": true,
+      "runner_passed_and_restored": true,
+      "same_installed_native_binary_identities": true,
+      "six_production_hashes_unchanged": true,
+      "three_model_process_identities_changed": true
+    },
+    "final_result_mtime_utc": "2026-10-11T22:56:53Z",
+    "gpu_consumers": [
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "pid": 3176084,
+        "start_ticks": "66208726",
+        "uid": 996,
+        "used_mib": 1268
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "pid": 3176141,
+        "start_ticks": "66208830",
+        "uid": 996,
+        "used_mib": 12538
+      }
+    ],
+    "journal_phase": "restored",
+    "remaining_private_processes": [],
+    "restoration_mtime_utc": "2026-10-11T22:56:53Z",
+    "tag": "baseline-control-4-20261011T225505Z",
+    "utc": "2026-10-11T23:00:41Z",
+    "verified": true
+  }
+}

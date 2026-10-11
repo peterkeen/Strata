@@ -563,3 +563,166 @@ pressure/park/handoff or performance. Published manifest identity is not a fresh
 63 GiB payload verification. Previous failed controls remain failed; no tuning
 claim or production-setting recommendation follows. Primary owns Beads and any
 separate future baseline authorization.
+
+## STAGE 1 authorized supervised baseline — 2026-10-11 22:55:05 UTC
+
+**Exactly one installed-engine control passed and restored production.** This
+new dated result supersedes earlier “no valid baseline / live baseline paused”
+wording for control-4 only. The sweep, worker/reserve changes, candidate loader,
+GPU parity fixtures and all further stages remain paused pending separate primary
+review and authorization. Keep production **0.25 / 11 workers / 2048 MiB reserve**;
+this one control is not a tuning conclusion. Old failed controls are unchanged.
+
+Pete authorized the live Qwen unload and was present for manual recovery. Only
+STAGE 1 was authorized; this owner remained the sole target operator. Homelab
+`scripts/agent-preflight.sh` passed. Local HEAD was
+`fb13c698a75a0b5657dc713d541e298f8cbdaf32`; all four frozen tool hashes still matched
+the `str-inn.2` freeze above. No frozen code was patched.
+
+The two reviewed modules were staged under a fresh root-owned mode-0700 leaf,
+files uid 0/mode 0444, using existing homelab `RemoteShell.exec_stdin` with strict
+host keys and zero retries. SHA was checked after write and immediately before
+execution. Exact root command on nibbler:
+
+```sh
+/usr/bin/python3 /data/llm/Strata-tests/perf-audit-20261011/baseline-control-4-20261011T225505Z-tools/nibbler_perf.py \
+  --run --fractions baseline --repeats 1 \
+  --tag baseline-control-4-20261011T225505Z --window-minutes 30
+```
+
+The exclusive invocation marker records **one invocation**. Defaults remained
+11 workers, 2048 reserve, port 18089, max-tokens 96 and long-words 8192. No
+`--reserve-gates`, lower reserve, other fraction, candidate or GPU fixture ran.
+The wrapper launched the coordinator in its own session with DEVNULL stdin and
+private-file stdout/stderr; no timeout or group-kill wrapper surrounded it. The
+reviewed supervisor independently detached in its own session. Coordinator
+PID/start/session was **3172811 / 66200737 / 3172811**; supervisor PID/start was
+**3172842 / 66200771**. Final result/restoration file mtimes were **22:56:53 UTC**;
+operator verification ran at **23:00:41 UTC**. Detached coordinator exit status
+was not captured; its exit, final `passed: true`, `restored: true`, and journal
+phase **restored** were confirmed. No numeric exit status is claimed.
+
+### Actual launch, normal cleanup and restoration proof
+
+Before launch, GET `/running` showed Qwen and pocket-tts ready; audio health was
+ok/CPU. Two slots were idle, queued/running/waiting/outside_slots all zero. The
+frozen coordinator and owner mutation callback repeat idle checks immediately
+before unload. Prepared and actual pre-exec post-PAM proofs both recorded uid
+**996**, gid **979**, effective soft/hard memlock **[-1, -1]**, resolved ELF
+libraries and supported kernel child lists, with identical private config SHA
+`6a61ad85ae9a6427e26faa692a8bdc2307fc0bf13e4e1509b7f67f10af2cf805`.
+
+The owner journal ended `restored`, `children: []`, restoration attempt **1**.
+Its trigger `EOFError: coordinator transport disconnected` is the expected normal
+finish socket close, **not an injected transport failure**. The verified source
+requires its kernel empty-child witness before restoration. Both coordinator and
+supervisor exited; no private processes/GPU consumers remained and private port
+18089 was closed. All **15** operator post-window checks passed.
+
+| Process | Before PID / start ticks | Restored PID / start ticks |
+| --- | --- | --- |
+| Router | 1435174 / 18877666 | 1435174 / 18877666 |
+| Audio | 1643128 / 54686907 | 1643128 / 54686907 |
+| Qwen frontend | 2880993 / 65583967 | 3176081 / 66208703 |
+| Qwen vision | 2881000 / 65583992 | 3176084 / 66208726 |
+| Qwen engine | 2881053 / 65584100 | 3176141 / 66208830 |
+
+After reload, Qwen and pocket-tts were ready and audio was ok/CPU. The frontend
+uses the original installed runtime config and working directory. All six
+production hashes were unchanged; actual `/proc/<PID>/exe` hashes of both new
+native processes match the originals. Published pack-manifest/tokenizer/template
+identity also matched; no fresh 63 GiB payload verification was performed. Only
+installed vision/engine were GPU consumers, uid 996, 1268/12538 MiB respectively.
+No router/audio restart, manual cleanup, global memory policy/clock/cache change,
+installation or production config/binary edit occurred.
+
+The original-model health completion finished `stop`, five output tokens, ending
+with **CALIBRATION READY**. Restoration health-request wall time was
+**28.171366464928724 s**, including reload and router loading banners. Its first
+banner is not model TTFT, and its timings are not benchmark measurements.
+
+### Descriptive control numbers — n=1 window, twelve requests
+
+Measured on nibbler's installed engine **0.1.41**, unchanged published GPTQ NVFP4
+pack identity, 9900X / RTX 5060 Ti hardware documented in the performance audit.
+Private launch-to-metrics-ready was **27.02275056799408 s**. OS cache was not
+flushed: an observed first private load, not proven cold. Native startup recorded
+**cudaHostRegister PORTABLE ok**, 64800 MiB arena, buffered loader, unavailable
+MAP_HUGETLB and preexisting THP always state. The retained startup PCIe probe
+reported **28.9 GB/s host→device** (best of 28.9/28.9/28.8/28.8), selecting the
+unchanged effective **pcie_frac 0.25**. This startup probe is not sustained
+inference transfer bandwidth.
+
+Actual rendered prompt lengths were **178** and **8243** tokens, not the input
+word counts. Every HTTP request returned **96** completion tokens. Aggregate wall
+throughput includes prefill/admission/queue time; API decode TPS is a separate
+native-reported field. Dual overlap is the intersection of first-to-last output
+intervals, not a guarantee of continuously simultaneous GPU work.
+
+| Prompt tokens | Streams | State | Aggregate wall tok/s | Client TTFT s, slot order | API decode tok/s, slot order | Dual output overlap s |
+| --- | --- | --- | --- | --- | --- | --- |
+| 178 | 1 | fresh | 26.71 | 1.314 | 41.2 | — |
+| 178 | 1 | warm | 52.21 | 0.189 | 56.9 | — |
+| 178 | 2 | fresh | 33.49 | 2.714 / 1.287 | 32.7 / 22.5 | 2.926 |
+| 178 | 2 | warm | 44.44 | 0.566 / 0.170 | 26.2 / 24.2 | 3.665 |
+| 8243 | 1 | fresh | 11.35 | 6.937 | 61.6 | — |
+| 8243 | 1 | warm | 53.83 | 0.209 | 59.5 | — |
+| 8243 | 2 | fresh | 10.39 | 16.133 / 7.045 | 61.6 / 9.3 | 1.333 |
+| 8243 | 2 | warm | 42.77 | 0.616 / 0.227 | 25.5 / 23.5 | 3.787 |
+
+Request nearest-rank descriptive p95 TTFT/wall was **16.133391922921874 /
+18.473981243907474 s** across these twelve requests, not a service percentile or
+confidence bound. Reported native/API expert-cache hits ranged **30.0–68.0%**,
+PCIe-routed share **7.8–15.0%**; configured PCIe fraction is a different quantity.
+Warm repeats reused **171 / 8236** prompt tokens; cache counters reported six of
+twelve requests reused, four parked entries, thirteen parks and four evictions.
+
+**Counter/path caveats:** native timings can cover the last decode segment,
+not the whole HTTP request: long dual-fresh has one `engine_generated: 57` versus
+96 output tokens and includes admission/prefill pauses. Warm dual logs
+`TARGET_ONLY` MTP suppression, zero drafts offered and incoherent fallbacks;
+it is not the same effective MTP path as fresh dual. Preserved launch args request
+`--spec 4`, while initial engine metadata reports `spec: 6`, `mtp_max: 4`.
+These are recorded observations, not regression or tuning conclusions. Integer
+presence/overlap checks do not prove native token/logit parity, full-context,
+vision or pressure/park/handoff gates. No patch or rerun followed these findings.
+
+At approximately one-second sampling, the private window's **78** samples had
+minimum MemAvailable **22476390400 bytes (20.93 GiB)** and SwapFree
+**8786137088 bytes (8.18 GiB)**. Restoration's **28** samples had minimum
+MemAvailable **25060810752 bytes (23.34 GiB)** and SwapFree
+**8078467072 bytes (7.52 GiB)**. Private sampled peak GPU used / minimum free
+was **14005 / 1885 MiB**. No built-in stop fired. These are sampled observations,
+not sub-second peaks or permission to lower the 2048 reserve. Audio latency,
+whole-fleet performance and fault-injected native recovery remain unmeasured.
+
+### Bounded evidence and unchanged freeze
+
+[Control-4 evidence](../bench/results/2026-10-11-nibbler-calibration/baseline-control-4-20261011T225505Z/)
+contains result, final journal, samples, restoration, sanitized before, operator
+before/after/verification, both launch proofs, measurements and bounded scrubbed
+private synthetic log tails. **24 target-derived files** were captured with
+**34 successful existing hl `path_read` responses**, all **`truncated: false`**,
+strict keys and zero retries; no fallback or target retry occurred. Result and
+arm measurements exceeded the single-probe limit, so six additive base64 export
+chunks per file (24576 raw bytes per full chunk) were read and reconstructed.
+Whole original byte counts and SHA-256 matched; no original artifact was edited.
+The sanitized before export drops production slot/engine payloads and extra
+audio fields, retaining original-source hash provenance. Log exports are at most
+32768 source bytes / 160 lines; no production log/config env/shared-settings body
+or binary was exported. `retrieval.json` preserves exact commands and per-response
+hashes; `SHA256SUMS` covers all local evidence files except itself.
+
+Key exact evidence SHA-256:
+
+```text
+496ca0979bfde0cb151325c576b72930cd60831c45f24e4c9b4aefe17b9d04ac  result.json
+2ad3d0102deec501fbbe13fb5d0227e23ff8925c4d8a666cd085ea32ce1b93b3  lifecycle.json
+8d6a21a26b4e3baefff6bcb95477ed025f2b4b2fbe58871dfe729465a80e42ca  restoration.json
+0e50dab184ac77f26ea3682089047178e742c12ffccd6a8dd966f44e648e8c21  operator-verification.json
+```
+
+All four frozen tool hashes remain unchanged. Only this append-only doc section
+and the fresh evidence leaf changed in the shared checkout; no Beads/git mutations,
+agents or worktrees were made. **STAGE 1 is complete. Do not start the sweep or
+any further model window without separate primary authorization.**

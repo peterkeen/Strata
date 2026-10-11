@@ -1,0 +1,261 @@
+{
+  "effective_pcie_frac": "0.25",
+  "groups": [
+    {
+      "aggregate_wall_tps": 26.711894095252187,
+      "api_predicted_per_second": [
+        41.2
+      ],
+      "client_ttft_s": [
+        1.3135282919974998
+      ],
+      "output_interval_overlap_s": null,
+      "output_tokens": [
+        96
+      ],
+      "phase": "run-00-r0-128-1-fresh",
+      "prompt_tokens": [
+        178
+      ],
+      "state": "fresh",
+      "streams": 1
+    },
+    {
+      "aggregate_wall_tps": 52.21056846503066,
+      "api_predicted_per_second": [
+        56.9
+      ],
+      "client_ttft_s": [
+        0.1885931990109384
+      ],
+      "output_interval_overlap_s": null,
+      "output_tokens": [
+        96
+      ],
+      "phase": "run-00-r0-128-1-warm",
+      "prompt_tokens": [
+        178
+      ],
+      "state": "warm",
+      "streams": 1
+    },
+    {
+      "aggregate_wall_tps": 33.49047114706614,
+      "api_predicted_per_second": [
+        32.7,
+        22.5
+      ],
+      "client_ttft_s": [
+        2.7137795529561117,
+        1.2872539040399715
+      ],
+      "output_interval_overlap_s": 2.926293025026098,
+      "output_tokens": [
+        96,
+        96
+      ],
+      "phase": "run-00-r0-128-2-fresh",
+      "prompt_tokens": [
+        178,
+        178
+      ],
+      "state": "fresh",
+      "streams": 2
+    },
+    {
+      "aggregate_wall_tps": 44.44308804545996,
+      "api_predicted_per_second": [
+        26.2,
+        24.2
+      ],
+      "client_ttft_s": [
+        0.5660721249878407,
+        0.1700285510160029
+      ],
+      "output_interval_overlap_s": 3.665274654980749,
+      "output_tokens": [
+        96,
+        96
+      ],
+      "phase": "run-00-r0-128-2-warm",
+      "prompt_tokens": [
+        178,
+        178
+      ],
+      "state": "warm",
+      "streams": 2
+    },
+    {
+      "aggregate_wall_tps": 11.346186543750937,
+      "api_predicted_per_second": [
+        61.6
+      ],
+      "client_ttft_s": [
+        6.937246092013083
+      ],
+      "output_interval_overlap_s": null,
+      "output_tokens": [
+        96
+      ],
+      "phase": "run-00-r0-8192-1-fresh",
+      "prompt_tokens": [
+        8243
+      ],
+      "state": "fresh",
+      "streams": 1
+    },
+    {
+      "aggregate_wall_tps": 53.82710093180799,
+      "api_predicted_per_second": [
+        59.5
+      ],
+      "client_ttft_s": [
+        0.20865564595442265
+      ],
+      "output_interval_overlap_s": null,
+      "output_tokens": [
+        96
+      ],
+      "phase": "run-00-r0-8192-1-warm",
+      "prompt_tokens": [
+        8243
+      ],
+      "state": "warm",
+      "streams": 1
+    },
+    {
+      "aggregate_wall_tps": 10.39290190652839,
+      "api_predicted_per_second": [
+        61.6,
+        9.3
+      ],
+      "client_ttft_s": [
+        16.133391922921874,
+        7.044927119044587
+      ],
+      "output_interval_overlap_s": 1.3325454380828887,
+      "output_tokens": [
+        96,
+        96
+      ],
+      "phase": "run-00-r0-8192-2-fresh",
+      "prompt_tokens": [
+        8243,
+        8243
+      ],
+      "state": "fresh",
+      "streams": 2
+    },
+    {
+      "aggregate_wall_tps": 42.77142373880728,
+      "api_predicted_per_second": [
+        25.5,
+        23.5
+      ],
+      "client_ttft_s": [
+        0.6160035020438954,
+        0.22671402606647462
+      ],
+      "output_interval_overlap_s": 3.786992864916101,
+      "output_tokens": [
+        96,
+        96
+      ],
+      "phase": "run-00-r0-8192-2-warm",
+      "prompt_tokens": [
+        8243,
+        8243
+      ],
+      "state": "warm",
+      "streams": 2
+    }
+  ],
+  "kind": "derived descriptive summary, one baseline window; not tuning or parity evidence",
+  "limitations": [
+    "No forced cache flush: OS cache state observed, not proven cold.",
+    "Native counters can describe last decode segment: long dual fresh engine_generated 57 vs output_tokens 96.",
+    "Warm dual logs TARGET_ONLY MTP suppression, zero drafts offered and incoherent fallbacks; not the same effective MTP path as fresh dual.",
+    "Integer presence/output-interval-overlap checks are not native token/logit parity or full-context/vision/pressure gates.",
+    "Restoration request contains router loading banners; health-only TTFT is not model TTFT.",
+    "Detached coordinator exit status was not captured; process exit and passed/restored result/journal are confirmed."
+  ],
+  "load_s": 27.02275056799408,
+  "request_ttft_nearest_rank_p95_s": 16.133391922921874,
+  "request_wall_nearest_rank_p95_s": 18.473981243907474,
+  "requests": 12,
+  "restoration_health_request_wall_s": 28.171366464928724,
+  "sampled_resources": [
+    {
+      "file": "samples.jsonl",
+      "first_utc": "2026-10-11T22:55:06.221999+00:00",
+      "last_utc": "2026-10-11T22:56:25.253579+00:00",
+      "max_gpu_used_mib": 14005,
+      "min_MemAvailable_bytes": 22476390400,
+      "min_SwapFree_bytes": 8786137088,
+      "min_gpu_free_mib": 1885,
+      "observed_link_generation_width": [
+        [
+          1,
+          8
+        ],
+        [
+          2,
+          8
+        ],
+        [
+          5,
+          8
+        ]
+      ],
+      "samples": 78
+    },
+    {
+      "file": "restore-monitor-1-i373ca7p-samples.jsonl",
+      "first_utc": "2026-10-11T22:56:25.496269+00:00",
+      "last_utc": "2026-10-11T22:56:53.029430+00:00",
+      "max_gpu_used_mib": 13939,
+      "min_MemAvailable_bytes": 25060810752,
+      "min_SwapFree_bytes": 8078467072,
+      "min_gpu_free_mib": 1951,
+      "observed_link_generation_width": [
+        [
+          5,
+          8
+        ]
+      ],
+      "samples": 28
+    }
+  ],
+  "setting": {
+    "frac": null,
+    "reserve": 2048,
+    "workers": 11
+  },
+  "source_reported_hit_rate_range": [
+    0.3,
+    0.68
+  ],
+  "source_reported_pcie_share_range": [
+    0.078,
+    0.15
+  ],
+  "source_result_sha256": "496ca0979bfde0cb151325c576b72930cd60831c45f24e4c9b4aefe17b9d04ac",
+  "source_summarized_decode_tps": [
+    41.2,
+    56.9,
+    32.7,
+    22.5,
+    26.2,
+    24.2,
+    61.6,
+    59.5,
+    61.6,
+    9.3,
+    25.5,
+    23.5
+  ],
+  "startup_pcie_probe_lines": [
+    "strata generate: PCIe probe: 28.9 GB/s host->device (best of 28.9 28.9 28.8 28.8) -> pcie_frac 0.25 (default 0.25)"
+  ],
+  "window_n": 1
+}

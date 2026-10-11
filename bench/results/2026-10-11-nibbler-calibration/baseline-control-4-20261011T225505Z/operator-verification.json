@@ -1,0 +1,43 @@
+{
+  "baseline_invocations": 1,
+  "checks": {
+    "audio_ok_cpu": true,
+    "coordinator_and_supervisor_exited": true,
+    "installed_frontend_config_restored": true,
+    "journal_restored_empty_owned_children": true,
+    "no_private_gpu_consumers": true,
+    "no_private_processes": true,
+    "one_invocation_one_baseline_arm": true,
+    "private_port_closed": true,
+    "published_manifest_tokenizer_template_identity_unchanged": true,
+    "qwen_and_pocket_tts_ready": true,
+    "router_audio_identities_unchanged": true,
+    "runner_passed_and_restored": true,
+    "same_installed_native_binary_identities": true,
+    "six_production_hashes_unchanged": true,
+    "three_model_process_identities_changed": true
+  },
+  "final_result_mtime_utc": "2026-10-11T22:56:53Z",
+  "gpu_consumers": [
+    {
+      "exe": "/data/llm/Strata/engine/strata-vision",
+      "pid": 3176084,
+      "start_ticks": "66208726",
+      "uid": 996,
+      "used_mib": 1268
+    },
+    {
+      "exe": "/data/llm/Strata/engine/strata-nibbler",
+      "pid": 3176141,
+      "start_ticks": "66208830",
+      "uid": 996,
+      "used_mib": 12538
+    }
+  ],
+  "journal_phase": "restored",
+  "remaining_private_processes": [],
+  "restoration_mtime_utc": "2026-10-11T22:56:53Z",
+  "tag": "baseline-control-4-20261011T225505Z",
+  "utc": "2026-10-11T23:00:41Z",
+  "verified": true
+}
