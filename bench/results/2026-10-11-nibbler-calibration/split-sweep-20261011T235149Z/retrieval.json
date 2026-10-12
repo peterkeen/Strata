@@ -1,0 +1,4535 @@
+{
+  "all_truncated_false": true,
+  "assembled_files_verified_against_target_sha256": true,
+  "chunk_bytes": 24576,
+  "files": [
+    {
+      "bytes": 620,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/stage-manifest.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/stage-manifest.json",
+      "local_file": "stage-manifest.json",
+      "response_sha256": "6b36b9ee1a3765f4ec4e9922a211172268f6ceb492a6b80111a7ea5352bcbed5",
+      "truncated": false
+    },
+    {
+      "bytes": 935,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/invocation-start.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/invocation-start.json",
+      "local_file": "invocation-start.json",
+      "response_sha256": "fb096b97b51bb904724fd6fe988226c459e954908227481f64f679f19b7826a9",
+      "truncated": false
+    },
+    {
+      "bytes": 5892,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/launch-receipt.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/launch-receipt.json",
+      "local_file": "launch-receipt.json",
+      "response_sha256": "f97daccf68141e902c8c78057772666ac446fc5122abb68d580c09b0715cf4e2",
+      "truncated": false
+    },
+    {
+      "bytes": 3015,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/operator-before.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/operator-before.json",
+      "local_file": "operator-before.json",
+      "response_sha256": "2beba60ceda612e86e0c2c2448119905229abbe6d04dfae935efd58cf07998c2",
+      "truncated": false
+    },
+    {
+      "bytes": 3032,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/operator-after.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/operator-after.json",
+      "local_file": "operator-after.json",
+      "response_sha256": "840e2c7629ab06cb8b81c3582c4f89ded6d3e8077d7ce5ab4d79b1164fca26df",
+      "truncated": false
+    },
+    {
+      "bytes": 1324,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/operator-verification.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/operator-verification.json",
+      "local_file": "operator-verification.json",
+      "response_sha256": "a9f4c6ca2263b91307324a9e7d86e3e7d291d2728bc08a75920442d116b6b390",
+      "truncated": false
+    },
+    {
+      "bytes": 190,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/port-before.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/port-before.json",
+      "local_file": "port-before.json",
+      "response_sha256": "4ea62b30b9339fda602d3a67a9fff964c3087c2813f7a3cbd38cd16f310d2036",
+      "truncated": false
+    },
+    {
+      "bytes": 773,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/failure-diagnostics.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/failure-diagnostics.json",
+      "local_file": "failure-diagnostics.json",
+      "response_sha256": "0da493efd9776e0d65a60ef77ce5fb56d8d186a0f6fc9b1964e5574f7bb5ac64",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0000.json",
+      "local_file": "result.json",
+      "response_sha256": "64026b6edb1942cfdc5ef4da67612c13618a23b84d4a196f9a9f2dc3ec88659f",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0001.json",
+      "local_file": "result.json",
+      "response_sha256": "a58a810d409b8152d291858bb5bbf047b6e16d4f657d19dda58dd805f0a4e735",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0002.json",
+      "local_file": "result.json",
+      "response_sha256": "9cd3c49ed5f7d2bbcf4bd6d3c67f8ed3e8d4c67a01719904de70da4f21bf91bc",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0003.json",
+      "local_file": "result.json",
+      "response_sha256": "1868755d16e30db550906056cac234e3b753ef1894a667ea76275451333647e9",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0004.json",
+      "local_file": "result.json",
+      "response_sha256": "e72ddd57763d813f484a3ddae0d139951c6343ad1751d54c3f817ae128ad6fc7",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0005.json",
+      "local_file": "result.json",
+      "response_sha256": "6ef951aca22e48e6f2262746d712a23a2d83bd5ef019a6e92d74977b540e6cc7",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0006.json",
+      "local_file": "result.json",
+      "response_sha256": "efbd2b5a93314ec0a3d7adcb3637f37528f12174ba089081cf7d8ef2fc68f4c2",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0007.json",
+      "local_file": "result.json",
+      "response_sha256": "ebff6263b4db24f2a6b8835ce060d8847bb326027bf7783b8213160c46b185bc",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0008.json",
+      "local_file": "result.json",
+      "response_sha256": "a4dbc1ec407b252bfe58f10057eb63d71443b30c331e64228d08a0b03ab3190d",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0009.json",
+      "local_file": "result.json",
+      "response_sha256": "cd30462e284a41d02477bbc3a52e5ce0fd08ed315d0a6b78da3dee1b9d1a7b31",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0010.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0010.json",
+      "local_file": "result.json",
+      "response_sha256": "df34af820fe21402f722823c20b0e3508e545190332daecff3dc77ed93709783",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0011.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0011.json",
+      "local_file": "result.json",
+      "response_sha256": "7ac1350afdd937519211375b54662fcb6341701e207701bdf875065eafd7f0f4",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0012.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0012.json",
+      "local_file": "result.json",
+      "response_sha256": "ad06313fa538a60186ff68163ee0d6844eba0cca14c053168e56481373a842c3",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0013.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0013.json",
+      "local_file": "result.json",
+      "response_sha256": "3e8acc483c86eef794e9febd31e076474907160cfe212bae5fe09c1e9f597348",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0014.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0014.json",
+      "local_file": "result.json",
+      "response_sha256": "4e1da356ab321fb017ef46aae43880ab8be4743da8b23455d63dd35360d54e62",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0015.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0015.json",
+      "local_file": "result.json",
+      "response_sha256": "88aa6080e4e271aafdff38e05c390d6eac2379a58805ffea2296a24f62269bf4",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0016.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0016.json",
+      "local_file": "result.json",
+      "response_sha256": "1d364c929daf1a96ab040e8c5e97ffcc878c6c849e783b24a2b782025938e510",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0017.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0017.json",
+      "local_file": "result.json",
+      "response_sha256": "9e6cd1b437b7b761b49f503141dc5b0970bd85ecd0cc93565c943267fb1bc614",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0018.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0018.json",
+      "local_file": "result.json",
+      "response_sha256": "913123edacb4168b443f57fd1c23ea7217276e5f338acf0533bc27b172572674",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0019.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0019.json",
+      "local_file": "result.json",
+      "response_sha256": "fdbf8283a6c5604a353ad0c48b145abbe45a6761b368330f041c18d07ed4522f",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0020.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0020.json",
+      "local_file": "result.json",
+      "response_sha256": "8bf3347b8248a1f6623ee2402ac3256eae4b29b2e53ab8ff8c23aa8ffe178d40",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0021.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0021.json",
+      "local_file": "result.json",
+      "response_sha256": "47f66e96af653947361dbc65174290d357093f667a6796eaa1d07308aab18fbe",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0022.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0022.json",
+      "local_file": "result.json",
+      "response_sha256": "4183a203115c68fdea78830d1363b4d33c6b710cfed8847e9943c4eb3e4bf6f6",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0023.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0023.json",
+      "local_file": "result.json",
+      "response_sha256": "77603d59dca30de501ea61b1a8e05239b1c240973d7436d5314f9a3445e0a333",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0024.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0024.json",
+      "local_file": "result.json",
+      "response_sha256": "2d31e72c5edda24698fa7bbfe15c0b1af31af1872a2273e265d5d529de8095a5",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0025.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0025.json",
+      "local_file": "result.json",
+      "response_sha256": "406d98b987aa131741c2b1d30999bf0ffecd9ba3d3f82a951cb889330ed7902b",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0026.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0026.json",
+      "local_file": "result.json",
+      "response_sha256": "b29d1bf4f070e9e9c2fba855652dfcd2895658e354c33df742e97e18175bdfb6",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0027.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0027.json",
+      "local_file": "result.json",
+      "response_sha256": "447693b324ebe34fb78d8895ef07da237b48f75d4114ec345883474968c57b48",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0028.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0028.json",
+      "local_file": "result.json",
+      "response_sha256": "c87660a602d0e9023e481c38fe5c6fff99b130323db70bb7e5811fce9b9725d8",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0029.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0029.json",
+      "local_file": "result.json",
+      "response_sha256": "cc3538f2de8459fbd8bc56410fbc23878cc65e3ed6aa58db4f8e4585fe2d383f",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0030.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0030.json",
+      "local_file": "result.json",
+      "response_sha256": "94bf08ded404e3314c9dc7471ddb431f0fd2fbccbdf92a33a8c64b79bd2e6653",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0031.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0031.json",
+      "local_file": "result.json",
+      "response_sha256": "a87cc333ac9c862fb3e2e7f27868cf4a4ac6528aede7240c5f726b6fe58f0ff5",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0032.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0032.json",
+      "local_file": "result.json",
+      "response_sha256": "572324dbd70cfc2645e9f6893c3d2b427f375ff1212675dab6d9e22143f57109",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0033.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0033.json",
+      "local_file": "result.json",
+      "response_sha256": "6fd5566825760a65f784a46ba34708b05aede1a1649114e42dfb8d9de08d2cc7",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0034.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0034.json",
+      "local_file": "result.json",
+      "response_sha256": "c578948aa5120e18fed212e58fb98b0076d8cbdfe2bc35d390eede539f46d882",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0035.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0035.json",
+      "local_file": "result.json",
+      "response_sha256": "0b9b91149586136c7c1bf3ec584f32f282e2acba007a1f805c5443c3d1d865cc",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0036.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0036.json",
+      "local_file": "result.json",
+      "response_sha256": "391da8e60b2e243977ef290d475f2dba5228e77224d262bff7a539701a46c07b",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0037.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0037.json",
+      "local_file": "result.json",
+      "response_sha256": "6d8a5961ffcfe3179df98ec4aa1db96f786db36b0f4332ce0ac8a1e0f5ef5876",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0038.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0038.json",
+      "local_file": "result.json",
+      "response_sha256": "ec2027c8f9d8616d6091bc17970f0635dfb2ae5e6dc13bc0d30a9e6ed21fa0e1",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0039.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0039.json",
+      "local_file": "result.json",
+      "response_sha256": "70182309d75ec73576a3344d95e60308642a1ab6f07755014cda3e53faa481a3",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0040.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0040.json",
+      "local_file": "result.json",
+      "response_sha256": "a922cb90f49281a565752423aa2f7072c35b25ca8ea636b2a0b1705d6efb87d0",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0041.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0041.json",
+      "local_file": "result.json",
+      "response_sha256": "bd1c77417482d86f02d2ae1b3b7d2a7192afee135d9b5320f7f50dbfeff6439d",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0042.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0042.json",
+      "local_file": "result.json",
+      "response_sha256": "9a0aaa93b9df22db8a4fb8369896d9d107600baafce51e7072df9645b5871609",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0043.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0043.json",
+      "local_file": "result.json",
+      "response_sha256": "f02bd00f9436ada6cd46156ff9c080c71343e5ceaad1fa90628ba30819acaf20",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0044.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0044.json",
+      "local_file": "result.json",
+      "response_sha256": "60d219f5dc5abd693f7326a473cb002ae96ee06f8bc0fe177d0238ff28d4f718",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0045.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0045.json",
+      "local_file": "result.json",
+      "response_sha256": "711b43a5082aa0088cbd79addc1e322892592949de02f9e043133e61d45b5098",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0046.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0046.json",
+      "local_file": "result.json",
+      "response_sha256": "6b3c72e0b3b62ba89bb958e9c92dab7781710740e4d4f3ce2fbab399a25c3ce3",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0047.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0047.json",
+      "local_file": "result.json",
+      "response_sha256": "7480096a93621b40d596f429664eba4afa08f41aa793c0a014fcdd703a4fafb8",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0048.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0048.json",
+      "local_file": "result.json",
+      "response_sha256": "b392d1ce0e6125f1074a541d67d3e43a74024d4f1f9d22646588fde6bd47ade8",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0049.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0049.json",
+      "local_file": "result.json",
+      "response_sha256": "ff4bcfda7b42940bce63916b8a38c02076b490195495ee1e5014130038771711",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0050.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0050.json",
+      "local_file": "result.json",
+      "response_sha256": "fdae5703ce2b418846f0b2cbec535adfabc386e9ca81a0b7553b6aeb96c85d25",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0051.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0051.json",
+      "local_file": "result.json",
+      "response_sha256": "b74060ecbea619a42c033dd47b03a8da00e3bb38564d423a3b93e8432cdc531f",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0052.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0052.json",
+      "local_file": "result.json",
+      "response_sha256": "9ced04ab1a08d04793ab986a8c6df1773449f9b018417999ec82953c3feda989",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0053.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0053.json",
+      "local_file": "result.json",
+      "response_sha256": "25061484ada357e6c21d1885b34bddac6957bf9652f1278534fafa522b96c7d0",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0054.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0054.json",
+      "local_file": "result.json",
+      "response_sha256": "fc684a0f8a5da1b671727c150d34c2cb8bfeb99248fabfec0210d0700f56e45e",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0055.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0055.json",
+      "local_file": "result.json",
+      "response_sha256": "07fcc03a75d56b8b4124d9a8fe2c01034c1e1cb2eb80cbebee99f996b78eb385",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0056.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0056.json",
+      "local_file": "result.json",
+      "response_sha256": "370f4871af120e16f46301e210ea0e0372e89506ea8f33299a94cc86db728e4e",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0057.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0057.json",
+      "local_file": "result.json",
+      "response_sha256": "674ae8444bcde67393b26dc25f6aa3cb1dddc3ce85fd0e242db94e7b40d54e50",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0058.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0058.json",
+      "local_file": "result.json",
+      "response_sha256": "3430a9cb5e0a68f1e39807e4d9da43281e0843e25a384fdb180f090def2a25a6",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0059.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0059.json",
+      "local_file": "result.json",
+      "response_sha256": "808103ddd257a3c1b4457cf657e5e13939417b4534de51e60ab23b7f9cf2228f",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0060.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0060.json",
+      "local_file": "result.json",
+      "response_sha256": "387aec0894b524a42f2fbeae50125fe878e73b5fdca0202756ccd1c354465c17",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0061.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0061.json",
+      "local_file": "result.json",
+      "response_sha256": "1449686131e95f2d7198d106838ff8157d70a9bda4e03e9c153de94262d97853",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0062.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0062.json",
+      "local_file": "result.json",
+      "response_sha256": "d52618fe6c988b413fc65d1e818d8b842aac76c83a3835e8c9ad41c7c74b2104",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0063.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0063.json",
+      "local_file": "result.json",
+      "response_sha256": "2a350f4d8722284b954edc81a5b60d1157ee359977b4efa583fedfad973a9b30",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0064.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0064.json",
+      "local_file": "result.json",
+      "response_sha256": "656e0e9b41328a2916ecccf9d21425e444ce2c55c82d024fee051b458ab98bd6",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0065.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0065.json",
+      "local_file": "result.json",
+      "response_sha256": "e9a09e07ec6943a81c717a876f85b028214f74ca19f3911556bb5291c92ff82e",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0066.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0066.json",
+      "local_file": "result.json",
+      "response_sha256": "2827d0355b8e443b3dd75caffaf977abea2546b24269407f8822b1879bc642fb",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0067.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0067.json",
+      "local_file": "result.json",
+      "response_sha256": "b01e028599831b0a5e18c21209479fbe185bca84d637e83a9be1f92bd54171bf",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0068.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0068.json",
+      "local_file": "result.json",
+      "response_sha256": "bdf51c3736da7ef0a9ddcecdc8d3df75cebe3199df1020c555eed5ee70bef251",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0069.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0069.json",
+      "local_file": "result.json",
+      "response_sha256": "165ccb5ef7efc0c69417ba4cffe98a6f4455ab39f635d22dd78f35a9a94decc1",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0070.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0070.json",
+      "local_file": "result.json",
+      "response_sha256": "8b86559508dc8a4ca1147f35a87d8d8ea922cceed33eda5fe1ea36ccb1fda4c0",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0071.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0071.json",
+      "local_file": "result.json",
+      "response_sha256": "adedb9b697573478cf9de0e619d49350d4d179928f378ed40e1ff16b3bb90cf9",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0072.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0072.json",
+      "local_file": "result.json",
+      "response_sha256": "e942c6bb63d9e436331c804f11ffc827e3ad988ea74965d6f82914180856ca04",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0073.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0073.json",
+      "local_file": "result.json",
+      "response_sha256": "540873e854e145f482a120afb4f2bc6c26914b2054ae8ed74afbbbf68df905ad",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0074.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0074.json",
+      "local_file": "result.json",
+      "response_sha256": "fcaba2787d0da965d648e0c535264a61668e33f92389f2f9d57172084b8bfd8c",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0075.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0075.json",
+      "local_file": "result.json",
+      "response_sha256": "e358a8b500859b859465a1ee3a35701e5126416f4ed446f1c12e2903de048fd6",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0076.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0076.json",
+      "local_file": "result.json",
+      "response_sha256": "545cbe47e069f923b36831d407ffcd9e193a8896b484b9c3bd744d6bdaf33d6e",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0077.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0077.json",
+      "local_file": "result.json",
+      "response_sha256": "ee87e7aa5ee6a16407894a9c65532294bd893e9aec1d0ae9983fe5b96b6319b2",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0078.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0078.json",
+      "local_file": "result.json",
+      "response_sha256": "3b24bcff4c5f70f80615da6c8c894fa92b6de85a5bb48a97e1921e7782e524dc",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0079.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0079.json",
+      "local_file": "result.json",
+      "response_sha256": "d1e2b1929c277079a20180f38e186bbae8cc8b66f43a83dcb805a2193ded349c",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0080.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0080.json",
+      "local_file": "result.json",
+      "response_sha256": "ee53cb791a5d4ab5fd69ff8020769af1f51aa40a4c293c1dda0a529d0a458fbb",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0081.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0081.json",
+      "local_file": "result.json",
+      "response_sha256": "cc667751441d196818231bbcdf477488095082fd3eebdf939b9eca95aae7320d",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0082.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0082.json",
+      "local_file": "result.json",
+      "response_sha256": "3441cac1691f941d7603013ec63b839492ed65837768b96bc769b755e948d176",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0083.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0083.json",
+      "local_file": "result.json",
+      "response_sha256": "82a59447f77945373bd5c587000385f1d761f6c600abdbee031d2a01a77442e4",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0084.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0084.json",
+      "local_file": "result.json",
+      "response_sha256": "5416d900dd237a1218ea3e69bd55113fb802774467244e5594599820257853ec",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0085.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0085.json",
+      "local_file": "result.json",
+      "response_sha256": "c886596daa1a6c8bc00315e82632e97b9d7e79cb053e28655c70e69067e3fbf9",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0086.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0086.json",
+      "local_file": "result.json",
+      "response_sha256": "e72f4b349a5ceee458834730aef331c342c48934f5f48e5a0af46825395c2caf",
+      "truncated": false
+    },
+    {
+      "bytes": 33013,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0087.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0087.json",
+      "local_file": "result.json",
+      "response_sha256": "1779bcec06d15fe25144fea85218aa8e30612b38fe0b428c5d5a489496fbb341",
+      "truncated": false
+    },
+    {
+      "bytes": 18541,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0088.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/result.json.part-0088.json",
+      "local_file": "result.json",
+      "response_sha256": "29b628d15dbd42f0361d4602465c12584bb9eb8dba73d29b360dc4d781cf64b7",
+      "truncated": false
+    },
+    {
+      "bytes": 1577,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/lifecycle.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/lifecycle.json",
+      "local_file": "lifecycle.json",
+      "response_sha256": "8acafe856205660661cd8a8160f5d8fac1e7cd9f5b0267e4634814d5ac50d0ba",
+      "truncated": false
+    },
+    {
+      "bytes": 36,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/unload-control.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/unload-control.json",
+      "local_file": "unload-control.json",
+      "response_sha256": "53abc3858c4d688ec400f5f9ff63c638551e3418de34e33a1927a3ad44cf09ea",
+      "truncated": false
+    },
+    {
+      "bytes": 403,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/unloaded.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/unloaded.json",
+      "local_file": "unloaded.json",
+      "response_sha256": "11bc3253b754e8cafaa9c9a6222984dbeef15cd816b98e25f8d07e7a6616bef0",
+      "truncated": false
+    },
+    {
+      "bytes": 224,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/restoration-error.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/restoration-error.json",
+      "local_file": "restoration-error.json",
+      "response_sha256": "d73768c7dbcb01d34b1b21965e79d64eed452a79e69b895c88578c7fd1e18ba5",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0000.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "5e693c6118828be1b2baf55b3cfa1da3b639533f5aaa734ad782303198a419a3",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0001.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "8ec9413e6aa5b87dbffb1c5c31bb7f1d6352602577db95e2d127651d63a2537a",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0002.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "f66b7e62577c5b12d9ca2c5851cbf1b8771ce8d796f0380fd690c97fff026343",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0003.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "945f1fa2f6cb202dec329c6ebe7eb3e718d18134f2434bcc92df908ac54bc2ab",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0004.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "75e68da495263317cc990cf1ae174145441524d6e771c215344e297055fa9591",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0005.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "43e5b03e4e597dc6578f138bc85918fef4bcbc495680869f8f4983a2f3960f90",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0006.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "7e114d3e38ec406c548c3c11587dc3f2855990f2f7bdc29445e02557b41f0a9d",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0007.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "a566858cb137602e8186339f991dad5ebf72798d1c583821df62823485708dee",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0008.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "4086882734e2fcdb1f5df6c72dfa61cc78b39b15da4aa07df5233f0b96c49fb5",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0009.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "91d8ed03f0a8a21d7c7e63e40c7c9addac50a71e01888be03a9231c1be1a3226",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0010.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0010.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "11fca7579444f81df12c57ec4f0f390f2e55153fa46d77bcc7a34972f401b7ff",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0011.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0011.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "2643462f1dbf522b58e0d27d7c6b044dcab8b7d790eec2d108e09dd08eab7e8c",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0012.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0012.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "9264fefe01b696acef9e7b1fa99e8831004ce9e5fa0bc22ec116267271f305ce",
+      "truncated": false
+    },
+    {
+      "bytes": 33012,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0013.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0013.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "0cfac6ffa16efaf0db776d5c864ae23127a3dc597552ecd4e1bfc7aad7c33650",
+      "truncated": false
+    },
+    {
+      "bytes": 17468,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0014.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/samples.jsonl.part-0014.json",
+      "local_file": "samples.jsonl",
+      "response_sha256": "871e2f026efa84fa17b978da087daab868db312f07b0ccfe0046919df5577e33",
+      "truncated": false
+    },
+    {
+      "bytes": 970,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/plan.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/plan.json",
+      "local_file": "plan.json",
+      "response_sha256": "d1ab0df3057422301f0cd2bee33aba48fd6f9471bc7ec6dec8d1fedd05349299",
+      "truncated": false
+    },
+    {
+      "bytes": 4305,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/before.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/before.json",
+      "local_file": "before.json",
+      "response_sha256": "0a0c06968ec694abeac33d8f198c3ec530a821229ceff0d2b5d0264b05066387",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-00/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-00/preflight.json",
+      "local_file": "arm-00-preflight.json",
+      "response_sha256": "2de61aba8dd3452a808d971a40fcb15d6a397b817dd21e8f96d87ba4d055220f",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-00/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-00/launch-readiness.json",
+      "local_file": "arm-00-launch-readiness.json",
+      "response_sha256": "51f2a0cc0dea0c396208ba0220855b88fbfe107f34b169fd023ce33a8814d668",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0000.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "cbbd4f8b0e4050dfc0002a1c7052aa8f62e28a0d015d3608c8565eedde780280",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0001.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "5bb02f03560680af929a9792ee6ed51921ade295295a851f37778a0c2d6ae6ef",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0002.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "b2e2b0af0bad34c7e53d6a412a153261210ef7f6fd6339542c253da6fb30e0d2",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0003.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "04bf7d4feb6df36d195e791c836bfbb293b02a33887d6766aca24390bebdb254",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0004.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "3f5c71abf7326c2306a2e5665e9ea53caa38f4f963793b82574bb179b07924e5",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0005.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "4a9285ea55e5c694bfcdf64c80a9bc0d172b5fa4621843833621d6599294ac85",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0006.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "82ae8c1f38d93cc6fea5405cff84ac8dc84e74ecb2f54557372a6c2e0092bff1",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0007.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "bbc59af948e51ca9455607a4911167b2c496a88cea0d552ef66de596aeb1c38b",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0008.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "24186096565300227d9a6a8385e34263fbe51bd522047efe179002391f55faa5",
+      "truncated": false
+    },
+    {
+      "bytes": 29863,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-measurements.json.part-0009.json",
+      "local_file": "arm-00-measurements.json",
+      "response_sha256": "f08d2a31bdefa1d0a31315c14f05a7de42f0f9f5e017c60a2d068543e06b1c70",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-01/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-01/preflight.json",
+      "local_file": "arm-01-preflight.json",
+      "response_sha256": "512e806841db8d989c381e63986573670486cafce17dbeafe3d84bc62ed30390",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-01/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-01/launch-readiness.json",
+      "local_file": "arm-01-launch-readiness.json",
+      "response_sha256": "dbe24b7c7725ea35269b3d06c3bdf41512f8cd9af4f5c6f48aa3737559b7b40a",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0000.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "f211d17237c11ade1b16d29378850d142525ad81bb644fe9680fd2c6e8e44ca6",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0001.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "df39822c0e8a9c6b4cfd287bec8993550cc67113afb8c3468bff82bd1a0dfc25",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0002.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "92d2e80d31df7811c646f4cb61596d74d257c314108f67e4e41a7480c543beb5",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0003.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "668c6998885a7dd5c3f6b5bf2f60ed9ca49de053cfd28bb363cf47510d3cd2f9",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0004.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "e8883ae709a86599ffd49baab7770671fd069f36747d907d922fff6f84c9461c",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0005.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "3eb1e4d3a3aa778bab559349a291dda0f0c97a43190640b97ee9d46fc847e364",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0006.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "d008cd1f04af4c101757a45ee258bb4690d022b20fa03bcbeabaeaececba5647",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0007.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "9db6dad8cecf0aa5cb23dcbc9c9dcd00e6018923e623225b5ca8896d257c3d53",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0008.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "5e019aea4bce3cde61274ca7acf1d3dbb488fc1aaeea93245d810f2c2f27e4ff",
+      "truncated": false
+    },
+    {
+      "bytes": 28683,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-measurements.json.part-0009.json",
+      "local_file": "arm-01-measurements.json",
+      "response_sha256": "be6cb690b94c7b90965ec0c94f0deddd28e14731ce52ddab269e6e1b937e2365",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-02/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-02/preflight.json",
+      "local_file": "arm-02-preflight.json",
+      "response_sha256": "cd1f614dc41608f22f38df0c912a54cf86a104ee356b5455b604bfccd6ac3dec",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-02/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-02/launch-readiness.json",
+      "local_file": "arm-02-launch-readiness.json",
+      "response_sha256": "6062027b304c6a6027e13b853c4ae2d7707330e49adb786a7a46608073b2ccb3",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0000.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "2ccf74854cf820bca3b738eaa97d6ea70d9a9b3d51fc5d59f90064cb61962e33",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0001.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "7593e56f0700ef5f65ac2729719036a905a2d331b05b2e0294701f3bc7b9a4d0",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0002.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "22e6d46ad9b239971fcb36a189e88d2e3dc06fd6edd081c05219fec9be22c17d",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0003.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "9a9cba64949d2b66e5854c397c3e778b6b65e59ad019d8c5c6942316118b8e85",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0004.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "94a3e30be36a4a2d48296e06870329ca521c16bc6757c558072aa515d5c00a6f",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0005.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "f222c7c9824d0ca613423546c2fbedde6b3dea057a0bb0fc1f09321be0c90da9",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0006.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "7d89bccf0f623c6e510e0d0d4b8a5932e2ded1d81e197a6ea0e892d2eb4668c1",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0007.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "1d1e9f08111690b6dedad523737065ee86be3b99787ff895ab17718bd779f59a",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0008.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "d40c6a344bf43e9fa8dbad2a8634291d9fe682dcc3c5205e851aa64085c240d1",
+      "truncated": false
+    },
+    {
+      "bytes": 32515,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-measurements.json.part-0009.json",
+      "local_file": "arm-02-measurements.json",
+      "response_sha256": "0b0f56d3e239698fe6dfde877311a479612a84dc208546e6027d1f41e441e33f",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-03/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-03/preflight.json",
+      "local_file": "arm-03-preflight.json",
+      "response_sha256": "ec78f5489c7971ab537f15226c412d5a8878ea7de92fbaf91e03acf6c562160c",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-03/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-03/launch-readiness.json",
+      "local_file": "arm-03-launch-readiness.json",
+      "response_sha256": "0061f403e63f6935734ab2ace67f0e69c055ced32260a307e108b62e7b84ed61",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0000.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "f9b1d4f7a32e4ba90acb7a394128a9e6db25e7575a8ffb4931a712fe50cef2bd",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0001.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "a1a4dfd3d86a57ebcd80f238588ddc1c7070487c1e4484b7b1f8acb06626b373",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0002.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "13c9281f80ba6e7e2abb6acdbb0856ff80da649d2f43ba1bba607b045084ed1c",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0003.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "e8d51aa2962104e9c3e2434b39bfc1d3c145dde587ec16b51e28914cd594c59a",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0004.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "2c7bad1ccc1e352abd21435bff7c767926141ff90f4facab1b6713dd372416f6",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0005.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "2aab51be6a4d1924d9fe9b4e2f9f7b859a3cb0df23bbe595bc40a268ce983063",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0006.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "0f4c33c8d578f31ba9b2e0738041940a94135a6997f1d44b255498dbc9519c05",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0007.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "d32eb4a2a604bea05d13a86b3e7430e5a9ff814c3880d062eb21f4006f78ed46",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0008.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "8f29bad14c280670e6e1503e4669cb59fed2ea0a3bf4da1746361fe075bb9b9e",
+      "truncated": false
+    },
+    {
+      "bytes": 29315,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-measurements.json.part-0009.json",
+      "local_file": "arm-03-measurements.json",
+      "response_sha256": "a71b7948d0c5bc62dd0108f88f7ba737cb2049974c76c27574d3759914e9e878",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-04/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-04/preflight.json",
+      "local_file": "arm-04-preflight.json",
+      "response_sha256": "c2b99ab6858103f2025333de15ddb85e545fb68ff0a1a79a3fd180b11df2340b",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-04/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-04/launch-readiness.json",
+      "local_file": "arm-04-launch-readiness.json",
+      "response_sha256": "18cce61b8ef543cc113157ddbfbdbea3d2c9f3d50716029b84e972753b01a983",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0000.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "772bd8c81299def3249a91e1bbdbcfeb9e203c15e60b0a25cbcd711ffc69550e",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0001.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "f411f15cbc6cd97c9b8f1d9c83225d9e6d5f3f846bfaa39cac13664439ca4795",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0002.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "49f936fe6db78bfe4177ec81e4858032714b78d5b6362b26bd3e4711a9c88a74",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0003.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "094dd946d3525fd57989439a4c8ace668813b5d12b06de21f1e5ef6220c58453",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0004.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "f1bcf6c807f9209a0a9fa6a85fc828058ea67e0a54b7f617d67e1a9f0c7bb6d7",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0005.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "fbe77b80db8a572d085ac64c823e1c828b545e3fc64a5937f66cb6118feff581",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0006.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "ee83a36d797d641462c4d729c9a3d1004a9c4eb30da143d003dcc91bb7d557ff",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0007.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "36c69ea5a9d3f2269735aa9dc0c779452e4e4da70a0c32f0349cf172dc548e73",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0008.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "c9f37cbf99f3585f847dc79435bc4945e4cd7c3a53696a9f04eca0b6daa4b311",
+      "truncated": false
+    },
+    {
+      "bytes": 30531,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-measurements.json.part-0009.json",
+      "local_file": "arm-04-measurements.json",
+      "response_sha256": "20336dab40e3baad25189473f0487283447e7490d4f790be8d13a7fd89dc5ab7",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-05/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-05/preflight.json",
+      "local_file": "arm-05-preflight.json",
+      "response_sha256": "155b5eefc10e39c9782a710b25ee33de27d1e63e37a5137425c6c4b02432dc94",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-05/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-05/launch-readiness.json",
+      "local_file": "arm-05-launch-readiness.json",
+      "response_sha256": "d96776e0972be48f1ff6a16fcca1739db6174a03282304f1a7ab4a4b5ceb6694",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0000.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "2c3166c4c9fa837e9de37230739f5d0e40a39037f9d8f7117abdbac2708ae1c9",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0001.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "cd0942a56ae96cfa9a9e7cd2be1bfae56a530a587471ac6627376756e5c2a750",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0002.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "fc93dee7a8f79894012f504b41ed8be0b8cb6d657de9fe3d00503489d3e7c611",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0003.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "76339ee47f3c3175df2e4b7efbed99d4eb991b6fa1ab8356c8f9bb00d5269fdf",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0004.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "5690b6279e1f15fad9ee68eb13f0df357bfa21d6e49265a4dda4376c7c9752c2",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0005.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "3117edd44b60cdf657939cf0c88f57f93f00bb2192c71f293566026493cf39b9",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0006.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "216c75f06a24820e2c1f8d7201f2dd7359fa4d41725e265e4e071f0d59b3eaac",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0007.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "017777839d7f362f83d5dad2c58818d53f397e83655a0d8110a07b7821b83ad4",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0008.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "bfc549a98a543c822f3fde71598c80b6d55c6d48cb9353afd2b1f550f69aa229",
+      "truncated": false
+    },
+    {
+      "bytes": 30523,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-measurements.json.part-0009.json",
+      "local_file": "arm-05-measurements.json",
+      "response_sha256": "51fe6e1ea007378869395e4481911b2a71720c1834e3dc822bb7f61f3a067dc7",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-06/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-06/preflight.json",
+      "local_file": "arm-06-preflight.json",
+      "response_sha256": "b1e322b601c15555e52d6a2add9b590ab12650efc3ebc07d4b64dd18ea2879ca",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-06/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-06/launch-readiness.json",
+      "local_file": "arm-06-launch-readiness.json",
+      "response_sha256": "7d81c4ca7d19e4ed9363448da1cf53033c421a187f6b4a6d17539be63a206986",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0000.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "1b3bc2d641e7d153e6557a1a0c27e84b28454fd26a4dc5fa21f09dd53dc5b49c",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0001.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "56db7a033bcb073154db4ec8dc1b38d9970a3947c48bcfee7eff824794faae4d",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0002.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "b9220f3134d7090452519a5668df391e9178671555c760075c44ce1e71c73e97",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0003.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "1f9e3b2e3d6b40beb7320f1bd8d14f2ffa1ca109e6bc7f7c1136a41cabf8b10b",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0004.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "79b3931c9c773594a2496e16accd5337c176c222977480cab4d77c1216a519b5",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0005.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "d43c817f2b0fc894d6ee039522da04364794d54643e2f9942e4ce890eaaacd4f",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0006.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "25a896bb98449db48b1689f983ab05132d8286fd7302231e3c95f4262ec9037b",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0007.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "b941118e7f8bfac65aaa9526ebb43d2b4f33fcbf9566fd78434c215d923ee32e",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0008.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "e0927f41b0cb1612b3f79581e9503e4f90bea10170577c2e64812328d2b33695",
+      "truncated": false
+    },
+    {
+      "bytes": 31255,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-measurements.json.part-0009.json",
+      "local_file": "arm-06-measurements.json",
+      "response_sha256": "69f5928f257c3feb731e535e3bdb15b0180d4e0f41c1cc70258b32dac6122d20",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-07/preflight.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-07/preflight.json",
+      "local_file": "arm-07-preflight.json",
+      "response_sha256": "3d7479f8fdbd50bfd1d2374d9bdcb3a2bd295d1ddfd51c0e0d67920bc7d60c40",
+      "truncated": false
+    },
+    {
+      "bytes": 2433,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-07/launch-readiness.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/run-07/launch-readiness.json",
+      "local_file": "arm-07-launch-readiness.json",
+      "response_sha256": "654f2d7407c3f8d67407b1ff40909b3b7ec3bcd797ad885485b3f4690ecf0130",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0000.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "0b91e5aa7fbc45eb488832ca3f190da5e834270c20a14a9af359c488a339ee2c",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0001.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "19a0493baf73957f1f0d35d8685e58a4ce4279e2577986bc977bc45213c8e9bf",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0002.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "453ce51702f1a16b413ca67308e79e882cb47665a5ccf5090d1109c15fdda3b7",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0003.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0003.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "be1c352089a2496bfa49c8ee3510415aa5b2eddc29ef3b5b56de7e450b5d6063",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0004.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0004.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "0dec56e18ef6da452763d95a1c3248f6b87730ea39195d1097a1f27888e7acf6",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0005.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0005.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "d122ce2446b2d714f00e98b5ee40150d9c5aa74e4fa989007f7a2c28d2403f01",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0006.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0006.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "8d59d2dc523bc5b92583eb7040258ee4602337c961d08d861f3cb9150f4e02e8",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0007.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0007.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "0f5754dc462ddd1cd2d64ab74017c095169b3d1ab64214f8abd1a31c1013bf68",
+      "truncated": false
+    },
+    {
+      "bytes": 33011,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0008.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0008.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "6e7e43073ad14cf99f600b0ad219b7c48826e525b89a3a18d5a1fcbbe1f60652",
+      "truncated": false
+    },
+    {
+      "bytes": 30523,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0009.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-measurements.json.part-0009.json",
+      "local_file": "arm-07-measurements.json",
+      "response_sha256": "04d1e758f30af20035910611c0809400db31ab8d368abb949de45d7fab9306a2",
+      "truncated": false
+    },
+    {
+      "bytes": 4396,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/restore-monitor-1-0_r74tq4/samples.jsonl"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/restore-monitor-1-0_r74tq4/samples.jsonl",
+      "local_file": "restore-monitor-1-0_r74tq4-samples.jsonl",
+      "response_sha256": "54fbdc2b849c7f96da3b870e87a24c83c04826d54559dc46d74ae4e28b370215",
+      "truncated": false
+    },
+    {
+      "bytes": 295,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/restore-monitor-1-0_r74tq4/sampler-stop.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z/restore-monitor-1-0_r74tq4/sampler-stop.json",
+      "local_file": "restore-monitor-1-0_r74tq4-sampler-stop.json",
+      "response_sha256": "c34a6eaf96c45970c62c1c8a2d6333f24b7fb395a19bb07c47575d6199230219",
+      "truncated": false
+    },
+    {
+      "bytes": 1811,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/coordinator.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/coordinator.log.tail.txt",
+      "local_file": "coordinator.log.tail.txt",
+      "response_sha256": "ab7e8c93bd516811529d48af1270dc0571bf819d0d7e79a20b9b318390c4fbb3",
+      "truncated": false
+    },
+    {
+      "bytes": 1,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/lifecycle.recovery.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/lifecycle.recovery.log.tail.txt",
+      "local_file": "lifecycle.recovery.log.tail.txt",
+      "response_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "truncated": false
+    },
+    {
+      "bytes": 1,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/lifecycle.mutation.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/lifecycle.mutation.log.tail.txt",
+      "local_file": "lifecycle.mutation.log.tail.txt",
+      "response_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "truncated": false
+    },
+    {
+      "bytes": 8658,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-server.log.tail.txt",
+      "local_file": "arm-00-server.log.tail.txt",
+      "response_sha256": "2b9119dd77b7a542d97399755de0557dba0d2f32127fa9e400f95874e965c395",
+      "truncated": false
+    },
+    {
+      "bytes": 23983,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-00-engine.log.tail.txt",
+      "local_file": "arm-00-engine.log.tail.txt",
+      "response_sha256": "60b9210a5d8a23ea79cc9d4f70c2e97c905d4c3f152367d0de3a2904b8b13f12",
+      "truncated": false
+    },
+    {
+      "bytes": 8696,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-server.log.tail.txt",
+      "local_file": "arm-01-server.log.tail.txt",
+      "response_sha256": "8d08062bbf430d525dbaf3ce4d269c747436cc8b502c5e3091b4ce2a2796d962",
+      "truncated": false
+    },
+    {
+      "bytes": 24259,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-01-engine.log.tail.txt",
+      "local_file": "arm-01-engine.log.tail.txt",
+      "response_sha256": "315a7c59f7b7bb7c5f4d7c18d4bb194a7baabd0bcdc11f20e5e63413c7ff77b4",
+      "truncated": false
+    },
+    {
+      "bytes": 8517,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-server.log.tail.txt",
+      "local_file": "arm-02-server.log.tail.txt",
+      "response_sha256": "ba82ea5318dfc5b81c0a071be83cf0874587840c636baec16e7ac02fe1ee9a7c",
+      "truncated": false
+    },
+    {
+      "bytes": 24203,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-02-engine.log.tail.txt",
+      "local_file": "arm-02-engine.log.tail.txt",
+      "response_sha256": "818fb4934f4b6cb9ac508e4966f98a29eaaea1f13b6403c1977e48b51144bedc",
+      "truncated": false
+    },
+    {
+      "bytes": 9031,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-server.log.tail.txt",
+      "local_file": "arm-03-server.log.tail.txt",
+      "response_sha256": "81f01146841f9ce6ad920d3cfe5c707c0f200d0a74232c020024e7c5e090fd59",
+      "truncated": false
+    },
+    {
+      "bytes": 24246,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-03-engine.log.tail.txt",
+      "local_file": "arm-03-engine.log.tail.txt",
+      "response_sha256": "bbb490e26274eb95cd15160daffef9781869a2a8b5e9f49c1310714d3c8ef629",
+      "truncated": false
+    },
+    {
+      "bytes": 9145,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-server.log.tail.txt",
+      "local_file": "arm-04-server.log.tail.txt",
+      "response_sha256": "cbc82d2b2a21d2a6200cc24b03a1e5b55a2b794e5d7e531b55532b14feb09c39",
+      "truncated": false
+    },
+    {
+      "bytes": 24238,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-04-engine.log.tail.txt",
+      "local_file": "arm-04-engine.log.tail.txt",
+      "response_sha256": "154d3d1845bb1f880347f5fa33e808f32e5c0494c504e9d38823b5f7452a8055",
+      "truncated": false
+    },
+    {
+      "bytes": 8604,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-server.log.tail.txt",
+      "local_file": "arm-05-server.log.tail.txt",
+      "response_sha256": "8cd11978a79500dfbf5d08e3f5b2616a9be1504b8adf5747ce62a48173d07982",
+      "truncated": false
+    },
+    {
+      "bytes": 24020,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-05-engine.log.tail.txt",
+      "local_file": "arm-05-engine.log.tail.txt",
+      "response_sha256": "32c74416425f8c5150a3f9912b2ba2123be9f2ae7049c6c2d13b3a6df24406f0",
+      "truncated": false
+    },
+    {
+      "bytes": 8627,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-server.log.tail.txt",
+      "local_file": "arm-06-server.log.tail.txt",
+      "response_sha256": "a30ca201b49eb7b666c48ed82984d8550dc0e380612bc266849384a8d57ce851",
+      "truncated": false
+    },
+    {
+      "bytes": 23949,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-06-engine.log.tail.txt",
+      "local_file": "arm-06-engine.log.tail.txt",
+      "response_sha256": "7910c963723cd025f465699b32dc4a471a16ed2ba9011c573fbc584bf92e800e",
+      "truncated": false
+    },
+    {
+      "bytes": 8482,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-server.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-server.log.tail.txt",
+      "local_file": "arm-07-server.log.tail.txt",
+      "response_sha256": "3411d77fba0931d40b3fb948d9ff26f1806f2d72c9cf714e5c48f12556984c25",
+      "truncated": false
+    },
+    {
+      "bytes": 24233,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-engine.log.tail.txt"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/arm-07-engine.log.tail.txt",
+      "local_file": "arm-07-engine.log.tail.txt",
+      "response_sha256": "3d9b2c28c479062b2c937d47ccca8c31d5c3f6070bcec6cc181764d282d2d61f",
+      "truncated": false
+    },
+    {
+      "bytes": 33006,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/after-receipt.json.part-0000.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/after-receipt.json.part-0000.json",
+      "local_file": "after-receipt.json",
+      "response_sha256": "beddc1efe5c7bb77cce950f9998a8cbd87c1aa0e4a6655bcce273ab232398e3a",
+      "truncated": false
+    },
+    {
+      "bytes": 33010,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/after-receipt.json.part-0001.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/after-receipt.json.part-0001.json",
+      "local_file": "after-receipt.json",
+      "response_sha256": "0698f715de2948dc2bf408402b4cfe393a3265856e3c29f7c6b93f83cef441fe",
+      "truncated": false
+    },
+    {
+      "bytes": 18698,
+      "command": [
+        "bundle",
+        "exec",
+        "ruby",
+        "/tmp/str-inn.3-peek-strict.rb",
+        "peek",
+        "host",
+        "nibbler",
+        "path",
+        "read",
+        "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/after-receipt.json.part-0002.json"
+      ],
+      "host_path": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/evidence/after-receipt.json.part-0002.json",
+      "local_file": "after-receipt.json",
+      "response_sha256": "e1e604a3c1c24bb60dc4fd4aabaaad94ccce74436fe9d21348b7cbd2966028ad",
+      "truncated": false
+    }
+  ],
+  "host": "nibbler.ts.keen.land",
+  "probe": "existing hl peek path_read with invocation-local strict/zero-retry adapter",
+  "raw_ssh_fallback": false,
+  "retries": 0,
+  "strict_host_key_checking": true,
+  "utc": "2026-10-12T00:14:23Z"
+}

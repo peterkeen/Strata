@@ -1,0 +1,33 @@
+{
+  "coordinator": {
+    "active": false,
+    "expected": {
+      "boot": "582696d9-3af0-4ab7-8c38-044bbe64d560",
+      "pid": 3338147,
+      "start": "66541092"
+    }
+  },
+  "gpu_consumers": "3396020, /data/llm/Strata/engine/strata-vision, 1268\n3396048, /data/llm/Strata/engine/strata-nibbler, 12538",
+  "journal_phase": "blocked",
+  "port_issue_detected": false,
+  "private_survivors": [],
+  "running_get_only": [
+    {
+      "model": "pocket-tts",
+      "state": "ready"
+    },
+    {
+      "model": "qwen3.8-flash-next-nvfp4-gptq",
+      "state": "ready"
+    }
+  ],
+  "supervisor": {
+    "active": false,
+    "expected": {
+      "boot": "582696d9-3af0-4ab7-8c38-044bbe64d560",
+      "pid": 3338366,
+      "start": "66541263"
+    }
+  },
+  "utc": "2026-10-12T00:09:24Z"
+}

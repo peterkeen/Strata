@@ -1,0 +1,12 @@
+{
+  "listener_query": [
+    "/usr/bin/ss",
+    "-H",
+    "-ltnp",
+    "sport = :18089"
+  ],
+  "listeners": "",
+  "no_listener": true,
+  "socket_state": "",
+  "utc": "2026-10-11T23:51:49Z"
+}

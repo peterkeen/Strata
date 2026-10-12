@@ -1,0 +1,222 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/nibbler_perf.py",
+    "--run",
+    "--tag",
+    "split-sweep-20261011T235149Z",
+    "--window-minutes",
+    "50"
+  ],
+  "before": {
+    "audio": {
+      "backend": "cpu",
+      "status": "ok"
+    },
+    "gpu": {
+      "free_mib": 1931,
+      "link_gen": 1,
+      "link_width": 8,
+      "used_mib": 13959,
+      "util_percent": 0
+    },
+    "gpu_consumers": [
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "pid": 3275568,
+        "start_ticks": "66399950",
+        "used_mib": 1268
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "pid": 3275635,
+        "start_ticks": "66400061",
+        "used_mib": 12538
+      }
+    ],
+    "hashes": {
+      "/data/llm/Strata-run/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata-run/nibbler/config.shared-settings.json": "b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a",
+      "/data/llm/Strata/deploy/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata/engine/BUILD.json": "ee7ddf6de2a1864b803296ff8b40b857999ffb18fbe412808a6f6035ce91810c",
+      "/data/llm/Strata/engine/strata-nibbler": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+      "/data/llm/Strata/engine/strata-vision": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb"
+    },
+    "identities": {
+      "audio": {
+        "pid": 1643128,
+        "start_ticks": "54686907"
+      },
+      "router": {
+        "pid": 1435174,
+        "start_ticks": "18877666"
+      }
+    },
+    "idle": {
+      "live": {
+        "outside_slots": 0,
+        "queued": 0,
+        "running": 0,
+        "state": "idle",
+        "waiting": 0
+      },
+      "slots": [
+        {
+          "id": 0,
+          "is_processing": false
+        },
+        {
+          "id": 1,
+          "is_processing": false
+        }
+      ],
+      "verified": true
+    },
+    "kernel_children": {
+      "supported": true
+    },
+    "launch_tools": {
+      "ldd": "/usr/bin/ldd",
+      "runuser": "/usr/sbin/runuser",
+      "venv_python": "/data/llm/Strata/.venv/bin/python"
+    },
+    "memory": {
+      "AnonPages": 97334480896,
+      "Cached": 24078180352,
+      "MemAvailable": 24808964096,
+      "MemFree": 6814138368,
+      "SwapFree": 7748218880,
+      "SwapTotal": 25786576896
+    },
+    "model_processes": [
+      {
+        "exe": ".venv/bin/python",
+        "kind": "frontend",
+        "pid": 3275561,
+        "private_test": false,
+        "start_ticks": "66399925",
+        "uid": 996
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "kind": "native",
+        "pid": 3275568,
+        "private_test": false,
+        "start_ticks": "66399950",
+        "uid": 996
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "kind": "native",
+        "pid": 3275635,
+        "private_test": false,
+        "start_ticks": "66400061",
+        "uid": 996
+      }
+    ],
+    "native_identity": {
+      "gid": 979,
+      "uid": 996
+    },
+    "port_listener_query_empty": true,
+    "private_port_closed": true,
+    "running": [
+      {
+        "model": "pocket-tts",
+        "state": "ready"
+      },
+      {
+        "model": "qwen3.8-flash-next-nvfp4-gptq",
+        "state": "ready"
+      }
+    ],
+    "utc": "2026-10-11T23:51:49Z"
+  },
+  "budget_estimate": {
+    "basis": "Conservative 8 arms x 2 repeats x approximately 108-second Stage 1 arm/window",
+    "conservative_minutes": 28.8,
+    "conservative_seconds": 1728,
+    "crosscheck": "Previous two-repeat baseline plus refusal and recovery approximately 159 seconds; 8 x 159 seconds is 21.2 minutes",
+    "cutoff_minutes": 45,
+    "repeats_selected": 2,
+    "scope": "Estimate only, not a hard runtime guarantee. Frozen independent deadline remains authoritative."
+  },
+  "coordinator": {
+    "boot": "582696d9-3af0-4ab7-8c38-044bbe64d560",
+    "pid": 3338147,
+    "start": "66541092"
+  },
+  "coordinator_session": 3338147,
+  "dry_run_plan": {
+    "long_words": 8192,
+    "max_tokens": 96,
+    "port": 18089,
+    "production_mutations": "model-only unload/reload; no install/config edits",
+    "repeats": 2,
+    "reserve_gates": false,
+    "run": false,
+    "sequence": "alternate solo/dual, fresh then exact warm repeat; actual API prompt tokens recorded",
+    "settings": [
+      {
+        "frac": null,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.1,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.4,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.55,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.55,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.4,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.1,
+        "reserve": 2048,
+        "workers": 11
+      },
+      {
+        "frac": 0.25,
+        "reserve": 2048,
+        "workers": 11
+      }
+    ],
+    "short_words": 128,
+    "window_minutes": 50
+  },
+  "out": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z",
+  "phase": "launched",
+  "sha256_verified": {
+    "nibbler_lifecycle.py": {
+      "mode": "0o444",
+      "sha256": "3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177",
+      "uid": 0
+    },
+    "nibbler_perf.py": {
+      "mode": "0o444",
+      "sha256": "4b85a3adfee6e341831a9d4ff7a7f015e0e5f1a9a2c6a5c69d2e0f563f400b12",
+      "uid": 0
+    }
+  },
+  "stage": "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools",
+  "sweep_invocations": 1,
+  "tag": "split-sweep-20261011T235149Z",
+  "utc": "2026-10-11T23:51:49Z"
+}

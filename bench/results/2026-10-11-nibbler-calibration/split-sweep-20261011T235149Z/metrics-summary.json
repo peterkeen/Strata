@@ -1,0 +1,3160 @@
+{
+  "arm_order": [
+    null,
+    0.1,
+    0.4,
+    0.55,
+    0.55,
+    0.4,
+    0.1,
+    0.25
+  ],
+  "arms": [
+    {
+      "api_decode_tps_range_all24": [
+        9.2,
+        63.0
+      ],
+      "arm": 0,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              43.4
+            ],
+            [
+              61.6
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.2922357879579067
+            ],
+            [
+              1.246825315989554
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            27.75644606586605,
+            34.6943118483088
+          ],
+          "mean_wall_tps": 31.225378957087425,
+          "within_arm_repeat_difference_tps": 6.937865782442749
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              57.2
+            ],
+            [
+              63.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.18903576803859323
+            ],
+            [
+              0.1734148160321638
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            52.42303923305059,
+            57.87600149418832
+          ],
+          "mean_wall_tps": 55.14952036361946,
+          "within_arm_repeat_difference_tps": 5.452962261137735
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              22.9,
+              33.0
+            ],
+            [
+              33.4,
+              23.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.2784484720323235,
+              2.669657382997684
+            ],
+            [
+              2.5577601499389857,
+              1.1781459429766983
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.890087182051502,
+            2.8569935569539666
+          ],
+          "group_wall_tps_r0_r1": [
+            33.97609844300987,
+            34.89771268785314
+          ],
+          "mean_wall_tps": 34.4369055654315,
+          "within_arm_repeat_difference_tps": 0.9216142448432691
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              24.3,
+              26.2
+            ],
+            [
+              36.4,
+              39.5
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.15871345298364758,
+              0.5231098389485851
+            ],
+            [
+              0.1507606350351125,
+              0.4737073340220377
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.657688106992282,
+            2.5079462479334325
+          ],
+          "group_wall_tps_r0_r1": [
+            44.94554057033545,
+            45.548129542984555
+          ],
+          "mean_wall_tps": 45.246835056660004,
+          "within_arm_repeat_difference_tps": 0.6025889726491016
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              61.2
+            ],
+            [
+              62.1
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              6.961455548997037
+            ],
+            [
+              6.938368828035891
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.302613440065674,
+            11.360886216794986
+          ],
+          "mean_wall_tps": 11.331749828430329,
+          "within_arm_repeat_difference_tps": 0.058272776729312525
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              61.4
+            ],
+            [
+              61.5
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.20501465804409236
+            ],
+            [
+              0.1947766070952639
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            55.386755796721495,
+            55.81158022870052
+          ],
+          "mean_wall_tps": 55.599168012711004,
+          "within_arm_repeat_difference_tps": 0.424824431979026
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              60.7,
+              9.3
+            ],
+            [
+              59.2,
+              9.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              16.09768119000364,
+              7.013952304027043
+            ],
+            [
+              16.022265136009082,
+              6.989350803080015
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.3303979230113328,
+            1.408538507996127
+          ],
+          "group_wall_tps_r0_r1": [
+            10.408458073905411,
+            10.40248596244778
+          ],
+          "mean_wall_tps": 10.405472018176596,
+          "within_arm_repeat_difference_tps": 0.005972111457630547
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              25.3,
+              23.4
+            ],
+            [
+              25.5,
+              23.7
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.5977911100490019,
+              0.22839882702101022
+            ],
+            [
+              0.56268808292225,
+              0.20178256800863892
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.817896625958383,
+            3.7593655840028077
+          ],
+          "group_wall_tps_r0_r1": [
+            42.63378724399758,
+            43.56363403100592
+          ],
+          "mean_wall_tps": 43.09871063750175,
+          "within_arm_repeat_difference_tps": 0.9298467870083371
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1315612784,
+        "enabled": true,
+        "evictions": 13,
+        "last_at": 1791762836.1203651,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 26,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 1,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.25,
+      "hit_rate_range_latest12": [
+        0.373,
+        0.68
+      ],
+      "load_s": 27.022442352958024,
+      "min_free_vram_mib": 1853,
+      "mode": "startup-probed",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.061,
+        0.129
+      ],
+      "peak_vram_mib": 14037,
+      "probe_lines": [
+        "strata generate: PCIe probe: 28.9 GB/s host->device (best of 28.9 28.8 28.9 28.8) -> pcie_frac 0.25 (default 0.25)"
+      ],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": null,
+      "ttft_p95_s": 16.022265136009082,
+      "wall_p95_s": 18.446378420107067
+    },
+    {
+      "api_decode_tps_range_all24": [
+        9.2,
+        63.5
+      ],
+      "arm": 1,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              41.5
+            ],
+            [
+              63.5
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.2955591810168698
+            ],
+            [
+              1.221145095070824
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            26.969661266971926,
+            35.56822842244256
+          ],
+          "mean_wall_tps": 31.268944844707242,
+          "within_arm_repeat_difference_tps": 8.598567155470633
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              56.3
+            ],
+            [
+              62.3
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.1851478610187769
+            ],
+            [
+              0.1739458490628749
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            51.787857391468435,
+            57.19876651923953
+          ],
+          "mean_wall_tps": 54.49331195535398,
+          "within_arm_repeat_difference_tps": 5.410909127771092
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              22.7,
+              32.9
+            ],
+            [
+              22.8,
+              33.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.2808658980065957,
+              2.684803106938489
+            ],
+            [
+              1.234210860915482,
+              2.603440016042441
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.9088632230414078,
+            2.900306163006462
+          ],
+          "group_wall_tps_r0_r1": [
+            33.77870941163184,
+            34.43014473451079
+          ],
+          "mean_wall_tps": 34.104427073071314,
+          "within_arm_repeat_difference_tps": 0.6514353228789531
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              24.0,
+              26.0
+            ],
+            [
+              24.1,
+              25.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.15835776505991817,
+              0.5757145449751988
+            ],
+            [
+              0.15568844403605908,
+              0.4821597239933908
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.6794511600164697,
+            3.691069129970856
+          ],
+          "group_wall_tps_r0_r1": [
+            44.199844693076386,
+            45.05030217145011
+          ],
+          "mean_wall_tps": 44.62507343226325,
+          "within_arm_repeat_difference_tps": 0.8504574783737269
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              60.4
+            ],
+            [
+              62.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              6.947515797917731
+            ],
+            [
+              6.949939994956367
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.291127270482534,
+            11.339764474833068
+          ],
+          "mean_wall_tps": 11.3154458726578,
+          "within_arm_repeat_difference_tps": 0.04863720435053409
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              60.6
+            ],
+            [
+              61.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.21048653800971806
+            ],
+            [
+              0.1970884200418368
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            54.633449634205334,
+            55.3634816292831
+          ],
+          "mean_wall_tps": 54.99846563174422,
+          "within_arm_repeat_difference_tps": 0.7300319950777663
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              9.2,
+              56.9
+            ],
+            [
+              59.3,
+              9.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              6.995579094043933,
+              16.119144384982064
+            ],
+            [
+              16.02688517200295,
+              6.981026245979592
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.411160395015031,
+            1.447447605081834
+          ],
+          "group_wall_tps_r0_r1": [
+            10.332020713143335,
+            10.378431213070902
+          ],
+          "mean_wall_tps": 10.355225963107118,
+          "within_arm_repeat_difference_tps": 0.04641049992756763
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              23.1,
+              25.0
+            ],
+            [
+              25.4,
+              23.6
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.21613994799554348,
+              0.5954958699876443
+            ],
+            [
+              0.5750634069554508,
+              0.1998486960073933
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.8606245890259743,
+            3.7725138950627297
+          ],
+          "group_wall_tps_r0_r1": [
+            42.2496327003974,
+            43.30110363002314
+          ],
+          "mean_wall_tps": 42.77536816521027,
+          "within_arm_repeat_difference_tps": 1.0514709296257436
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1315612784,
+        "enabled": true,
+        "evictions": 12,
+        "last_at": 1791762959.665452,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 25,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 0,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.1,
+      "hit_rate_range_latest12": [
+        0.314,
+        0.646
+      ],
+      "load_s": 26.02285136305727,
+      "min_free_vram_mib": 1877,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.002,
+        0.025
+      ],
+      "peak_vram_mib": 14013,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.1,
+      "ttft_p95_s": 16.02688517200295,
+      "wall_p95_s": 18.49965805001557
+    },
+    {
+      "api_decode_tps_range_all24": [
+        9.2,
+        61.9
+      ],
+      "arm": 2,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              43.8
+            ],
+            [
+              61.8
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.2856348509667441
+            ],
+            [
+              1.2365234940079972
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            27.97734795593844,
+            34.87343505291453
+          ],
+          "mean_wall_tps": 31.425391504426486,
+          "within_arm_repeat_difference_tps": 6.896087096976089
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              57.7
+            ],
+            [
+              61.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.1831486140144989
+            ],
+            [
+              0.16870378307066858
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            53.02751900688436,
+            57.06223686126361
+          ],
+          "mean_wall_tps": 55.04487793407398,
+          "within_arm_repeat_difference_tps": 4.034717854379245
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              32.5,
+              22.5
+            ],
+            [
+              31.8,
+              22.1
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              2.6695600419770926,
+              1.2525817790301517
+            ],
+            [
+              2.651546189910732,
+              1.243609930970706
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.936927843024023,
+            3.0103549460181966
+          ],
+          "group_wall_tps_r0_r1": [
+            33.70074732351191,
+            33.469685683365284
+          ],
+          "mean_wall_tps": 33.5852165034386,
+          "within_arm_repeat_difference_tps": 0.23106164014662767
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              36.5,
+              39.5
+            ],
+            [
+              36.4,
+              39.4
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.15117344702593982,
+              0.5068792720558122
+            ],
+            [
+              0.1504301599925384,
+              0.4750953880138695
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.5069359219633043,
+            2.526105963042937
+          ],
+          "group_wall_tps_r0_r1": [
+            45.132972056038746,
+            45.393950345054414
+          ],
+          "mean_wall_tps": 45.26346120054658,
+          "within_arm_repeat_difference_tps": 0.260978289015668
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              58.5
+            ],
+            [
+              58.6
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.005129873054102
+            ],
+            [
+              6.98811884096358
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.151040137420386,
+            11.17701891025016
+          ],
+          "mean_wall_tps": 11.164029523835273,
+          "within_arm_repeat_difference_tps": 0.02597877282977379
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              60.1
+            ],
+            [
+              60.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.21112698200158775
+            ],
+            [
+              0.18680905096698552
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            54.20351655554197,
+            55.58668255516072
+          ],
+          "mean_wall_tps": 54.895099555351344,
+          "within_arm_repeat_difference_tps": 1.383165999618754
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              9.2,
+              60.9
+            ],
+            [
+              59.6,
+              9.3
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.044790423009545,
+              16.14031101902947
+            ],
+            [
+              16.091102752950974,
+              6.996473463950679
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.3518045189557597,
+            1.2986362770898268
+          ],
+          "group_wall_tps_r0_r1": [
+            10.37417978858213,
+            10.406477552512541
+          ],
+          "mean_wall_tps": 10.390328670547335,
+          "within_arm_repeat_difference_tps": 0.03229776393041206
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              37.5,
+              36.0
+            ],
+            [
+              36.1,
+              38.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.5621859190287068,
+              0.20072309009265155
+            ],
+            [
+              0.2121060099452734,
+              0.5488999609369785
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.643962092930451,
+            2.5955622990150005
+          ],
+          "group_wall_tps_r0_r1": [
+            42.727980235447525,
+            43.35261867808977
+          ],
+          "mean_wall_tps": 43.04029945676865,
+          "within_arm_repeat_difference_tps": 0.6246384426422438
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1207536108,
+        "enabled": true,
+        "evictions": 16,
+        "last_at": 1791763083.201127,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 29,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 4,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.4,
+      "hit_rate_range_latest12": [
+        0.29,
+        0.717
+      ],
+      "load_s": 26.020549342036247,
+      "min_free_vram_mib": 1845,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.098,
+        0.24
+      ],
+      "peak_vram_mib": 14045,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.4,
+      "ttft_p95_s": 16.091102752950974,
+      "wall_p95_s": 18.449806364020333
+    },
+    {
+      "api_decode_tps_range_all24": [
+        9.0,
+        56.8
+      ],
+      "arm": 3,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              39.0
+            ],
+            [
+              56.8
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.321338374982588
+            ],
+            [
+              1.239354951074347
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            25.70376835404371,
+            33.18625688999481
+          ],
+          "mean_wall_tps": 29.44501262201926,
+          "within_arm_repeat_difference_tps": 7.482488535951099
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              50.2
+            ],
+            [
+              56.3
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.1949812319362536
+            ],
+            [
+              0.1856211869744584
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            46.426913343055894,
+            51.867972260460085
+          ],
+          "mean_wall_tps": 49.14744280175799,
+          "within_arm_repeat_difference_tps": 5.441058917404192
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              20.7,
+              29.0
+            ],
+            [
+              28.8,
+              20.5
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.3074391880072653,
+              2.731149864033796
+            ],
+            [
+              2.6189221289241686,
+              1.214560834923759
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.2910206810338423,
+            3.3277165750041604
+          ],
+          "group_wall_tps_r0_r1": [
+            31.37616866020859,
+            31.862891408505742
+          ],
+          "mean_wall_tps": 31.61953003435717,
+          "within_arm_repeat_difference_tps": 0.4867227482971508
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              21.9,
+              23.6
+            ],
+            [
+              22.7,
+              21.4
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.16776179301086813,
+              0.5582508930237964
+            ],
+            [
+              0.4944692440330982,
+              0.16818245593458414
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            4.060389811987989,
+            4.230570513987914
+          ],
+          "group_wall_tps_r0_r1": [
+            40.7453091457558,
+            40.068540410903616
+          ],
+          "mean_wall_tps": 40.40692477832971,
+          "within_arm_repeat_difference_tps": 0.6767687348521818
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              53.9
+            ],
+            [
+              52.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              6.966823557973839
+            ],
+            [
+              7.018351424019784
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.020245037811787,
+            10.88034640989075
+          ],
+          "mean_wall_tps": 10.95029572385127,
+          "within_arm_repeat_difference_tps": 0.13989862792103658
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              53.6
+            ],
+            [
+              53.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.22006389498710632
+            ],
+            [
+              0.2175924819894135
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            48.69992296380548,
+            48.26928752435911
+          ],
+          "mean_wall_tps": 48.48460524408229,
+          "within_arm_repeat_difference_tps": 0.4306354394463696
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              9.0,
+              53.0
+            ],
+            [
+              9.0,
+              53.3
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.030885322019458,
+              16.16385684395209
+            ],
+            [
+              7.01484844298102,
+              16.14753108890727
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.6306535090552643,
+            1.6248923010425642
+          ],
+          "group_wall_tps_r0_r1": [
+            10.168331225646817,
+            10.185073990609665
+          ],
+          "mean_wall_tps": 10.176702608128242,
+          "within_arm_repeat_difference_tps": 0.016742764962847545
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              21.1,
+              22.7
+            ],
+            [
+              33.8,
+              33.8
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.2314176489599049,
+              0.6178891169838607
+            ],
+            [
+              0.5983415180817246,
+              0.20899555808864534
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            4.238771911943331,
+            2.9219817009288818
+          ],
+          "group_wall_tps_r0_r1": [
+            38.79205642634129,
+            39.4769450349007
+          ],
+          "mean_wall_tps": 39.134500730621,
+          "within_arm_repeat_difference_tps": 0.6848886085594117
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1207536108,
+        "enabled": true,
+        "evictions": 13,
+        "last_at": 1791763210.8324723,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 26,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 1,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.55,
+      "hit_rate_range_latest12": [
+        0.471,
+        0.766
+      ],
+      "load_s": 25.02094411291182,
+      "min_free_vram_mib": 1875,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.162,
+        0.31
+      ],
+      "peak_vram_mib": 14015,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.55,
+      "ttft_p95_s": 16.14753108890727,
+      "wall_p95_s": 18.851115023950115
+    },
+    {
+      "api_decode_tps_range_all24": [
+        8.8,
+        54.4
+      ],
+      "arm": 4,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              38.0
+            ],
+            [
+              53.5
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.3378981029381976
+            ],
+            [
+              1.26527110603638
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            25.20535923363047,
+            31.781737128824414
+          ],
+          "mean_wall_tps": 28.493548181227442,
+          "within_arm_repeat_difference_tps": 6.576377895193943
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              49.6
+            ],
+            [
+              54.4
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.2018418679945171
+            ],
+            [
+              0.20214640093035996
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            45.73200438384196,
+            49.844222941040776
+          ],
+          "mean_wall_tps": 47.78811366244137,
+          "within_arm_repeat_difference_tps": 4.1122185571988155
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              28.3,
+              20.2
+            ],
+            [
+              20.7,
+              29.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              2.753453011973761,
+              1.2959314750041813
+            ],
+            [
+              1.254952688002959,
+              2.683477749931626
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.371810934972018,
+            3.293098591035232
+          ],
+          "group_wall_tps_r0_r1": [
+            30.800482893942096,
+            31.689323277577344
+          ],
+          "mean_wall_tps": 31.24490308575972,
+          "within_arm_repeat_difference_tps": 0.8888403836352481
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              33.5,
+              34.7
+            ],
+            [
+              34.8,
+              34.1
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.16983335802797228,
+              0.5624027049634606
+            ],
+            [
+              0.5486887330189347,
+              0.17914598900824785
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.8823078849818558,
+            2.847500761039555
+          ],
+          "group_wall_tps_r0_r1": [
+            39.990736720672565,
+            40.796342020796935
+          ],
+          "mean_wall_tps": 40.39353937073475,
+          "within_arm_repeat_difference_tps": 0.8056053001243697
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              50.9
+            ],
+            [
+              54.1
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.021774969995022
+            ],
+            [
+              6.974569516023621
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            10.825800810816435,
+            11.021334489081843
+          ],
+          "mean_wall_tps": 10.923567649949138,
+          "within_arm_repeat_difference_tps": 0.19553367826540757
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              52.1
+            ],
+            [
+              53.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.24816625204402953
+            ],
+            [
+              0.22467128897551447
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            46.80529941283926,
+            48.22313338200947
+          ],
+          "mean_wall_tps": 47.51421639742436,
+          "within_arm_repeat_difference_tps": 1.4178339691702107
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              8.8,
+              51.8
+            ],
+            [
+              8.9,
+              52.6
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.142332963063382,
+              16.343786480021663
+            ],
+            [
+              7.049595742952079,
+              16.23516091192141
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.7913300629006699,
+            1.680441734031774
+          ],
+          "group_wall_tps_r0_r1": [
+            9.988007684782405,
+            10.106361640706456
+          ],
+          "mean_wall_tps": 10.047184662744431,
+          "within_arm_repeat_difference_tps": 0.11835395592405185
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              21.1,
+              22.8
+            ],
+            [
+              20.8,
+              22.4
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.23248101898934692,
+              0.6493254319066182
+            ],
+            [
+              0.22892868204507977,
+              0.6351699799997732
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            4.226269163074903,
+            4.282755444990471
+          ],
+          "group_wall_tps_r0_r1": [
+            38.6339934501013,
+            38.3018359569384
+          ],
+          "mean_wall_tps": 38.46791470351985,
+          "within_arm_repeat_difference_tps": 0.332157493162903
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1315612784,
+        "enabled": true,
+        "evictions": 14,
+        "last_at": 1791763341.8055892,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 27,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 2,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.55,
+      "hit_rate_range_latest12": [
+        0.476,
+        0.764
+      ],
+      "load_s": 27.02449004200753,
+      "min_free_vram_mib": 1847,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.162,
+        0.317
+      ],
+      "peak_vram_mib": 14043,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.55,
+      "ttft_p95_s": 16.23516091192141,
+      "wall_p95_s": 18.997934967977926
+    },
+    {
+      "api_decode_tps_range_all24": [
+        9.2,
+        62.1
+      ],
+      "arm": 5,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              42.6
+            ],
+            [
+              60.3
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.3183495480334386
+            ],
+            [
+              1.2633005959214643
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            27.24936405528432,
+            34.08293963882911
+          ],
+          "mean_wall_tps": 30.666151847056717,
+          "within_arm_repeat_difference_tps": 6.833575583544789
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              56.6
+            ],
+            [
+              62.1
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.19247579004149884
+            ],
+            [
+              0.1794086879817769
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            51.905510579444076,
+            56.85427226734483
+          ],
+          "mean_wall_tps": 54.379891423394454,
+          "within_arm_repeat_difference_tps": 4.948761687900756
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              32.0,
+              22.0
+            ],
+            [
+              22.1,
+              31.6
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              2.745357353007421,
+              1.285247917054221
+            ],
+            [
+              1.295359555981122,
+              2.68894638994243
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.9880527219502255,
+            3.024379322072491
+          ],
+          "group_wall_tps_r0_r1": [
+            32.96851529926684,
+            33.17824589680494
+          ],
+          "mean_wall_tps": 33.07338059803589,
+          "within_arm_repeat_difference_tps": 0.20973059753809764
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              25.7,
+              23.8
+            ],
+            [
+              38.0,
+              36.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.5338668010663241,
+              0.15623485995456576
+            ],
+            [
+              0.49593042209744453,
+              0.1603801379678771
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.736755518009886,
+            2.6057108140084893
+          ],
+          "group_wall_tps_r0_r1": [
+            44.02384597994464,
+            44.18548260786899
+          ],
+          "mean_wall_tps": 44.104664293906815,
+          "within_arm_repeat_difference_tps": 0.16163662792435218
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              59.6
+            ],
+            [
+              61.4
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              6.996136803994887
+            ],
+            [
+              6.983376255026087
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.200752657148277,
+            11.275966710095982
+          ],
+          "mean_wall_tps": 11.238359683622129,
+          "within_arm_repeat_difference_tps": 0.07521405294770567
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              59.7
+            ],
+            [
+              60.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.21698681800626218
+            ],
+            [
+              0.20336680603213608
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            53.72261315142627,
+            54.48991962632903
+          ],
+          "mean_wall_tps": 54.10626638887766,
+          "within_arm_repeat_difference_tps": 0.7673064749027603
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              9.2,
+              55.7
+            ],
+            [
+              58.8,
+              9.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.048272408079356,
+              16.119959075935185
+            ],
+            [
+              16.185472656041384,
+              7.03830990800634
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.4698112569749355,
+            1.373215866042301
+          ],
+          "group_wall_tps_r0_r1": [
+            10.28926659880795,
+            10.323584836383281
+          ],
+          "mean_wall_tps": 10.306425717595616,
+          "within_arm_repeat_difference_tps": 0.03431823757533081
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              37.0,
+              34.9
+            ],
+            [
+              25.0,
+              23.1
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.6509941909462214,
+              0.21237609500531107
+            ],
+            [
+              0.6043841289356351,
+              0.20090473594609648
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.6786822110880166,
+            3.8536905969958752
+          ],
+          "group_wall_tps_r0_r1": [
+            41.346580169756194,
+            42.22772877565335
+          ],
+          "mean_wall_tps": 41.78715447270477,
+          "within_arm_repeat_difference_tps": 0.8811486058971525
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1315612784,
+        "enabled": true,
+        "evictions": 14,
+        "last_at": 1791763469.6505737,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 27,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 2,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.4,
+      "hit_rate_range_latest12": [
+        0.393,
+        0.716
+      ],
+      "load_s": 29.026096957037225,
+      "min_free_vram_mib": 1847,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.096,
+        0.212
+      ],
+      "peak_vram_mib": 14043,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.4,
+      "ttft_p95_s": 16.119959075935185,
+      "wall_p95_s": 18.597973159048706
+    },
+    {
+      "api_decode_tps_range_all24": [
+        9.1,
+        64.6
+      ],
+      "arm": 6,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              39.6
+            ],
+            [
+              64.6
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.3258475009351969
+            ],
+            [
+              1.2497894809348509
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            25.943224607565245,
+            35.539379227827745
+          ],
+          "mean_wall_tps": 30.741301917696497,
+          "within_arm_repeat_difference_tps": 9.5961546202625
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              55.0
+            ],
+            [
+              61.8
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.19881291198544204
+            ],
+            [
+              0.1860215119086206
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            50.46908347733804,
+            56.47001931726947
+          ],
+          "mean_wall_tps": 53.46955139730375,
+          "within_arm_repeat_difference_tps": 6.000935839931429
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              22.2,
+              32.1
+            ],
+            [
+              22.2,
+              32.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.3333194410661235,
+              2.776118333102204
+            ],
+            [
+              1.297639745986089,
+              2.69883548701182
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.9768044729717076,
+            2.995324674062431
+          ],
+          "group_wall_tps_r0_r1": [
+            32.86207730360304,
+            33.2851289889346
+          ],
+          "mean_wall_tps": 33.07360314626882,
+          "within_arm_repeat_difference_tps": 0.4230516853315649
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              39.0,
+              36.1
+            ],
+            [
+              24.0,
+              25.8
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.5402629459276795,
+              0.16353887401055545
+            ],
+            [
+              0.15608359000179917,
+              0.4996096519753337
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.5441835309611633,
+            3.7095134150004014
+          ],
+          "group_wall_tps_r0_r1": [
+            44.257673181556,
+            44.6920744774122
+          ],
+          "mean_wall_tps": 44.474873829484096,
+          "within_arm_repeat_difference_tps": 0.4344012958561976
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              56.2
+            ],
+            [
+              59.3
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.048244521021843
+            ],
+            [
+              7.0123990380670875
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.015481692087437,
+            11.16935031807077
+          ],
+          "mean_wall_tps": 11.092416005079103,
+          "within_arm_repeat_difference_tps": 0.15386862598333195
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              58.8
+            ],
+            [
+              59.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.21785609796643257
+            ],
+            [
+              0.20154594699852169
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            52.94423266719597,
+            54.32238805535259
+          ],
+          "mean_wall_tps": 53.63331036127428,
+          "within_arm_repeat_difference_tps": 1.378155388156621
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              9.1,
+              60.1
+            ],
+            [
+              57.5,
+              9.2
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.060261660022661,
+              16.162015053909272
+            ],
+            [
+              16.12279372406192,
+              7.028744256938808
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.4422363140620291,
+            1.4193056049989536
+          ],
+          "group_wall_tps_r0_r1": [
+            10.31871114294808,
+            10.329761572217986
+          ],
+          "mean_wall_tps": 10.324236357583032,
+          "within_arm_repeat_difference_tps": 0.011050429269905848
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              38.0,
+              36.1
+            ],
+            [
+              35.7,
+              38.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.5648772310232744,
+              0.21077085309661925
+            ],
+            [
+              0.20757686905562878,
+              0.5753923299489543
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.607739169965498,
+            2.6225586039945483
+          ],
+          "group_wall_tps_r0_r1": [
+            42.99723539326956,
+            42.901421290171264
+          ],
+          "mean_wall_tps": 42.94932834172042,
+          "within_arm_repeat_difference_tps": 0.09581410309829863
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1207536108,
+        "enabled": true,
+        "evictions": 15,
+        "last_at": 1791763595.4590886,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 28,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 3,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.1,
+      "hit_rate_range_latest12": [
+        0.253,
+        0.644
+      ],
+      "load_s": 27.024446971016005,
+      "min_free_vram_mib": 1845,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.0,
+        0.035
+      ],
+      "peak_vram_mib": 14045,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.1,
+      "ttft_p95_s": 16.12279372406192,
+      "wall_p95_s": 18.586901732021943
+    },
+    {
+      "api_decode_tps_range_all24": [
+        9.2,
+        63.0
+      ],
+      "arm": 7,
+      "buckets": {
+        "178tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              43.0
+            ],
+            [
+              61.8
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.304529347922653
+            ],
+            [
+              1.2573701279470697
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            27.52106269871766,
+            34.60398307345969
+          ],
+          "mean_wall_tps": 31.062522886088672,
+          "within_arm_repeat_difference_tps": 7.082920374742027
+        },
+        "178tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              56.2
+            ],
+            [
+              63.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.19930199394002557
+            ],
+            [
+              0.18480775493662804
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            51.35901127984636,
+            57.43252619379974
+          ],
+          "mean_wall_tps": 54.395768736823044,
+          "within_arm_repeat_difference_tps": 6.073514913953382
+        },
+        "178tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              22.9,
+              33.3
+            ],
+            [
+              22.8,
+              33.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              1.2834553869906813,
+              2.685925872065127
+            ],
+            [
+              1.2365021120058373,
+              2.619569703936577
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.8717485580127686,
+            2.8921295520849526
+          ],
+          "group_wall_tps_r0_r1": [
+            33.992004019267846,
+            34.38835673889931
+          ],
+          "mean_wall_tps": 34.19018037908358,
+          "within_arm_repeat_difference_tps": 0.3963527196314658
+        },
+        "178tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              40.2,
+              37.3
+            ],
+            [
+              39.4,
+              36.5
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.514250495005399,
+              0.1552591749932617
+            ],
+            [
+              0.486502006999217,
+              0.15656060399487615
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            2.4683808570262045,
+            2.5198582590091974
+          ],
+          "group_wall_tps_r0_r1": [
+            45.74244435948265,
+            45.34813973754077
+          ],
+          "mean_wall_tps": 45.54529204851171,
+          "within_arm_repeat_difference_tps": 0.39430462194187754
+        },
+        "8243tok/1stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              58.8
+            ],
+            [
+              61.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              6.990359888062812
+            ],
+            [
+              6.964880139101297
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            11.18292845230747,
+            11.31979503464654
+          ],
+          "mean_wall_tps": 11.251361743477005,
+          "within_arm_repeat_difference_tps": 0.13686658233907067
+        },
+        "8243tok/1stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              60.6
+            ],
+            [
+              62.0
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.21384550898801535
+            ],
+            [
+              0.19871049898210913
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": null,
+          "group_wall_tps_r0_r1": [
+            54.50386323546974,
+            56.07334467391275
+          ],
+          "mean_wall_tps": 55.28860395469124,
+          "within_arm_repeat_difference_tps": 1.5694814384430131
+        },
+        "8243tok/2stream/fresh": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              9.2,
+              61.3
+            ],
+            [
+              9.2,
+              61.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              7.033826834987849,
+              16.158343300921842
+            ],
+            [
+              7.0207544709555805,
+              16.0856021650834
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            1.3304554630303755,
+            1.3372355429455638
+          ],
+          "group_wall_tps_r0_r1": [
+            10.380264217139581,
+            10.430814454739464
+          ],
+          "mean_wall_tps": 10.405539335939523,
+          "within_arm_repeat_difference_tps": 0.05055023759988231
+        },
+        "8243tok/2stream/warm": {
+          "api_decode_tps_r0_r1_request_order": [
+            [
+              23.0,
+              24.7
+            ],
+            [
+              23.2,
+              24.9
+            ]
+          ],
+          "client_ttft_s_r0_r1_request_order": [
+            [
+              0.2043232430005446,
+              0.5466154729947448
+            ],
+            [
+              0.19847902900073677,
+              0.5362747529288754
+            ]
+          ],
+          "dual_output_overlap_s_r0_r1": [
+            3.9214946660213172,
+            3.886655145091936
+          ],
+          "group_wall_tps_r0_r1": [
+            42.412529723538896,
+            42.83503116554511
+          ],
+          "mean_wall_tps": 42.62378044454201,
+          "within_arm_repeat_difference_tps": 0.4225014420062152
+        }
+      },
+      "cache_as_recorded": {
+        "budget_mib": 8192,
+        "bytes": 1315562092,
+        "enabled": true,
+        "evictions": 14,
+        "last_at": 1791763719.817791,
+        "last_event": "parked",
+        "last_prompt": 8243,
+        "last_reused": 8236,
+        "last_tokens": 8338,
+        "parked": 4,
+        "parks": 27,
+        "prompt_tokens": 101052,
+        "requests": 24,
+        "requests_reused": 12,
+        "restores": 2,
+        "reused_tokens": 50442,
+        "slots": 4
+      },
+      "effective_frac": 0.25,
+      "hit_rate_range_latest12": [
+        0.376,
+        0.679
+      ],
+      "load_s": 27.02339462400414,
+      "min_free_vram_mib": 1849,
+      "mode": "explicit, startup probe skipped",
+      "native_metric_rows": 12,
+      "native_metrics_scope": "latest 12 requests, repeat 1 only; native segment counters may be partial",
+      "pcie_share_range_latest12": [
+        0.058,
+        0.131
+      ],
+      "peak_vram_mib": 14041,
+      "probe_lines": [],
+      "registration_lines": [
+        "strata generate: RAM: 123.4 GiB installed (92 GiB or more): every expert in RAM (the resident arena), no low-RAM mode",
+        "strata generate: KV streaming: 32768 of 262144 cells per QSA layer in VRAM, the K/V in 3.09 GiB of pinned RAM",
+        "strata generate: expert arena read through the file cache (buffered (not Windows))",
+        "strata generate: expert arena: cudaHostRegister PORTABLE ok; MAP_HUGETLB unavailable (needed 32402 2 MiB pages, vm.nr_hugepages=0); transparent huge pages are on for every mapping (THP always): MADV_HUGEPAGE not requested"
+      ],
+      "requested_frac": 0.25,
+      "ttft_p95_s": 16.0856021650834,
+      "wall_p95_s": 18.4069999800995
+    }
+  ],
+  "baseline_comparisons": [
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/fresh",
+      "delta_percent_of_baseline": -0.7053735879018473,
+      "delta_wall_tps_vs_baseline": -0.220255575885556,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 9.625003814877314,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 9.5961546202625
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/fresh",
+      "delta_percent_of_baseline": -0.5215503428239058,
+      "delta_wall_tps_vs_baseline": -0.1628560709987532,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 7.082920374742027,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 7.082920374742027
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/fresh",
+      "delta_percent_of_baseline": -0.5751964822993996,
+      "delta_wall_tps_vs_baseline": -0.17960728134582382,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 7.624070997630209,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 6.937865782442749
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/fresh",
+      "delta_percent_of_baseline": -7.225207926426121,
+      "delta_wall_tps_vs_baseline": -2.2560985554640745,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 7.980897656364338,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 7.482488535951099
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/warm",
+      "delta_percent_of_baseline": -2.11803961229216,
+      "delta_wall_tps_vs_baseline": -1.1680886872905916,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 6.729683041901488,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 6.000935839931429
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/warm",
+      "delta_percent_of_baseline": -1.3667419441305662,
+      "delta_wall_tps_vs_baseline": -0.753751626796415,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 6.073514913953382,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 6.073514913953382
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/1stream/warm",
+      "delta_percent_of_baseline": -0.7926373284899993,
+      "delta_wall_tps_vs_baseline": -0.43713568488524146,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 5.452962261137735,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 5.452962261137735
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "178tok/1stream/warm",
+      "delta_percent_of_baseline": -12.115684936994548,
+      "delta_wall_tps_vs_baseline": -6.681742131519783,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 6.135967876618125,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 5.452962261137735
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/2stream/fresh",
+      "delta_percent_of_baseline": -2.462156346046863,
+      "delta_wall_tps_vs_baseline": -0.8478904557614371,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 1.5680674309077531,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 0.9216142448432691
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/2stream/fresh",
+      "delta_percent_of_baseline": -0.7164557392624481,
+      "delta_wall_tps_vs_baseline": -0.2467251863479234,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.9216142448432691,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 0.9216142448432691
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "178tok/2stream/fresh",
+      "delta_percent_of_baseline": -3.2163372303872135,
+      "delta_wall_tps_vs_baseline": -1.1076070146942598,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.9216142448432691,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 0.9216142448432691
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "178tok/2stream/fresh",
+      "delta_percent_of_baseline": -8.725200351303428,
+      "delta_wall_tps_vs_baseline": -3.0046890053730593,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 1.0624085145636464,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 0.9216142448432691
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/2stream/warm",
+      "delta_percent_of_baseline": -1.540132972645913,
+      "delta_wall_tps_vs_baseline": -0.6968614257863308,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.8504574783737269,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 0.8504574783737269
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/2stream/warm",
+      "delta_percent_of_baseline": 0.6596195987586041,
+      "delta_wall_tps_vs_baseline": 0.29845699185170815,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.6025889726491016,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 0.6025889726491016
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "178tok/2stream/warm",
+      "delta_percent_of_baseline": -1.2437827059695534,
+      "delta_wall_tps_vs_baseline": -0.5627723094333064,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 1.3701043651097748,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 0.6025889726491016
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "178tok/2stream/warm",
+      "delta_percent_of_baseline": -10.711474020356684,
+      "delta_wall_tps_vs_baseline": -4.846602982127777,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.8056053001243697,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 0.8056053001243697
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/1stream/fresh",
+      "delta_percent_of_baseline": -1.1279713327344218,
+      "delta_wall_tps_vs_baseline": -0.12781888956187615,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.32428278274563027,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 0.15386862598333195
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/1stream/fresh",
+      "delta_percent_of_baseline": -0.7094057508367968,
+      "delta_wall_tps_vs_baseline": -0.08038808495332361,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.13686658233907067,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 0.13686658233907067
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "8243tok/1stream/fresh",
+      "delta_percent_of_baseline": -1.1521188402348603,
+      "delta_wall_tps_vs_baseline": -0.13055522470162728,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.12492657267559615,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 0.07521405294770567
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "8243tok/1stream/fresh",
+      "delta_percent_of_baseline": -3.4841762967583567,
+      "delta_wall_tps_vs_baseline": -0.3948181415301253,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.19553367826540757,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 0.19553367826540757
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/1stream/warm",
+      "delta_percent_of_baseline": -2.308092120925939,
+      "delta_wall_tps_vs_baseline": -1.2832800162017577,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 2.4192489620871314,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 1.378155388156621
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/1stream/warm",
+      "delta_percent_of_baseline": -0.5585768081075667,
+      "delta_wall_tps_vs_baseline": -0.3105640580197644,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 1.5694814384430131,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 1.5694814384430131
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/1stream/warm",
+      "delta_percent_of_baseline": -1.9757220833688978,
+      "delta_wall_tps_vs_baseline": -1.0984850405965076,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 1.8640694037344474,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 1.383165999618754
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "8243tok/1stream/warm",
+      "delta_percent_of_baseline": -13.668832580768534,
+      "delta_wall_tps_vs_baseline": -7.5997571919576785,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 1.894623550966216,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 1.4178339691702107
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "8243tok/2stream/fresh",
+      "delta_percent_of_baseline": -0.6317912125147362,
+      "delta_wall_tps_vs_baseline": -0.0657408578315195,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.05972007012282177,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 0.04641049992756763
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/2stream/fresh",
+      "delta_percent_of_baseline": 0.0006469457878420579,
+      "delta_wall_tps_vs_baseline": 6.731776292667746e-05,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.05055023759988231,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 0.05055023759988231
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/2stream/fresh",
+      "delta_percent_of_baseline": -0.5486999917484402,
+      "delta_wall_tps_vs_baseline": -0.057094824105121234,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.11721095370459089,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 0.03431823757533081
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "8243tok/2stream/fresh",
+      "delta_percent_of_baseline": -2.8209040611277887,
+      "delta_wall_tps_vs_baseline": -0.2935283827402593,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 0.19706630582725992,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 0.11835395592405185
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/2stream/warm",
+      "delta_percent_of_baseline": -0.5484210096780571,
+      "delta_wall_tps_vs_baseline": -0.2363623840364113,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 1.0514709296257436,
+      "split": "explicit 0.10",
+      "within_arm_comparison_band_tps": 1.0514709296257436
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/2stream/warm",
+      "delta_percent_of_baseline": -1.10195916753596,
+      "delta_wall_tps_vs_baseline": -0.4749301929597465,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 0.9298467870083371,
+      "split": "explicit 0.25",
+      "within_arm_comparison_band_tps": 0.9298467870083371
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": false,
+      "bucket": "8243tok/2stream/warm",
+      "delta_percent_of_baseline": -1.5893368099253844,
+      "delta_wall_tps_vs_baseline": -0.6849836727650427,
+      "exceeds_observed_within_arm_repeat_difference": false,
+      "full_observed_comparison_band_tps": 2.0060385083335746,
+      "split": "explicit 0.40",
+      "within_arm_comparison_band_tps": 0.9298467870083371
+    },
+    {
+      "also_exceeds_full_observed_repeat_range": true,
+      "bucket": "8243tok/2stream/warm",
+      "delta_percent_of_baseline": -9.97130275329377,
+      "delta_wall_tps_vs_baseline": -4.297502920431327,
+      "exceeds_observed_within_arm_repeat_difference": true,
+      "full_observed_comparison_band_tps": 1.1751090779623041,
+      "split": "explicit 0.55",
+      "within_arm_comparison_band_tps": 0.9298467870083371
+    }
+  ],
+  "cohorts": {
+    "baseline P0.25": {
+      "arm_indices": [
+        0
+      ],
+      "bucket_statistics": {
+        "178tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 6.937865782442749,
+          "max_within_arm_repeat_difference_tps": 6.937865782442749,
+          "mean_wall_tps": 31.225378957087425,
+          "observed_max_tps": 34.6943118483088,
+          "observed_min_tps": 27.75644606586605,
+          "samples": 2
+        },
+        "178tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 5.452962261137735,
+          "max_within_arm_repeat_difference_tps": 5.452962261137735,
+          "mean_wall_tps": 55.14952036361946,
+          "observed_max_tps": 57.87600149418832,
+          "observed_min_tps": 52.42303923305059,
+          "samples": 2
+        },
+        "178tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.9216142448432691,
+          "max_within_arm_repeat_difference_tps": 0.9216142448432691,
+          "mean_wall_tps": 34.4369055654315,
+          "observed_max_tps": 34.89771268785314,
+          "observed_min_tps": 33.97609844300987,
+          "samples": 2
+        },
+        "178tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.6025889726491016,
+          "max_within_arm_repeat_difference_tps": 0.6025889726491016,
+          "mean_wall_tps": 45.246835056660004,
+          "observed_max_tps": 45.548129542984555,
+          "observed_min_tps": 44.94554057033545,
+          "samples": 2
+        },
+        "8243tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.058272776729312525,
+          "max_within_arm_repeat_difference_tps": 0.058272776729312525,
+          "mean_wall_tps": 11.331749828430329,
+          "observed_max_tps": 11.360886216794986,
+          "observed_min_tps": 11.302613440065674,
+          "samples": 2
+        },
+        "8243tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.424824431979026,
+          "max_within_arm_repeat_difference_tps": 0.424824431979026,
+          "mean_wall_tps": 55.599168012711004,
+          "observed_max_tps": 55.81158022870052,
+          "observed_min_tps": 55.386755796721495,
+          "samples": 2
+        },
+        "8243tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.005972111457630547,
+          "max_within_arm_repeat_difference_tps": 0.005972111457630547,
+          "mean_wall_tps": 10.405472018176596,
+          "observed_max_tps": 10.408458073905411,
+          "observed_min_tps": 10.40248596244778,
+          "samples": 2
+        },
+        "8243tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.9298467870083371,
+          "max_within_arm_repeat_difference_tps": 0.9298467870083371,
+          "mean_wall_tps": 43.09871063750175,
+          "observed_max_tps": 43.56363403100592,
+          "observed_min_tps": 42.63378724399758,
+          "samples": 2
+        }
+      }
+    },
+    "explicit 0.10": {
+      "arm_indices": [
+        1,
+        6
+      ],
+      "bucket_statistics": {
+        "178tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.5276429270107457,
+          "full_observed_range_tps": 9.625003814877314,
+          "max_within_arm_repeat_difference_tps": 9.5961546202625,
+          "mean_wall_tps": 31.00512338120187,
+          "observed_max_tps": 35.56822842244256,
+          "observed_min_tps": 25.943224607565245,
+          "samples": 4
+        },
+        "178tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 1.0237605580502276,
+          "full_observed_range_tps": 6.729683041901488,
+          "max_within_arm_repeat_difference_tps": 6.000935839931429,
+          "mean_wall_tps": 53.98143167632887,
+          "observed_max_tps": 57.19876651923953,
+          "observed_min_tps": 50.46908347733804,
+          "samples": 4
+        },
+        "178tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 1.0308239268024906,
+          "full_observed_range_tps": 1.5680674309077531,
+          "max_within_arm_repeat_difference_tps": 0.6514353228789531,
+          "mean_wall_tps": 33.589015109670065,
+          "observed_max_tps": 34.43014473451079,
+          "observed_min_tps": 32.86207730360304,
+          "samples": 4
+        },
+        "178tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.15019960277915345,
+          "full_observed_range_tps": 0.8504574783737269,
+          "max_within_arm_repeat_difference_tps": 0.8504574783737269,
+          "mean_wall_tps": 44.54997363087367,
+          "observed_max_tps": 45.05030217145011,
+          "observed_min_tps": 44.199844693076386,
+          "samples": 4
+        },
+        "8243tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.22302986757869725,
+          "full_observed_range_tps": 0.32428278274563027,
+          "max_within_arm_repeat_difference_tps": 0.15386862598333195,
+          "mean_wall_tps": 11.203930938868453,
+          "observed_max_tps": 11.339764474833068,
+          "observed_min_tps": 11.015481692087437,
+          "samples": 4
+        },
+        "8243tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 1.3651552704699341,
+          "full_observed_range_tps": 2.4192489620871314,
+          "max_within_arm_repeat_difference_tps": 1.378155388156621,
+          "mean_wall_tps": 54.31588799650925,
+          "observed_max_tps": 55.3634816292831,
+          "observed_min_tps": 52.94423266719597,
+          "samples": 4
+        },
+        "8243tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.030989605524085917,
+          "full_observed_range_tps": 0.05972007012282177,
+          "max_within_arm_repeat_difference_tps": 0.04641049992756763,
+          "mean_wall_tps": 10.339731160345076,
+          "observed_max_tps": 10.378431213070902,
+          "observed_min_tps": 10.31871114294808,
+          "samples": 4
+        },
+        "8243tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.17396017651014972,
+          "full_observed_range_tps": 1.0514709296257436,
+          "max_within_arm_repeat_difference_tps": 1.0514709296257436,
+          "mean_wall_tps": 42.86234825346534,
+          "observed_max_tps": 43.30110363002314,
+          "observed_min_tps": 42.2496327003974,
+          "samples": 4
+        }
+      }
+    },
+    "explicit 0.25": {
+      "arm_indices": [
+        7
+      ],
+      "bucket_statistics": {
+        "178tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 7.082920374742027,
+          "max_within_arm_repeat_difference_tps": 7.082920374742027,
+          "mean_wall_tps": 31.062522886088672,
+          "observed_max_tps": 34.60398307345969,
+          "observed_min_tps": 27.52106269871766,
+          "samples": 2
+        },
+        "178tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 6.073514913953382,
+          "max_within_arm_repeat_difference_tps": 6.073514913953382,
+          "mean_wall_tps": 54.395768736823044,
+          "observed_max_tps": 57.43252619379974,
+          "observed_min_tps": 51.35901127984636,
+          "samples": 2
+        },
+        "178tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.3963527196314658,
+          "max_within_arm_repeat_difference_tps": 0.3963527196314658,
+          "mean_wall_tps": 34.19018037908358,
+          "observed_max_tps": 34.38835673889931,
+          "observed_min_tps": 33.992004019267846,
+          "samples": 2
+        },
+        "178tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.39430462194187754,
+          "max_within_arm_repeat_difference_tps": 0.39430462194187754,
+          "mean_wall_tps": 45.54529204851171,
+          "observed_max_tps": 45.74244435948265,
+          "observed_min_tps": 45.34813973754077,
+          "samples": 2
+        },
+        "8243tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.13686658233907067,
+          "max_within_arm_repeat_difference_tps": 0.13686658233907067,
+          "mean_wall_tps": 11.251361743477005,
+          "observed_max_tps": 11.31979503464654,
+          "observed_min_tps": 11.18292845230747,
+          "samples": 2
+        },
+        "8243tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 1.5694814384430131,
+          "max_within_arm_repeat_difference_tps": 1.5694814384430131,
+          "mean_wall_tps": 55.28860395469124,
+          "observed_max_tps": 56.07334467391275,
+          "observed_min_tps": 54.50386323546974,
+          "samples": 2
+        },
+        "8243tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.05055023759988231,
+          "max_within_arm_repeat_difference_tps": 0.05055023759988231,
+          "mean_wall_tps": 10.405539335939523,
+          "observed_max_tps": 10.430814454739464,
+          "observed_min_tps": 10.380264217139581,
+          "samples": 2
+        },
+        "8243tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.0,
+          "full_observed_range_tps": 0.4225014420062152,
+          "max_within_arm_repeat_difference_tps": 0.4225014420062152,
+          "mean_wall_tps": 42.62378044454201,
+          "observed_max_tps": 42.83503116554511,
+          "observed_min_tps": 42.412529723538896,
+          "samples": 2
+        }
+      }
+    },
+    "explicit 0.40": {
+      "arm_indices": [
+        2,
+        5
+      ],
+      "bucket_statistics": {
+        "178tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.7592396573697684,
+          "full_observed_range_tps": 7.624070997630209,
+          "max_within_arm_repeat_difference_tps": 6.896087096976089,
+          "mean_wall_tps": 31.0457716757416,
+          "observed_max_tps": 34.87343505291453,
+          "observed_min_tps": 27.24936405528432,
+          "samples": 4
+        },
+        "178tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.6649865106795261,
+          "full_observed_range_tps": 5.15672628181953,
+          "max_within_arm_repeat_difference_tps": 4.948761687900756,
+          "mean_wall_tps": 54.71238467873422,
+          "observed_max_tps": 57.06223686126361,
+          "observed_min_tps": 51.905510579444076,
+          "samples": 4
+        },
+        "178tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.5118359054027124,
+          "full_observed_range_tps": 0.7322320242450715,
+          "max_within_arm_repeat_difference_tps": 0.23106164014662767,
+          "mean_wall_tps": 33.32929855073724,
+          "observed_max_tps": 33.70074732351191,
+          "observed_min_tps": 32.96851529926684,
+          "samples": 4
+        },
+        "178tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 1.1587969066397648,
+          "full_observed_range_tps": 1.3701043651097748,
+          "max_within_arm_repeat_difference_tps": 0.260978289015668,
+          "mean_wall_tps": 44.6840627472267,
+          "observed_max_tps": 45.393950345054414,
+          "observed_min_tps": 44.02384597994464,
+          "samples": 4
+        },
+        "8243tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.07433015978685553,
+          "full_observed_range_tps": 0.12492657267559615,
+          "max_within_arm_repeat_difference_tps": 0.07521405294770567,
+          "mean_wall_tps": 11.201194603728702,
+          "observed_max_tps": 11.275966710095982,
+          "observed_min_tps": 11.151040137420386,
+          "samples": 4
+        },
+        "8243tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.7888331664736867,
+          "full_observed_range_tps": 1.8640694037344474,
+          "max_within_arm_repeat_difference_tps": 1.383165999618754,
+          "mean_wall_tps": 54.5006829721145,
+          "observed_max_tps": 55.58668255516072,
+          "observed_min_tps": 53.72261315142627,
+          "samples": 4
+        },
+        "8243tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.08390295295171946,
+          "full_observed_range_tps": 0.11721095370459089,
+          "max_within_arm_repeat_difference_tps": 0.03431823757533081,
+          "mean_wall_tps": 10.348377194071475,
+          "observed_max_tps": 10.406477552512541,
+          "observed_min_tps": 10.28926659880795,
+          "samples": 4
+        },
+        "8243tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 1.25314498406388,
+          "full_observed_range_tps": 2.0060385083335746,
+          "max_within_arm_repeat_difference_tps": 0.8811486058971525,
+          "mean_wall_tps": 42.41372696473671,
+          "observed_max_tps": 43.35261867808977,
+          "observed_min_tps": 41.346580169756194,
+          "samples": 4
+        }
+      }
+    },
+    "explicit 0.55": {
+      "arm_indices": [
+        3,
+        4
+      ],
+      "bucket_statistics": {
+        "178tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.9514644407918169,
+          "full_observed_range_tps": 7.980897656364338,
+          "max_within_arm_repeat_difference_tps": 7.482488535951099,
+          "mean_wall_tps": 28.96928040162335,
+          "observed_max_tps": 33.18625688999481,
+          "observed_min_tps": 25.20535923363047,
+          "samples": 4
+        },
+        "178tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 1.3593291393166211,
+          "full_observed_range_tps": 6.135967876618125,
+          "max_within_arm_repeat_difference_tps": 5.441058917404192,
+          "mean_wall_tps": 48.467778232099676,
+          "observed_max_tps": 51.867972260460085,
+          "observed_min_tps": 45.73200438384196,
+          "samples": 4
+        },
+        "178tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.3746269485974487,
+          "full_observed_range_tps": 1.0624085145636464,
+          "max_within_arm_repeat_difference_tps": 0.8888403836352481,
+          "mean_wall_tps": 31.432216560058443,
+          "observed_max_tps": 31.862891408505742,
+          "observed_min_tps": 30.800482893942096,
+          "samples": 4
+        },
+        "178tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.013385407594959986,
+          "full_observed_range_tps": 0.8056053001243697,
+          "max_within_arm_repeat_difference_tps": 0.8056053001243697,
+          "mean_wall_tps": 40.40023207453223,
+          "observed_max_tps": 40.796342020796935,
+          "observed_min_tps": 39.990736720672565,
+          "samples": 4
+        },
+        "8243tok/1stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.026728073902130944,
+          "full_observed_range_tps": 0.19553367826540757,
+          "max_within_arm_repeat_difference_tps": 0.19553367826540757,
+          "mean_wall_tps": 10.936931686900204,
+          "observed_max_tps": 11.021334489081843,
+          "observed_min_tps": 10.825800810816435,
+          "samples": 4
+        },
+        "8243tok/1stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.9703888466579258,
+          "full_observed_range_tps": 1.894623550966216,
+          "max_within_arm_repeat_difference_tps": 1.4178339691702107,
+          "mean_wall_tps": 47.999410820753326,
+          "observed_max_tps": 48.69992296380548,
+          "observed_min_tps": 46.80529941283926,
+          "samples": 4
+        },
+        "8243tok/2stream/fresh": {
+          "between_same_fraction_arm_mean_difference_tps": 0.12951794538381023,
+          "full_observed_range_tps": 0.19706630582725992,
+          "max_within_arm_repeat_difference_tps": 0.11835395592405185,
+          "mean_wall_tps": 10.111943635436337,
+          "observed_max_tps": 10.185073990609665,
+          "observed_min_tps": 9.988007684782405,
+          "samples": 4
+        },
+        "8243tok/2stream/warm": {
+          "between_same_fraction_arm_mean_difference_tps": 0.6665860271011468,
+          "full_observed_range_tps": 1.1751090779623041,
+          "max_within_arm_repeat_difference_tps": 0.6848886085594117,
+          "mean_wall_tps": 38.801207717070426,
+          "observed_max_tps": 39.4769450349007,
+          "observed_min_tps": 38.3018359569384,
+          "samples": 4
+        }
+      }
+    }
+  },
+  "comparison_method": "Difference of arithmetic mean bucket group-wall rates. Within band = larger of baseline and candidate maximum absolute r0-r1 difference within one arm. Full band = larger of baseline and candidate full max-min range across all observed repeats/arms. Absolute mean difference strictly greater than band is descriptive exceedance only, not significance, confidence, or tuning proof.",
+  "independent_after_snapshot": {
+    "audio": {
+      "backend": "cpu",
+      "status": "ok"
+    },
+    "gpu": {
+      "free_mib": 1931,
+      "link_gen": 1,
+      "link_width": 8,
+      "used_mib": 13959,
+      "util_percent": 0
+    },
+    "gpu_consumers": [
+      {
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "pid": 3396020,
+        "start_ticks": "66642307",
+        "uid": 996,
+        "used_mib": 1268
+      },
+      {
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "pid": 3396048,
+        "start_ticks": "66642413",
+        "uid": 996,
+        "used_mib": 12538
+      }
+    ],
+    "hashes": {
+      "/data/llm/Strata-run/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata-run/nibbler/config.shared-settings.json": "b61e757d0d94ca1f1c7c17cf180f98e779cbd976d53658a88ae91d870d9c3e2a",
+      "/data/llm/Strata/deploy/nibbler/config.json": "116b04ecf89fb730f649a921d909305cce0b0b3e95bdddd47c0bddd14ec877d0",
+      "/data/llm/Strata/engine/BUILD.json": "ee7ddf6de2a1864b803296ff8b40b857999ffb18fbe412808a6f6035ce91810c",
+      "/data/llm/Strata/engine/strata-nibbler": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+      "/data/llm/Strata/engine/strata-vision": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb"
+    },
+    "identities": {
+      "audio": {
+        "pid": 1643128,
+        "start_ticks": "54686907"
+      },
+      "router": {
+        "pid": 1435174,
+        "start_ticks": "18877666"
+      }
+    },
+    "journal_phase": "blocked",
+    "memory": {
+      "AnonPages": 90798362624,
+      "Cached": 28363878400,
+      "MemAvailable": 32729063424,
+      "MemFree": 9535602688,
+      "SwapFree": 114180096,
+      "SwapTotal": 25786576896
+    },
+    "model_processes": [
+      {
+        "actual_exe": "/usr/bin/python3.14",
+        "config_path": "/data/llm/Strata-run/nibbler/config.json",
+        "cwd": "/data/llm/Strata",
+        "exe": ".venv/bin/python",
+        "kind": "frontend",
+        "pid": 3396017,
+        "private_test": false,
+        "start_ticks": "66642283",
+        "uid": 996
+      },
+      {
+        "actual_exe": "/data/llm/Strata/engine/strata-vision",
+        "actual_exe_sha256": "01e24b62a8df26a90bc78b07fca2488dab6f6bd61a7d44c215dfc525c4f996eb",
+        "cwd": "/tmp/strata-vision-3z24uhik",
+        "exe": "/data/llm/Strata/engine/strata-vision",
+        "kind": "native",
+        "pid": 3396020,
+        "private_test": false,
+        "start_ticks": "66642307",
+        "uid": 996
+      },
+      {
+        "actual_exe": "/data/llm/Strata/engine/strata-nibbler",
+        "actual_exe_sha256": "25cec204db80104c9f0049ee958cbf5792884e27f4dcdbff14eaf76b87bfd836",
+        "cwd": "/data/llm/Strata",
+        "exe": "/data/llm/Strata/engine/strata-nibbler",
+        "kind": "native",
+        "pid": 3396048,
+        "private_test": false,
+        "start_ticks": "66642413",
+        "uid": 996
+      }
+    ],
+    "private_port_closed": true,
+    "private_processes": [],
+    "running": [
+      {
+        "model": "pocket-tts",
+        "state": "ready"
+      },
+      {
+        "model": "qwen3.8-flash-next-nvfp4-gptq",
+        "state": "ready"
+      }
+    ],
+    "utc": "2026-10-12T00:11:01Z"
+  },
+  "journal_phase": "blocked",
+  "kind": "all eight measurement arms completed but restoration BLOCKED: overall window FAILED; descriptive only, no production recommendation",
+  "limitations": [
+    "Fixed reload order, no independent window replication/randomization.",
+    "r0 solo-before-dual, r1 dual-before-solo: cache/order and MTP paths differ.",
+    "Probed baseline first and explicit 0.25 last are different startup modes/order positions; not pooled.",
+    "API/native timing and hit/PCIe counters may be segment scoped; hit denominator changes with configured split.",
+    "Latest native/API 12-row snapshot covers repeat 1 only, not all 24 requests.",
+    "Integer fixture is not general workload, token/logit parity, full-context/vision/pressure/handoff gate.",
+    "No cache flush, clocks/affinity/worker/reserve change. Startup probe is not sustained inference transfer bandwidth.",
+    "Sampled peaks/minima are not sub-second extrema; audio latency not measured."
+  ],
+  "overall_window_passed": false,
+  "private_request_count": 192,
+  "raw_result_passed": true,
+  "raw_result_restored": null,
+  "repeats_per_arm": 2,
+  "resources": [
+    {
+      "end_utc": "2026-10-12T00:08:40.585879+00:00",
+      "file": "samples.jsonl",
+      "min_MemAvailable_bytes": 21015420928,
+      "min_SwapFree_bytes": 2598244352,
+      "min_gpu_free_mib": 1845,
+      "peak_gpu_used_mib": 14045,
+      "samples": 984,
+      "start_utc": "2026-10-11T23:51:51.137268+00:00"
+    },
+    {
+      "end_utc": "2026-10-12T00:08:52.512352+00:00",
+      "file": "restore-monitor-1-0_r74tq4-samples.jsonl",
+      "min_MemAvailable_bytes": 31096377344,
+      "min_SwapFree_bytes": 1668075520,
+      "min_gpu_free_mib": 5811,
+      "peak_gpu_used_mib": 10079,
+      "samples": 12,
+      "start_utc": "2026-10-12T00:08:41.300912+00:00"
+    }
+  ],
+  "restoration_error": {
+    "error": "SwapFree < 1 GiB",
+    "memory": {
+      "AnonPages": 90691346432,
+      "Cached": 28200562688,
+      "MemAvailable": 32890572800,
+      "MemFree": 9865265152,
+      "SwapFree": 4001792,
+      "SwapTotal": 25786576896
+    }
+  },
+  "restoration_health_wall_s": null,
+  "restoration_monitor_stops": [
+    {
+      "memory": {
+        "AnonPages": 98008424448,
+        "Cached": 27015864320,
+        "MemAvailable": 32337375232,
+        "MemFree": 3799027712,
+        "SwapFree": 1000034304,
+        "SwapTotal": 25786576896
+      },
+      "phase": "production-restore-load",
+      "reason": "SwapFree < 1 GiB",
+      "time": 1791763733.558344
+    }
+  ],
+  "restoration_note": "No successful restoration.json. Do not invent health completion/timing. Monitor safety refusal and final error are authoritative.",
+  "source_result_sha256": "06713d0f5c8d628cb92be9571cbafb40fb9a6bc74cd67e22d89f4ac1dcce73f2",
+  "window_n": 1
+}

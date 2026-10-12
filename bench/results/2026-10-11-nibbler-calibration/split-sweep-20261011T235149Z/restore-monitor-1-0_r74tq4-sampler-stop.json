@@ -1,0 +1,13 @@
+{
+  "memory": {
+    "AnonPages": 98008424448,
+    "Cached": 27015864320,
+    "MemAvailable": 32337375232,
+    "MemFree": 3799027712,
+    "SwapFree": 1000034304,
+    "SwapTotal": 25786576896
+  },
+  "phase": "production-restore-load",
+  "reason": "SwapFree < 1 GiB",
+  "time": 1791763733.558344
+}
