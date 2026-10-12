@@ -1,0 +1,35 @@
+{
+  "argv": [
+    "/usr/bin/python3",
+    "/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/nibbler_perf.py",
+    "--run",
+    "--tag",
+    "split-sweep-20261011T235149Z",
+    "--window-minutes",
+    "50"
+  ],
+  "coordinator": {
+    "boot": "582696d9-3af0-4ab7-8c38-044bbe64d560",
+    "pid": 3338147,
+    "start": "66541092"
+  },
+  "coordinator_session": 3338147,
+  "detached_coordinator": true,
+  "launched_utc": "2026-10-11T23:51:49Z",
+  "sha256_verified": {
+    "nibbler_lifecycle.py": {
+      "mode": "0o444",
+      "sha256": "3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177",
+      "uid": 0
+    },
+    "nibbler_perf.py": {
+      "mode": "0o444",
+      "sha256": "4b85a3adfee6e341831a9d4ff7a7f015e0e5f1a9a2c6a5c69d2e0f563f400b12",
+      "uid": 0
+    }
+  },
+  "stdin": "DEVNULL",
+  "stdout_stderr": "private coordinator.log",
+  "sweep_invocations": 1,
+  "utc": "2026-10-11T23:51:49Z"
+}

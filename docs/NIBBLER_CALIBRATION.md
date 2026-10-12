@@ -905,3 +905,226 @@ this append and the fresh evidence leaf changed. No code/host patch, rerun,
 Beads/git mutation, agents or worktrees. **Stopped after the first refusal.
 Production stays 0.25 / 11 workers / 2048 reserve. No further stage is authorized
 by this report; primary decides any future action.**
+
+## 2026-10-11/12 UTC — authorized STAGE 2 rerun: measurements complete, recovery blocked
+
+**Overall window FAILED. Exactly one invocation, all eight measurement arms
+completed, but automatic restoration ended blocked at the SwapFree safety floor.
+No patch, rerun, manual cleanup, production-change recommendation or further stage.**
+The current ready-state snapshot below is not a safety all-clear.
+
+The primary authorized this rerun after independently accepting port-probe fix
+`fb31fba6`, closing str-inn.4, and advancing HEAD to
+`b876248c20ed97210cba353787cb48b419d97bc8`. The accepted diagnosis for the prior
+refusal was server-side TIME_WAIT and a plain bind probe that did not mirror the
+frontend's Linux SO_REUSEADDR semantics. This append does not alter that earlier
+failed evidence. This invocation had no port refusal; every explicit arm passed
+its post-PAM/exec bind checks and loaded the model. A live listener is still a
+refusal in the frozen regression test.
+
+### Freeze, preconditions and one invocation
+
+Homelab mandatory preflight passed; initial repository status was clean. Dry run
+confirmed the unchanged eight-arm defaults, repeats **2**, port **18089**, no
+reserve gates and window **50 minutes**. Conservative estimate **28.8 minutes**
+was below the **45-minute** repeat cutoff, so repeats 2 were retained. The prior
+two-repeat baseline/refusal/recovery duration cross-check implied 21.2 minutes
+for eight such windows; these were estimates, not a runtime guarantee.
+
+Fresh tag: **split-sweep-20261011T235149Z**. Fresh tools/output paths:
+
+```text
+/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools
+/data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z
+```
+
+Required hashes were verified locally, on staged bytes and immediately before
+exec; root-owned tools mode 0444, staging directory 0700:
+
+```text
+4b85a3adfee6e341831a9d4ff7a7f015e0e5f1a9a2c6a5c69d2e0f563f400b12  nibbler_perf.py
+3af88b22dcacd9dc3c6cd8c6c26613bb85ebcab93527a1a4fb8140943e55b177  nibbler_lifecycle.py
+```
+
+Before launch, Qwen/pocket-tts were ready; audio ok/CPU; both Qwen slots idle,
+with no running/queued/waiting/outside work; six hashes and identities recorded.
+`ss -H -ltnp 'sport = :18089'` returned no listeners, the broader TCP-state query
+was saved, and the reusable bind probe passed. No private orphans were found.
+Invocation marker and execution receipt record exactly **one** launch:
+
+```sh
+/usr/bin/python3 /data/llm/Strata-tests/perf-audit-20261011/split-sweep-20261011T235149Z-tools/nibbler_perf.py --run --tag split-sweep-20261011T235149Z --window-minutes 50
+```
+
+Coordinator PID **3338147**, start ticks **66541092**, session **3338147**;
+supervisor PID **3338366**, start ticks **66541263**, session **3338366**, both
+uid 0. Their distinct detached sessions were observed alive during the trial;
+stdin DEVNULL and private file stdout/stderr, no SSH pipe lifetime dependency.
+Both exited before independent post-verification. Launch **23:51:49 UTC October
+11**; final result/journal mtime **00:09:10 UTC October 12**, about **17m21s**.
+
+### Completed measurements, not a passed restoration window
+
+Installed **0.1.41 GPTQ engine**, nibbler **9900X / RTX 5060 Ti**, same binaries
+and 0.25 / 11 workers / 2048-reserve production source as before. Private order:
+**baseline / 0.10 / 0.40 / 0.55 / 0.55 / 0.40 / 0.10 / 0.25**. All eight arms
+completed **16 groups / 24 requests**: total **128 groups / 192 private requests**,
+all **96 output tokens**; every dual group had positive output overlap. Prompt
+usage was **178 / 8243 tokens**. All eight post-PAM preflight and exec proofs show
+uid/gid **996/979**, memlock **[-1,-1]**, kernel child-list support.
+
+Baseline startup probe reported **28.9 GB/s -> 0.25**. Explicit arms skipped the
+probe and reported their requested fractions. All arms retained buffered expert
+arena reads, CUDA HOST REGISTER PORTABLE ok, 3.09 GiB pinned KV, no low-RAM mode;
+MAP_HUGETLB unavailable, THP always, no MADV_HUGEPAGE request. No experimental
+loader, worker/reserve/clock/affinity/profile edit, parity or lower-reserve gate.
+Native/API hit/PCIe snapshot is the **latest 12 requests, repeat 1 only**;
+segment-scoped decode/counter fields are not whole-completion timing.
+
+Per-arm aggregate wall tok/s: each fresh/warm cell is the arithmetic mean of
+two bucket group rates, not pooled token/time throughput. S=178 prompt tokens,
+L=8243; suffix 1/2 means solo/dual. P=probed baseline, E=explicit.
+
+| Arm / mode | S1 fresh / warm | S2 fresh / warm | L1 fresh / warm | L2 fresh / warm | Load s | GPU peak / min free MiB |
+| --- | --- | --- | --- | --- | --- | --- |
+| 00 P0.25 | 31.23 / 55.15 | 34.44 / 45.25 | 11.33 / 55.60 | 10.41 / 43.10 | 27.022 | 14037 / 1853 |
+| 01 E0.10 | 31.27 / 54.49 | 34.10 / 44.63 | 11.32 / 55.00 | 10.36 / 42.78 | 26.023 | 14013 / 1877 |
+| 02 E0.40 | 31.43 / 55.04 | 33.59 / 45.26 | 11.16 / 54.90 | 10.39 / 43.04 | 26.021 | 14045 / 1845 |
+| 03 E0.55 | 29.45 / 49.15 | 31.62 / 40.41 | 10.95 / 48.48 | 10.18 / 39.13 | 25.021 | 14015 / 1875 |
+| 04 E0.55 | 28.49 / 47.79 | 31.24 / 40.39 | 10.92 / 47.51 | 10.05 / 38.47 | 27.024 | 14043 / 1847 |
+| 05 E0.40 | 30.67 / 54.38 | 33.07 / 44.10 | 11.24 / 54.11 | 10.31 / 41.79 | 29.026 | 14043 / 1847 |
+| 06 E0.10 | 30.74 / 53.47 | 33.07 / 44.47 | 11.09 / 53.63 | 10.32 / 42.95 | 27.024 | 14045 / 1845 |
+| 07 E0.25 | 31.06 / 54.40 | 34.19 / 45.55 | 11.25 / 55.29 | 10.41 / 42.62 | 27.023 | 14041 / 1849 |
+
+The [full results table](../bench/results/2026-10-11-nibbler-calibration/split-sweep-20261011T235149Z/RESULTS.md)
+retains all 64 paired bucket wall/TTFT/API-decode rows, per-arm native/API
+hit/PCIe ranges, and between-reload drift. TTFT p95 across 24 requests per arm
+was **16.022–16.235 s**; API decode reported **8.8–64.6 tok/s** across arms,
+with the segment-scope warning above. [Unrounded derived data](../bench/results/2026-10-11-nibbler-calibration/split-sweep-20261011T235149Z/metrics-summary.json)
+retains the failed window status and original result SHA.
+
+### Split differences versus within-arm repeat variation
+
+Each cell is **cohort mean wall tok/s [largest absolute r0/r1 difference within
+one arm]**. Baseline and E0.25 have two samples per bucket; E0.10/E0.40/E0.55
+have four, two repeats in each of two independently reloaded arms. First-arm
+probed .25 and last-arm explicit .25 are not pooled: startup mode/order differs.
+
+| Bucket | Baseline P0.25 | Explicit 0.10 | Explicit 0.25 | Explicit 0.40 | Explicit 0.55 |
+| --- | --- | --- | --- | --- | --- |
+| 178tok/1stream/fresh | 31.23 [6.94] | 31.01 [9.60] | 31.06 [7.08] | 31.05 [6.90] | 28.97 [7.48] |
+| 178tok/1stream/warm | 55.15 [5.45] | 53.98 [6.00] | 54.40 [6.07] | 54.71 [4.95] | 48.47 [5.44] |
+| 178tok/2stream/fresh | 34.44 [0.92] | 33.59 [0.65] | 34.19 [0.40] | 33.33 [0.23] | 31.43 [0.89] |
+| 178tok/2stream/warm | 45.25 [0.60] | 44.55 [0.85] | 45.55 [0.39] | 44.68 [0.26] | 40.40 [0.81] |
+| 8243tok/1stream/fresh | 11.33 [0.06] | 11.20 [0.15] | 11.25 [0.14] | 11.20 [0.08] | 10.94 [0.20] |
+| 8243tok/1stream/warm | 55.60 [0.42] | 54.32 [1.38] | 55.29 [1.57] | 54.50 [1.38] | 48.00 [1.42] |
+| 8243tok/2stream/fresh | 10.41 [0.01] | 10.34 [0.05] | 10.41 [0.05] | 10.35 [0.03] | 10.11 [0.12] |
+| 8243tok/2stream/warm | 43.10 [0.93] | 42.86 [1.05] | 42.62 [0.42] | 42.41 [0.88] | 38.80 [0.68] |
+
+For each baseline/candidate comparison, the within-arm band is the larger of
+their maximum absolute r0/r1 differences. The stronger full-observed band is
+the larger max-minus-min range across all their observed repeats/arms. A mean
+difference strictly beyond a band is a descriptive exceedance, **not statistical
+significance, a confidence interval, equivalence or tuning proof**. Comparisons
+use unrounded values; small differences near a band need that precision.
+
+- **E0.25:** no bucket difference exceeded either band (0/8).
+- **E0.10:** only long dual fresh was below baseline beyond both bands (1/8),
+  **-0.0657 tok/s (-0.632%)**; the other seven did not exceed either band.
+- **E0.40:** short dual fresh and long solo fresh were below baseline beyond
+  both bands (2/8). Long dual fresh also exceeded the within-arm band, but not
+  the full repeated-arm range; the other five exceeded neither (within 3/8).
+- **E0.55:** seven buckets were below baseline beyond both bands (7/8). Short
+  solo fresh did not exceed either. The seven mean differences were about
+  **-2.82% to -13.67%**, depending on the bucket, in this one window only.
+
+Fixed order, solo/dual ordering reversed between repeats, warming/caching/MTP
+paths, shared-host memory/swap drift and one window prevent causal attribution
+or a general ranking. Inside a band does not establish equivalence. Hit-rate
+and PCIe-share denominators depend on routing fraction; larger hit percentage
+is not automatically higher useful throughput. The **failed recovery** also
+prevents treating these numbers as a safely restored calibration window.
+
+### Recovery refusal, immediate report and current-state limits
+
+The private benchmark's **984** successful samples had minimum MemAvailable
+**21015420928 bytes (19.57 GiB)**, minimum SwapFree **2598244352 (2.42 GiB)**,
+GPU peak/minimum free **14045 / 1845 MiB**; resource thresholds did not fire in
+the eight measurement arms. SwapFree nevertheless fell across the window.
+Per-arm minima changed from about 7.19 GiB in arms 00–03 to 3.22 GiB in 04 and
+2.42–2.54 GiB in 05–07. These totals do not attribute swap use to a process or
+prove that fraction .55 caused the decline.
+
+First restoration monitor began **00:08:41.301 UTC**. It has **12** successful
+samples through 00:08:52.512; the failing sample is separately saved, not in its
+JSONL. At **00:08:53.558**, phase **production-restore-load**, it stopped for
+**SwapFree < 1 GiB**, recording **1000034304 bytes** free swap. The final
+`restoration-error.json` repeats **SwapFree < 1 GiB**, with **4001792 bytes
+(~3.82 MiB)** free swap, MemAvailable **32890572800 bytes**.
+
+Final journal: **blocked**, **restore_attempt: 2**, **children: []**, error
+`LifecycleError: bounded original-model restoration attempts failed`. Its
+coordinator EOF trigger text is retained; it is not proof of an SSH transport
+failure. Raw result preserves **passed: true**, **restored: null**, plus the
+restoration error: passed here only records the completed measurements, **not
+window success**. No successful `restoration.json`; no successful restoration
+health completion/token count/wall time is invented. No port issue was detected.
+
+The blocked outcome was immediately reported with surviving private identities
+(none), ready-state and GPU consumers; subsequent low-swap evidence was reported
+as an operator warning. No cleanup, swap/service/model action or second
+invocation followed. Independent GET/identity/hash verification at
+**00:11:01 UTC** found Qwen/pocket-tts ready, audio ok/CPU, six hashes and
+router/audio identities unchanged, original frontend cwd/config and actual new
+native executable hashes matching. Published manifest/tokenizer/template
+identity matches, not a new whole-pack payload hash. No private processes/GPU
+consumers remain; port 18089 closed; coordinator/supervisor exited.
+
+**However, SwapFree was 114180096 bytes (~109 MiB), still below the floor**;
+MemAvailable **32729063424 bytes (30.48 GiB)**. The snapshot is not a safety
+all-clear and does not override the blocked journal. Operator verifier has
+**13/15 predicates true**, two recovery predicates false, **verified: false**.
+Readiness/hash/reaping facts are distinguished from failed recovery/safety.
+
+| Process | Before PID / start ticks | After PID / start ticks |
+| --- | --- | --- |
+| Router | 1435174 / 18877666 | 1435174 / 18877666 |
+| Audio | 1643128 / 54686907 | 1643128 / 54686907 |
+| Qwen frontend | 3275561 / 66399925 | 3396017 / 66642283 |
+| Qwen vision | 3275568 / 66399950 | 3396020 / 66642307 |
+| Qwen engine | 3275635 / 66400061 | 3396048 / 66642413 |
+
+After-snapshot GPU consumers: only installed vision/engine, uid **996**,
+**1268/12538 MiB**. GPU used/free **13959/1931 MiB**, as before the window.
+No audio-latency, native token/logit parity, full-context/vision/pressure/handoff
+safety or production-performance check follows from these snapshots.
+
+### Evidence and stopped scope
+
+[Blocked rerun evidence](../bench/results/2026-10-11-nibbler-calibration/split-sweep-20261011T235149Z/)
+contains **62 target-derived files**, retrieved via **238** successful existing
+hl path_read responses, all **truncated: false**, strict host keys, retries 0,
+no raw SSH fallback. Whole source/export SHA and byte counts verified after
+base64 chunk assembly as needed (24576 raw bytes/chunk). Exact target paths and
+commands are in retrieval.json; target export descriptors in after-receipt.json;
+SHA256SUMS covers local evidence and derived reports except itself. Before is an
+allowlisted sanitized export with source-hash provenance; private synthetic log
+tails are bounded/redacted. No production logs, raw config/env/shared-settings
+bodies, binaries or model payload were exported. Original runner/old evidence
+files are unchanged.
+
+```text
+06713d0f5c8d628cb92be9571cbafb40fb9a6bc74cd67e22d89f4ac1dcce73f2  result.json
+8acafe856205660661cd8a8160f5d8fac1e7cd9f5b0267e4634814d5ac50d0ba  lifecycle.json
+d73768c7dbcb01d34b1b21965e79d64eed452a79e69b895c88578c7fd1e18ba5  restoration-error.json
+a9f4c6ca2263b91307324a9e7d86e3e7d291d2728bc08a75920442d116b6b390  operator-verification.json
+```
+
+Local parsed-evidence/group/proof/retrieval assertions, unchanged frozen tool
+hashes, append-only doc prefix, SHA ledger and whitespace checks passed.
+Automatic recovery and the overall operator verifier **failed** as recorded;
+no successful restoration gate is claimed. No new backend build or GPU gate
+was run; no implementation/code changed. Only this append and the fresh leaf
+changed locally; no commit, Beads, agent or worktree mutation. **Stopped.
+Production configuration remains 0.25 / 11 workers / 2048 reserve. No production
+change is recommended or authorized by this report; no further stage starts.**

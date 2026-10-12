@@ -1,0 +1,11 @@
+{
+  "error": "SwapFree < 1 GiB",
+  "memory": {
+    "AnonPages": 90691346432,
+    "Cached": 28200562688,
+    "MemAvailable": 32890572800,
+    "MemFree": 9865265152,
+    "SwapFree": 4001792,
+    "SwapTotal": 25786576896
+  }
+}
