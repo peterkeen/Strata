@@ -359,6 +359,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(linux_arena_parity PRIVATE strata_core)
     add_test(NAME linux_arena_native_parity COMMAND linux_arena_parity)
     set_tests_properties(linux_arena_native_parity PROPERTIES TIMEOUT 60)
+    # The fixture's direct mode needs O_DIRECT, which a tmpfs refuses: a directory on a real disk, when /tmp is not
+    set(STRATA_ARENA_FIXTURE_DIR "" CACHE PATH
+        "Directory on a real disk for linux_arena_native_parity's temporary file (empty = $TMPDIR, else /tmp)")
+    if(STRATA_ARENA_FIXTURE_DIR)
+      set_property(TEST linux_arena_native_parity APPEND PROPERTY ENVIRONMENT "TMPDIR=${STRATA_ARENA_FIXTURE_DIR}")
+    endif()
   endif()
 
   add_executable(strata-device src/core/device_main.cpp)
@@ -1732,12 +1738,15 @@ if(STRATA_BUILD_TESTS)
   target_link_libraries(expert_parity PRIVATE strata_kernels_cpu)
   # The pack is a REQUIRED input, not an optional one: this test compares against a real expert blob, and a
   # missing file would otherwise be reported as a pass by a test that skipped everything.
-  add_test(NAME expert_parity COMMAND expert_parity --selftest
+  set(STRATA_Q2_EXPERTS_FILE "${CMAKE_CURRENT_SOURCE_DIR}/pack/full/experts.bin" CACHE FILEPATH
+      "Q2_0 experts.bin (512 blobs per layer) required by expert_parity and pool_test")
+  add_test(NAME expert_parity COMMAND expert_parity --selftest --file "${STRATA_Q2_EXPERTS_FILE}"
            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
   add_executable(pool_test src/kernels/cpu/pool_test.cpp)
   target_link_libraries(pool_test PRIVATE strata_kernels_cpu)
-  add_test(NAME pool_test COMMAND pool_test --selftest WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME pool_test COMMAND pool_test --selftest --file "${STRATA_Q2_EXPERTS_FILE}"
+           WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
   # issue #29: tiny batches with sleeping workers, as on a big-VRAM card; a hang fails it
   add_executable(pool_stress src/kernels/cpu/pool_stress.cpp)
   target_link_libraries(pool_stress PRIVATE strata_kernels_cpu)

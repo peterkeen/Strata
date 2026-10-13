@@ -59,6 +59,23 @@ it from the launcher). The runtime config is refreshed from the checkout on ever
 rollback that also restores the source tree must restore the tracked
 `deploy/nibbler/config.json` too.
 
+## Test fixtures on nibbler
+
+The defaults for the test inputs don't exist on nibbler. Add these to the configure line in step 2 so
+CTest finds them:
+
+```sh
+      -DSTRATA_Q2_EXPERTS_FILE=/data/llm/models/qwen-nvfp4-gptq/mtp/experts.bin \
+      -DSTRATA_ARENA_FIXTURE_DIR=/data/llm/tmp
+```
+
+- `STRATA_Q2_EXPERTS_FILE` (`expert_parity`, `pool_test`): there's no Q2_0 `pack/full` here. The full
+  packs are NVFP4, but the MTP pack's `experts.bin` is one real Q2_0 layer (512 blobs).
+- `STRATA_ARENA_FIXTURE_DIR` (`linux_arena_native_parity`): `/tmp` is a tmpfs, which refuses the
+  test's O_DIRECT reads. Any directory on a real disk works; create it first.
+- `ple_parity` still fails: it needs a Q2_0 shard-2 GGUF, a Q2_0 dense pack and
+  `ple_in.bin`/`ple_out.bin`, and none of those are on nibbler.
+
 
 ## Preserved configuration and architecture
 

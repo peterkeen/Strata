@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 int main(int argc, char** argv) {
     std::string path, mode = "parity";
@@ -26,11 +27,15 @@ int main(int argc, char** argv) {
     }
     struct Cleanup { std::string path; ~Cleanup() { if (!path.empty()) unlink(path.c_str()); } } cleanup;
     if (fixture) {
-        char p[] = "/tmp/strata-native-arena-XXXXXX";
-        const int fd = mkstemp(p);
+        // $TMPDIR, else /tmp.  The direct mode needs O_DIRECT, which a tmpfs /tmp refuses: point TMPDIR at a disk
+        const char* tmp = std::getenv("TMPDIR");
+        std::string tmpl = std::string(tmp != nullptr && tmp[0] != '\0' ? tmp : "/tmp") + "/strata-native-arena-XXXXXX";
+        std::vector<char> p(tmpl.begin(), tmpl.end());
+        p.push_back('\0');
+        const int fd = mkstemp(p.data());
         if (fd < 0) return 1;
         close(fd);
-        path = cleanup.path = p;
+        path = cleanup.path = p.data();
         std::ofstream f(path, std::ios::binary);
         for (uint64_t i = 0; i < bytes; ++i) f.put(char((i * 97 + i / 257) % 251));
         if (!f) return 1;
