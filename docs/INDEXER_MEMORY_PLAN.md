@@ -54,6 +54,9 @@ current nibbler evaluation to implement or validate this work.
 
 ### Writers and readers
 
+Task I1's source-grounded row/access audit lives in
+[INDEXER_ACCESS_INVENTORY.md](INDEXER_ACCESS_INVENTORY.md).
+
 - `src/kernels/cuda/qsa.cu`: reference append/index kernels and wrappers.
 - `src/kernels/cuda/native_qsa_indexer.cu` and
   `include/strata/kernels/native_qsa_indexer.hpp`: native single-step,
