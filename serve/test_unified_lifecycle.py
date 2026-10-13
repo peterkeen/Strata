@@ -253,6 +253,7 @@ class UnifiedLifecycle(unittest.TestCase):
         engine.slot_q = [queue.Queue()]
         engine.slot_busy = [True]
         engine.slot_held = [[]]
+        engine.slot_releasing = set()  # upstream's background-ack ownership tracking
         engine.slot_cv = threading.Condition()
         with mock.patch.object(engine, "_send") as send, \
                 mock.patch("serve.server.threading.Thread") as thread, \

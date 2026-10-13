@@ -1551,6 +1551,7 @@ class StrataEngine:
             self.waiting += 1
             self.wait_lens.append(entry)
         beat = time.monotonic()
+        counted_admission = False
         try:
             while True:
                 if cancel.is_set():
@@ -1561,7 +1562,18 @@ class StrataEngine:
                     # restart is under way it keeps waiting and goes on with the new engine.
                     raise EngineDied("the engine stopped while this request waited; it was not sent")
                 with self.slot_cv:
+                    # The fork waits for room before taking ctl. Upstream's orphan recovery
+                    # inside the ctl-held admission loop is therefore unreachable when all
+                    # slots leaked. Reap here too, but only with initialized owner tracking.
+                    if "_orphan_seen" in self.__dict__:
+                        self._reap_orphan_slots()
                     full = all(self.slot_busy)
+                    if full and not counted_admission:
+                        self.admitting = getattr(self, "admitting", 0) + 1
+                        counted_admission = True
+                    elif not full and counted_admission:
+                        self.admitting = max(0, self.admitting - 1)
+                        counted_admission = False
                     can_go_first = any(e is not entry and not (len(e) > 2 and e[2]) and
                                        self._admission_room(e[0], e[1], None) for e in self.wait_lens)
                     # Rolling pressure continuations no longer own a slot. FIFO among fitting new admissions
@@ -1589,6 +1601,8 @@ class StrataEngine:
                     yield None
         finally:
             with self.slot_cv:
+                if counted_admission:
+                    self.admitting = max(0, self.admitting - 1)
                 self.waiting = max(0, self.waiting - 1)
                 index = next((i for i, e in enumerate(self.wait_lens) if e is entry), None)
                 if index is not None:
