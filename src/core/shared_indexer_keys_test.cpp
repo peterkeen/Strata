@@ -1,7 +1,11 @@
 #include "strata/core/shared_indexer_keys.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -298,6 +302,281 @@ void large_geometry_release_is_linear_in_released_pages() {
     ensure_with_keys(pages, keys, 0, 0, 1, copies, error);
     check(pages.mapping(0) == std::vector<int32_t>({0}), "large release preserves allocator reuse order");
 }
+
+struct StressStats {
+    uint64_t ensure_success = 0;
+    uint64_t ensure_failure = 0;
+    uint64_t payload_success = 0;
+    uint64_t payload_failure = 0;
+    uint64_t publish = 0;
+    uint64_t clone = 0;
+    uint64_t self_clone = 0;
+    uint64_t truncate = 0;
+    uint64_t release = 0;
+    std::array<uint64_t, 4> write_offsets{{0, 0, 0, 0}};
+};
+
+uint64_t env_u64(const char* name, uint64_t fallback) {
+    const char* value = std::getenv(name);
+    if (!value || !*value) return fallback;
+    char* end = nullptr;
+    const uint64_t parsed = std::strtoull(value, &end, 0);
+    return end && *end == '\0' ? parsed : fallback;
+}
+
+struct StressContext {
+    uint64_t seed = 0;
+    size_t op = 0;
+    std::string desc;
+    SharedKvPages* pages = nullptr;
+    SharedIndexerKeys* keys = nullptr;
+    std::vector<std::vector<int32_t>>* seq_maps = nullptr;
+    std::vector<size_t>* seq_tokens = nullptr;
+    std::vector<std::vector<uint8_t>>* expected = nullptr;
+};
+
+[[noreturn]] void stress_fail(const StressContext& ctx, const char* label) {
+    std::fprintf(stderr, "FAIL: randomized stress: %s\nseed=%llu op=%zu desc=%s\n",
+                 label, static_cast<unsigned long long>(ctx.seed), ctx.op, ctx.desc.c_str());
+    if (ctx.pages && ctx.seq_maps && ctx.seq_tokens && ctx.expected) {
+        std::fprintf(stderr, "free=%zu used=%zu published=%zu\n", ctx.pages->free_pages(), ctx.pages->used_pages(),
+                     ctx.keys ? ctx.keys->published_count() : 0);
+        for (size_t seq = 0; seq < ctx.seq_maps->size(); ++seq) {
+            std::fprintf(stderr, "seq%zu tokens=%zu map=", seq, (*ctx.seq_tokens)[seq]);
+            for (int32_t page : (*ctx.seq_maps)[seq]) std::fprintf(stderr, "%d,", page);
+            std::fprintf(stderr, "\n");
+        }
+        std::fprintf(stderr, "expected_valid_pages=");
+        for (size_t page = 0; page < ctx.expected->size(); ++page) {
+            bool any = false;
+            for (uint8_t valid : (*ctx.expected)[page]) any = any || valid != 0;
+            if (!any) continue;
+            std::fprintf(stderr, "%zu:", page);
+            for (uint8_t valid : (*ctx.expected)[page]) std::fprintf(stderr, "%u", unsigned(valid != 0));
+            std::fprintf(stderr, ",");
+        }
+        std::fprintf(stderr, "\n");
+    }
+    std::exit(1);
+}
+
+void stress_require(bool ok, const StressContext& ctx, const char* label) {
+    ++checks;
+    if (!ok) stress_fail(ctx, label);
+}
+
+std::vector<uint8_t> live_pages_from_maps(const std::vector<std::vector<int32_t>>& maps, size_t page_count) {
+    std::vector<uint8_t> live(page_count, 0);
+    for (const auto& map : maps) {
+        for (int32_t page : map) live[size_t(page)] = 1;
+    }
+    return live;
+}
+
+void stress_invariants(const StressContext& ctx) {
+    const auto& maps = *ctx.seq_maps;
+    const auto& expected = *ctx.expected;
+    const auto live = live_pages_from_maps(maps, expected.size());
+    for (size_t seq = 0; seq < maps.size(); ++seq) {
+        stress_require(ctx.pages->mapping(seq) == maps[seq], ctx, "oracle mapping mirrors SharedKvPages public mapping");
+        stress_require((*ctx.seq_tokens)[seq] <= maps[seq].size() * size_t(4), ctx,
+                       "logical tokens fit reserved page mapping");
+    }
+    for (size_t page = 0; page < expected.size(); ++page) {
+        for (size_t layer = 0; layer < expected[page].size(); ++layer) {
+            const bool actual = ctx.keys->published(int32_t(page), layer);
+            stress_require(actual == (expected[page][layer] != 0), ctx, "metadata matches independent oracle");
+            stress_require(!actual || live[page] != 0, ctx, "published page is live in some public mapping");
+        }
+    }
+}
+
+void stress_invalidate_page(std::vector<std::vector<uint8_t>>& expected, int32_t page) {
+    std::fill(expected[size_t(page)].begin(), expected[size_t(page)].end(), uint8_t{0});
+}
+
+void stress_invalidate_released(std::vector<std::vector<uint8_t>>& expected, const std::vector<int32_t>& released) {
+    for (int32_t page : released) stress_invalidate_page(expected, page);
+}
+
+void stress_prepare_oracle(std::vector<std::vector<uint8_t>>& expected,
+                           const std::vector<int32_t>& before, const std::vector<int32_t>& after,
+                           size_t begin_page, size_t end_page) {
+    for (size_t page = begin_page; page < end_page && page < after.size(); ++page) stress_invalidate_page(expected, after[page]);
+    for (size_t page = before.size(); page < after.size(); ++page) {
+        if (page < begin_page || page >= end_page) stress_invalidate_page(expected, after[page]);
+    }
+}
+
+void stress_publish_complete_pages(SharedIndexerKeys& keys, std::vector<std::vector<uint8_t>>& expected,
+                                   const std::vector<int32_t>& map, size_t start_token, size_t end_token,
+                                   std::mt19937_64& rng, StressStats& stats, StressContext& ctx,
+                                   std::string& error) {
+    for (size_t logical = start_token / 4; logical < (end_token + 3) / 4 && logical < map.size(); ++logical) {
+        const size_t block_begin = logical * size_t(4);
+        const size_t block_end = block_begin + size_t(4);
+        if (start_token > block_begin || end_token < block_end) continue;
+        const int32_t physical = map[logical];
+        for (size_t layer = 0; layer < keys.qsa_layers(); ++layer) {
+            if ((rng() & 3u) == 0u) continue; // Leave some complete blocks deliberately unpublished.
+            stress_require(keys.publish_completed(physical, layer, error), ctx, "publish complete live block succeeds");
+            expected[size_t(physical)][layer] = 1;
+            ++stats.publish;
+        }
+    }
+}
+
+void randomized_stress_one_seed(uint64_t seed, size_t iterations, StressStats& stats) {
+    constexpr size_t capacity = 48;
+    constexpr size_t sequences = 5;
+    constexpr size_t layers = 4;
+    SharedKvPages pages(capacity, sequences);
+    SharedIndexerKeys keys({pages.capacity(), layers, 4, 4});
+    std::vector<std::vector<int32_t>> seq_maps(sequences);
+    std::vector<size_t> seq_tokens(sequences, 0);
+    std::vector<std::vector<uint8_t>> expected(capacity, std::vector<uint8_t>(layers, 0));
+    std::vector<SharedKvPages::Copy> copies;
+    std::string error;
+    std::mt19937_64 rng(seed);
+    StressContext ctx{seed, 0, "initial", &pages, &keys, &seq_maps, &seq_tokens, &expected};
+
+    for (size_t op = 0; op < iterations; ++op) {
+        ctx.op = op;
+        copies.clear();
+        error.clear();
+        const size_t choice = size_t(rng() % 100);
+        if (choice < 52) {
+            const size_t seq = size_t(rng() % sequences);
+            const size_t current_tokens = seq_tokens[seq];
+            size_t start_token = 0;
+            if (current_tokens == 0 || (rng() % 5) == 0) {
+                start_token = size_t(rng() % (capacity * 4));
+            } else if ((rng() & 1u) != 0u) {
+                const size_t page = size_t(rng() % (seq_maps[seq].empty() ? 1 : seq_maps[seq].size()));
+                start_token = page * size_t(4) + size_t(rng() % 4); // offsets 0/1/2/3 within an owned page.
+            } else {
+                start_token = size_t(rng() % (current_tokens + 1));
+            }
+            if ((rng() % 7) == 0) start_token = (start_token / 4) * 4; // block boundary.
+            const size_t length = size_t(rng() % 13); // includes reservation/no-payload attempts.
+            const size_t end_token = std::min(capacity * size_t(4), start_token + length);
+            const size_t begin_page = start_token / 4;
+            const size_t end_page = (end_token + 3) / 4;
+            ++stats.write_offsets[start_token % 4];
+            const bool payload_success = (rng() % 5) != 0 && end_token > start_token;
+            ctx.desc = "ensure seq=" + std::to_string(seq) + " tokens=" + std::to_string(start_token) + ".." +
+                       std::to_string(end_token) + " pages=" + std::to_string(begin_page) + ".." +
+                       std::to_string(end_page) + (payload_success ? " payload=ok" : " payload=fail_or_empty");
+            const auto before_map = seq_maps[seq];
+            const auto before_all_maps = seq_maps;
+            const auto before_tokens = seq_tokens;
+            const auto before_expected = expected;
+            const bool ok = pages.ensure(seq, begin_page, end_page, copies, error);
+            if (!ok) {
+                ++stats.ensure_failure;
+                stress_require(pages.mapping(seq) == before_map, ctx, "failed ensure leaves sequence mapping unchanged");
+                stress_require(seq_maps == before_all_maps && seq_tokens == before_tokens && expected == before_expected,
+                               ctx, "failed ensure leaves oracle unchanged");
+                stress_invariants(ctx);
+                continue;
+            }
+            ++stats.ensure_success;
+            seq_maps[seq] = pages.mapping(seq);
+            stress_require(keys.prepare_after_ensure(before_map, seq_maps[seq], begin_page, end_page, copies, error),
+                           ctx, "metadata prepare succeeds after successful ensure");
+            stress_prepare_oracle(expected, before_map, seq_maps[seq], begin_page, end_page);
+            for (const auto& copy : copies) {
+                for (size_t layer = 0; layer < layers; ++layer) {
+                    stress_require(expected[size_t(copy.from)][layer] == before_expected[size_t(copy.from)][layer],
+                                   ctx, "COW source oracle remains unchanged after prepare");
+                    stress_require(expected[size_t(copy.to)][layer] == 0, ctx,
+                                   "COW destination oracle is invalid before explicit publish");
+                }
+            }
+            if (payload_success) {
+                ++stats.payload_success;
+                seq_tokens[seq] = std::max(seq_tokens[seq], end_token);
+                stress_publish_complete_pages(keys, expected, seq_maps[seq], start_token, end_token, rng, stats, ctx, error);
+            } else {
+                ++stats.payload_failure;
+                for (size_t page = begin_page; page < end_page && page < seq_maps[seq].size(); ++page) {
+                    for (size_t layer = 0; layer < layers; ++layer) {
+                        stress_require(!keys.published(seq_maps[seq][page], layer), ctx,
+                                       "failed stress payload leaves destination unpublished");
+                    }
+                }
+            }
+        } else if (choice < 70) {
+            const size_t from = size_t(rng() % sequences);
+            const size_t to = size_t(rng() % sequences);
+            const size_t max_end = seq_maps[from].size();
+            const size_t end = max_end == 0 ? 0 : size_t(rng() % (max_end + 1));
+            ctx.desc = "clone from=" + std::to_string(from) + " to=" + std::to_string(to) +
+                       " end=" + std::to_string(end);
+            std::vector<int32_t> released;
+            stress_require(pages.clone_prefix(from, to, end, error, &released), ctx, "clone_prefix succeeds");
+            stress_invalidate_released(expected, released);
+            stress_require(keys.invalidate_released(released, error), ctx, "clone release invalidation succeeds");
+            seq_maps[to] = pages.mapping(to);
+            seq_tokens[to] = std::min(seq_tokens[from], end * size_t(4));
+            if (from == to) ++stats.self_clone;
+            else ++stats.clone;
+        } else if (choice < 85) {
+            const size_t seq = size_t(rng() % sequences);
+            const size_t end = size_t(rng() % (capacity + 1));
+            ctx.desc = "truncate seq=" + std::to_string(seq) + " end=" + std::to_string(end);
+            std::vector<int32_t> released;
+            stress_require(pages.truncate(seq, end, error, &released), ctx, "truncate succeeds");
+            stress_invalidate_released(expected, released);
+            stress_require(keys.invalidate_released(released, error), ctx, "truncate release invalidation succeeds");
+            seq_maps[seq] = pages.mapping(seq);
+            seq_tokens[seq] = std::min(seq_tokens[seq], end * size_t(4));
+            ++stats.truncate;
+        } else {
+            const size_t seq = size_t(rng() % sequences);
+            ctx.desc = "release seq=" + std::to_string(seq);
+            std::vector<int32_t> released;
+            pages.release(seq, &released);
+            stress_invalidate_released(expected, released);
+            stress_require(keys.invalidate_released(released, error), ctx, "release invalidation succeeds");
+            seq_maps[seq] = pages.mapping(seq);
+            seq_tokens[seq] = 0;
+            ++stats.release;
+        }
+        stress_invariants(ctx);
+    }
+}
+
+void randomized_stress() {
+    const size_t default_iterations = 3000;
+    const uint64_t default_seeds[] = {0x51a7a2a6ULL, 0xc0ffee1234ULL, 0xbadc0de5678ULL, 0x123456789abcdef0ULL};
+    const uint64_t override_seed = env_u64("STRATA_P1B_SEED", 0);
+    const size_t iterations = size_t(env_u64("STRATA_P1B_ITERS", default_iterations));
+    StressStats stats;
+    if (override_seed != 0) {
+        randomized_stress_one_seed(override_seed, iterations, stats);
+        std::printf("shared_indexer_keys_randomized: seeds=%llu iterations=%zu ops=%zu ",
+                    static_cast<unsigned long long>(override_seed), iterations, iterations);
+    } else {
+        for (uint64_t seed : default_seeds) randomized_stress_one_seed(seed, iterations, stats);
+        std::printf("shared_indexer_keys_randomized: seeds=0x51a7a2a6,0xc0ffee1234,0xbadc0de5678,0x123456789abcdef0 iterations=%zu ops=%zu ",
+                    iterations, iterations * (sizeof(default_seeds) / sizeof(default_seeds[0])));
+    }
+    std::printf("ensure_ok=%llu ensure_fail=%llu payload_ok=%llu payload_fail=%llu publish=%llu clone=%llu self_clone=%llu truncate=%llu release=%llu offsets=[%llu,%llu,%llu,%llu]\n",
+                static_cast<unsigned long long>(stats.ensure_success),
+                static_cast<unsigned long long>(stats.ensure_failure),
+                static_cast<unsigned long long>(stats.payload_success),
+                static_cast<unsigned long long>(stats.payload_failure),
+                static_cast<unsigned long long>(stats.publish),
+                static_cast<unsigned long long>(stats.clone),
+                static_cast<unsigned long long>(stats.self_clone),
+                static_cast<unsigned long long>(stats.truncate),
+                static_cast<unsigned long long>(stats.release),
+                static_cast<unsigned long long>(stats.write_offsets[0]),
+                static_cast<unsigned long long>(stats.write_offsets[1]),
+                static_cast<unsigned long long>(stats.write_offsets[2]),
+                static_cast<unsigned long long>(stats.write_offsets[3]));
+}
 } // namespace
 
 int main() {
@@ -308,5 +587,6 @@ int main() {
     clone_replacement_truncate_release_and_reuse();
     unpublished_source_cow_stays_unpublished();
     large_geometry_release_is_linear_in_released_pages();
+    randomized_stress();
     std::printf("shared_indexer_keys_test: %zu checks passed\n", checks);
 }
