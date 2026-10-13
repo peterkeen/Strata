@@ -408,7 +408,9 @@ int probe_unmapped() {
     const cudaError_t e = cudaDeviceSynchronize();
     std::printf("indexer_vmm_canary: probe write past the committed prefix -> %s\n", cudaGetErrorName(e));
     std::fflush(stdout);
-    std::_Exit(e == cudaErrorIllegalAddress ? 0 : 1);   // skip destructors: the context is sticky-faulted
+    // native runs report IllegalAddress; under compute-sanitizer the same MMU fault surfaces as LaunchFailure
+    const bool faulted = e == cudaErrorIllegalAddress || e == cudaErrorLaunchFailure;
+    std::_Exit(faulted ? 0 : 1);   // skip destructors: the context is sticky-faulted
 }
 
 void guard_probe() {
