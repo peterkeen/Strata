@@ -41,6 +41,13 @@ public:
     template <class Take> bool map_range(int64_t lo, int64_t hi, Take take);
     /// Unmaps chunk i and hands back its physical chunk (0 when it was not mapped).
     VmmChunk unmap(int64_t i);
+    /// Single-chunk steps for owners that keep their own transaction (the private indexer storage, str-a2y.4): map
+    /// `h` at unmapped chunk i without setting access, and make [lo, hi) readable and writable.  Unlike map_range,
+    /// neither frees anything on failure; the caller still owns `h` / the mapped chunks.
+    bool map_at(int64_t i, VmmChunk h) { return i >= 0 && i < chunks() && !mapped(i) && h != 0 && map_one(i, h); }
+    bool grant_access(int64_t lo, int64_t hi) { return lo >= 0 && hi <= chunks() && set_access(lo, hi); }
+    /// The device the chunks are created on (-1 before reserve).
+    int device() const { return dev_; }
 
 private:
     bool map_one(int64_t i, VmmChunk h);

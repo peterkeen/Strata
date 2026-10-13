@@ -900,6 +900,14 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
       add_test(NAME dma_batch_registered_parity COMMAND dma_batch_parity --registered)
       set_tests_properties(dma_batch_registered_parity PROPERTIES TIMEOUT 120)
     endif()
+    # str-a2y.4 (I2c): the private QSA indexer storage on CUDA VMM - stable base across growth/shrink with a captured
+    # graph, granule-exact commitment, real rollback and teardown (GPU, synthetic, a few MiB, no model).  Built from
+    # vmm.cpp directly so the canary does not pull in the engine.  Exit 77: no device or no VMM.
+    add_executable(indexer_vmm_canary tests/core/indexer_vmm_canary.cu src/core/indexer_vmm_storage.cpp src/core/vmm.cpp)
+    target_include_directories(indexer_vmm_canary PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(indexer_vmm_canary PRIVATE strata_warnings ${_strata_gpu_runtime_target})
+    add_test(NAME indexer_vmm_canary COMMAND indexer_vmm_canary)
+    set_tests_properties(indexer_vmm_canary PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     add_executable(gdn_rec_parity src/prefill/gdn_rec_parity.cu)
     target_link_libraries(gdn_rec_parity PRIVATE ${_strata_gpu_runtime_target})
     add_test(NAME gdn_rec_parity COMMAND gdn_rec_parity)
