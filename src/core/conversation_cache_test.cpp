@@ -484,5 +484,20 @@ int main() {
         check(tiny.put(std::move(p2)), "a pinned one fits an empty cache");
         check(!tiny.put(image({7,8,9})) && tiny.size() == 1, "nothing else fits beside it: parking is refused, the pin stays");
     }
+    {
+        // --conversation-cache-slots auto: no count limit, the byte budget (and the caller's RAM gate) decides
+        const size_t one = image({1,2,3}).bytes();
+        ConversationCache cache(one * 6 + 64, ConversationCache::kAutoSlots);
+        check(cache.enabled() && cache.auto_slots() && !ConversationCache(1024, 4).auto_slots(), "auto is its own mode");
+        for (int32_t i = 0; i < 6; ++i) check(cache.put(image({10 * i, 10 * i + 1, 10 * i + 2})), "auto parks past 4");
+        check(cache.size() == 6 && cache.evictions() == 0, "six fit the budget, none evicted for a count");
+        check(cache.put(image({90, 91, 92})) && cache.size() == 6 && cache.evictions() == 1,
+              "the seventh evicts the oldest for bytes");
+        check(cache.best(std::vector<int32_t>{0, 1, 2, 3}, {}, true).tokens == 0 &&
+              cache.best(std::vector<int32_t>{90, 91, 92, 93}, {}, true).tokens == 3, "oldest first, newest kept");
+        size_t n = 0;
+        while (cache.evict_oldest()) ++n;
+        check(n == 6 && cache.size() == 0 && cache.bytes() == 0, "the RAM gate's loop drains it and stops at empty");
+    }
     std::printf("conversation_cache_test: %d checks passed\n", checks);
 }

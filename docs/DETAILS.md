@@ -977,6 +977,11 @@ in a bounded 8 GiB host-RAM cache. This preserves controller/worker histories wh
 their requests alternate; it does not execute requests concurrently. No client session
 ID is required: only exact token/image prefixes with matching steering mode are reused.
 The default budget is 0 (disabled); `--prompt-cache 0` also disables parking.
+`--conversation-cache-slots auto` drops the count limit: as many conversations stay parked as fit the
+`--conversation-cache-mib` budget, and when parking finds less free RAM than the incoming image plus
+`--conversation-cache-min-free-mib`, the oldest parked ones are evicted until it fits. So the number of parked
+conversations follows their sizes and the host's free memory instead of a fixed count. The Monitor shows the
+parked count without a slot limit. CUDA/HIP engine only; the SYCL engine still takes a number.
 With `--layer-split`, a parked conversation holds one image per stage (each later stage's
 session and its share of the conversation checkpoints), every image is validated before
 anything is overwritten, and each is restored on its own GPU. Verified on a 4-GPU split:

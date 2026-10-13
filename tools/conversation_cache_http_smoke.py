@@ -41,8 +41,8 @@ def run(client):
     require(initial['live']['state'] == 'idle' and initial['live']['queued'] == 0, 'server is busy')
     info = initial['engine']
     slots = info.get('conversation_cache_slots', 0)
-    require(info.get('conversation_cache_mib', 0) > 0 and 1 <= slots <= 16,
-            'requires an enabled cache with 1–16 slots')
+    require(info.get('conversation_cache_mib', 0) > 0 and isinstance(slots, int) and 1 <= slots <= 16,
+            'requires an enabled cache with 1–16 slots (not --conversation-cache-slots auto)')
     require(not info.get('api_key'), 'use an unauthenticated private test endpoint')
     marker = 'cache-smoke-' + uuid.uuid4().hex
     records = []

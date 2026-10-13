@@ -196,8 +196,14 @@ public:
         bool live = false;
     };
 
+    /// `--conversation-cache-slots auto`: no count limit.  The entries are bounded by the byte budget alone, and the
+    /// caller's physical-RAM gate (generate.cpp) evicts the oldest while MemAvailable is under the floor, so how many
+    /// conversations stay parked follows their sizes and the memory the host has free.
+    static constexpr size_t kAutoSlots = SIZE_MAX;
+
     ConversationCache(size_t budget, size_t slots, int64_t min_tokens = 0)
         : budget_(budget), slots_(slots), min_tokens_(min_tokens) {}
+    bool auto_slots() const { return slots_ == kAutoSlots; }
     bool enabled() const { return budget_ != 0 && slots_ != 0; }
     /// `--conversation-cache-min-tokens`: whether a conversation of this length is worth one of `slots`.  Every
     /// parked conversation costs a whole slot whatever its length, so a client that interleaves short side requests
@@ -301,7 +307,8 @@ public:
         return n;
     }
 
-    // The slot count, so a caller that evicts in a loop has a bound it did not invent.
+    // The slot count, so a caller that evicts in a loop has a bound it did not invent (kAutoSlots: none; such a
+    // loop also stops when the cache is empty).
     size_t slots() const { return slots_; }
 
     // #342: drop the parked entries an outgoing conversation (its live tokens and checkpoint chain) supersedes:
