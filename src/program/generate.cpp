@@ -10080,14 +10080,14 @@ int main(int argc, char** argv) {
                 // Reserve with the incoming chain, before capture, so covered
                 // copies go before another conversation's only parked image.
                 if (!conversations.make_room(estimate, parking_held, &sl.ids, &no_images) ||
-                    !strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), estimate, floor)) {
+                    !strata::core::conversation_memory_admit(strata::core::available_host_bytes(), estimate, floor)) {
                     std::fprintf(stderr, "strata serve: pressure cache budget/RAM miss; replay %zu tokens\n", sl.ids.size());
                     return true;
                 }
                 strata::core::SavedConversation image;
                 // Metadata validation passed: a device transfer failure is fatal.
                 if (!strata::core::conversation_snapshot_save(image, view, state, g, nullptr, err)) return false;
-                if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
+                if (!strata::core::conversation_memory_admit(strata::core::available_host_bytes(), 0, floor)) {
                     std::fprintf(stderr, "strata serve: pressure cache RAM floor miss; replay tokens\n");
                     return true;
                 }
