@@ -1,21 +1,24 @@
 // Host-only snapshot transfers, following conversation_validation_test.cpp's
 // GNU/ELF wrapping backend. No CUDA context, page allocator or COW implementation.
-// Link with --wrap=cudaMemcpy --wrap=cudaGetLastError --wrap=cudaGetErrorString.
+// Link with --wrap= for cudaMemcpy, cudaMemcpyAsync, cudaGetDevice, cudaStreamCreateWithFlags,
+// cudaStreamSynchronize, cudaGetLastError and cudaGetErrorString.
 // For a standalone build, compile this file and src/core/conversation_snapshot.cpp
 // with -DSHARED_KV_SNAPSHOT_STANDALONE and a minimal cuda_runtime.h shim on the
-// include path (cudaError_t, cudaMemcpyKind, cudaGraphExec_t, cudaEvent_t and the
-// three wrapped function declarations suffice). No CMake changes are required.
+// include path (cudaError_t, cudaMemcpyKind, cudaStream_t, cudaGraphExec_t, cudaEvent_t,
+// cudaStreamNonBlocking and the wrapped function declarations suffice).
 /* Example from the repo root (HOST_SHIM_DIR contains that header):
    g++ -std=c++20 -O2 -Wall -Wextra -Werror -DSHARED_KV_SNAPSHOT_STANDALONE \
      -I"$HOST_SHIM_DIR" -Iinclude src/core/conversation_snapshot.cpp \
      tests/core/shared_kv_snapshot_test.cpp \
-     -Wl,--wrap=cudaMemcpy,--wrap=cudaGetLastError,--wrap=cudaGetErrorString \
+     -Wl,--wrap=cudaMemcpy,--wrap=cudaMemcpyAsync,--wrap=cudaGetDevice,--wrap=cudaStreamCreateWithFlags \
+     -Wl,--wrap=cudaStreamSynchronize,--wrap=cudaGetLastError,--wrap=cudaGetErrorString \
      -o /tmp/shared_kv_snapshot_test && /tmp/shared_kv_snapshot_test
 */
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/kernels/kv_q4.hpp"
 
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -41,6 +44,16 @@ extern "C" cudaError_t __wrap_cudaMemcpy(void* dst, const void* src, size_t n, c
     std::memcpy(dst, src, n);
     return cudaSuccess;
 }
+// the snapshot copies go through a private non-blocking stream (conversation_copy.hpp); route those
+// into the same host copy so call counting and fault injection see every transfer
+extern "C" cudaError_t __wrap_cudaGetDevice(int* dev) { *dev = 0; return cudaSuccess; }
+extern "C" cudaError_t __wrap_cudaStreamCreateWithFlags(cudaStream_t* s, unsigned int) {
+    *s = reinterpret_cast<cudaStream_t>(static_cast<uintptr_t>(1)); return cudaSuccess;
+}
+extern "C" cudaError_t __wrap_cudaMemcpyAsync(void* dst, const void* src, size_t n, cudaMemcpyKind, cudaStream_t) {
+    return __wrap_cudaMemcpy(dst, src, n, cudaMemcpyDefault);
+}
+extern "C" cudaError_t __wrap_cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
 extern "C" cudaError_t __wrap_cudaGetLastError() { return cudaSuccess; }
 extern "C" const char* __wrap_cudaGetErrorString(cudaError_t) { return "injected host transfer failure"; }
 

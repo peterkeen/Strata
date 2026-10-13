@@ -632,7 +632,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     if(NOT STRATA_ENABLE_HIP AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
       add_executable(shared_kv_snapshot_test tests/core/shared_kv_snapshot_test.cpp)
       target_link_options(shared_kv_snapshot_test PRIVATE
-        -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaGetLastError -Wl,--wrap=cudaGetErrorString)
+        -Wl,--wrap=cudaMemcpy -Wl,--wrap=cudaMemcpyAsync -Wl,--wrap=cudaStreamSynchronize
+        -Wl,--wrap=cudaGetDevice -Wl,--wrap=cudaStreamCreateWithFlags
+        -Wl,--wrap=cudaGetLastError -Wl,--wrap=cudaGetErrorString)
       target_link_libraries(shared_kv_snapshot_test PRIVATE strata_engine)
       add_test(NAME shared_kv_snapshot_test COMMAND shared_kv_snapshot_test)
       set_tests_properties(shared_kv_snapshot_test PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=-1" TIMEOUT 120)
