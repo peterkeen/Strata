@@ -85,6 +85,7 @@
 #include "strata/platform/memory.hpp"
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
+#include "strata/core/cache_reclaim_gate.hpp"
 #include "strata/core/emulate.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
@@ -10013,6 +10014,130 @@ int main(int argc, char** argv) {
             strata::core::BatchDraftCoherence draft_state; // committed target frontier; private ring may hold lookahead
             BatchMtpStats mtp_stats;
             int64_t p = 0;                 ///< its position
+        // L4: explicit, opt-in safe-point resize. VRAM keeps its resident-mode refusal.
+        const bool lazy_cache_reclaim = [] {
+            const char* v = std::getenv("STRATA_LAZY_CACHE_RECLAIM");
+            return v != nullptr && std::strcmp(v, "1") == 0;
+        }();
+        strata::core::CacheReclaimGate reclaim_gate;
+        uint64_t reclaim_generation = 0;
+        std::vector<strata::core::CacheReclaimEntry> reclaim_evicted;
+        bool reclaim_fatal = false;
+        auto cache_reclaim_command = [&](const std::string& cmd, std::string& e) {
+            if (!lazy_cache_reclaim) { e = "CACHE_RECLAIM requires STRATA_LAZY_CACHE_RECLAIM=1"; return; }
+            if (!xcache.segmented() || d_res == nullptr || srcp != &src || peer.valid() || !stages.empty() || kvg.on) {
+                e = "CACHE_RECLAIM requires --vram-elastic, a file source and one CUDA GPU (no elastic KV)"; return;
+            }
+            if (!vram_evicted.empty()) {
+                e = "CACHE_RECLAIM: VRAM owns evicted slots; restore them with VRAM first"; return;
+            }
+            const bool regrow = cmd == "CACHE_REGROW";
+            int64_t keep = xcache.full_slots();
+            if (!regrow) {
+                if (cmd.rfind("CACHE_RECLAIM ", 0) != 0) { e = "expected: CACHE_RECLAIM <keep_slots>"; return; }
+                const char* arg = cmd.c_str() + sizeof("CACHE_RECLAIM ") - 1;
+                char* end = nullptr;
+                const long long value = std::strtoll(arg, &end, 10);
+                if (end == arg || value < 0 || value > xcache.full_slots()) { e = "invalid keep_slots"; return; }
+                while (*end == ' ') ++end;
+                if (*end != '\0') { e = "invalid keep_slots"; return; }
+                keep = value;
+                const int64_t floor = std::min<int64_t>(xcache.full_slots(), 128 +
+                    (pf_parts.empty() || pf_parts[0].first < 0 ? 0 : part_slots(pf_parts[0], 256)));
+                if (keep < floor) { e = "CACHE_RECLAIM below prompt/verify slot floor"; return; }
+            }
+            for (const PfPart& p : pf_parts)
+                if (!p.lent.empty()) { e = "CACHE_RECLAIM: prefill loan is still out"; return; }
+            if (!ver.wait_commit(e)) return;
+            // The admission branch has already drained adapt_tick(true); refuse a
+            // still-active async round rather than racing its ownership table.
+            if (astate != AState::Idle || (ajob && !ajob->idle())) {
+                e = "CACHE_RECLAIM: adaptive round has not drained"; return;
+            }
+            apply_pending(true);
+            if (!pending.empty() || agate.active.load(std::memory_order_acquire)) {
+                e = "CACHE_RECLAIM: adaptive copies have not drained"; return;
+            }
+            if (cudaDeviceSynchronize() != cudaSuccess) {
+                e = std::string("CACHE_RECLAIM: device fence failed: ") + cudaGetErrorString(cudaGetLastError()); return;
+            }
+            const auto proposed = regrow ? std::vector<strata::core::CacheReclaimEntry>{}
+                : strata::core::cache_reclaim_tail(host_res, keep, xcache.slots());
+            bool coherent = true;
+            if (src.complement_ready())
+                for (const auto& item : proposed)
+                    if (!src.reclaim_file_fallback(item.index / g.n_expert, item.index % g.n_expert)) {
+                        coherent = false; break;
+                    }
+            const strata::core::ParallelSafePoint safe{true, true, true, 0};
+            if (reclaim_gate.enter(safe, src.complement_ready(), coherent, reclaim_generation) !=
+                strata::core::CacheReclaimGateResult::ready) {
+                e = "CACHE_RECLAIM: unsafe boundary or no mapped-file fallback for a displaced expert"; return;
+            }
+            auto finish = [&] {
+                if (reclaim_gate.complete(reclaim_generation) != strata::core::CacheReclaimGateResult::ready)
+                    reclaim_fatal = true;
+                else ++reclaim_generation;
+            };
+            std::string detail;
+            if (!regrow) {
+                // Publish misses BEFORE unmapping. Even a partial VMM failure
+                // then leaves no device-side hit pointing into unmapped memory.
+                for (const auto& item : proposed) host_res[(size_t) item.index] = strata::core::kNotResident;
+                if (res_upload() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+                    reclaim_fatal = true; e = "CACHE_RECLAIM: eviction table upload failed"; finish(); return;
+                }
+                const bool shrunk = xcache.shrink(xcache.bytes_of(keep), detail);
+                for (const auto& item : proposed) {
+                    if (item.slot < xcache.slots()) host_res[(size_t) item.index] = item.slot;
+                    else reclaim_evicted.push_back(item);
+                }
+                if (res_upload() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+                    reclaim_fatal = true; e = "CACHE_RECLAIM: mapped-prefix upload failed"; finish(); return;
+                }
+                if (!shrunk) e = "CACHE_RECLAIM: DEGRADED partial shrink: " + detail;
+            } else {
+                const bool mapped = xcache.grow(xcache.full_bytes(), detail);
+                const auto plan = strata::core::cache_refill_plan(reclaim_evicted, host_res, xcache.slots());
+                std::vector<strata::core::CacheReclaimEntry> issued;
+                std::string ferr;
+                for (const auto& item : plan.fill) {
+                    const int64_t layer = item.index / g.n_expert;
+                    const uint8_t* b = srcp->blob_stable(layer, item.index % g.n_expert);
+                    if (b == nullptr || !xcache.fill_slot_queued(item.slot, b, ferr,
+                            (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(layer))) {
+                        if (ferr.empty()) ferr = "source unavailable";
+                        break;
+                    }
+                    srcp->note_async_read(b, nullptr);
+                    issued.push_back(item);
+                }
+                const bool copied = xcache.sync_queued(ferr);
+                if (copied) {
+                    for (const auto& item : issued) host_res[(size_t) item.index] = item.slot;
+                    if (res_upload() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+                        reclaim_fatal = true; e = "CACHE_REGROW: residency upload failed"; finish(); return;
+                    }
+                }
+                const auto left = strata::core::cache_refill_plan(reclaim_evicted, host_res, xcache.slots());
+                reclaim_evicted = left.remaining;
+                reclaim_evicted.insert(reclaim_evicted.end(), left.fill.begin(), left.fill.end());
+                if (!mapped || !copied || issued.size() != plan.fill.size() || !reclaim_evicted.empty())
+                    e = "CACHE_REGROW: DEGRADED cache (" + std::to_string(xcache.slots()) + "/" +
+                        std::to_string(xcache.full_slots()) + " mapped slots, " +
+                        std::to_string(reclaim_evicted.size()) + " unrefilled experts): " +
+                        (!ferr.empty() ? ferr : detail);
+            }
+            int64_t file_tier = 0;
+            for (const auto& item : reclaim_evicted)
+                if (!src.complement_ready() || !src.has_resident(item.index / g.n_expert, item.index % g.n_expert))
+                    ++file_tier;
+            relend();
+            finish();
+            std::printf("CACHE expert_slots=%lld expert_slots_full=%lld unrefilled=%zu file_tier=%lld generation=%llu%s\n",
+                (long long) xcache.slots(), (long long) xcache.full_slots(), reclaim_evicted.size(),
+                (long long) file_tier, (unsigned long long) reclaim_generation, e.empty() ? "" : " degraded=1");
+        };
             int64_t produced = 0, max_new = 0;
             Clock::time_point t0;
             // the slot's own conversation cache: the tokens its sessions hold (the prompt, then every token a window
@@ -10916,11 +11041,22 @@ int main(int argc, char** argv) {
             main_required_end = -1;
             parking_held = 0;
             bool admit_was_partial = false;
+                else if (reclaim_generation != 0) verr = "VRAM: CACHE_RECLAIM owns the resized cache; use CACHE_REGROW";
             if (line.rfind("BGEN ", 0) == 0 || line.rfind("BGENI ", 0) == 0) {
                 const bool bimg = line.rfind("BGENI ", 0) == 0;
                 char* e1 = nullptr;
                 const long b = std::strtol(line.c_str() + (bimg ? 6 : 5), &e1, 10);
                 char* e2 = nullptr;
+            if (line.rfind("CACHE_RECLAIM", 0) == 0 || line.rfind("CACHE_REGROW", 0) == 0) {
+                std::string cerr;
+                if (batch_on() || (piped && pipe_inflight())) cerr = "CACHE_RECLAIM: batch slots are decoding";
+                else if (!adapt_tick(true)) cerr = "CACHE_RECLAIM: adaptive drain failed";
+                else cache_reclaim_command(line, cerr);
+                if (!cerr.empty()) std::printf("ERR %s\n", cerr.c_str());
+                std::fflush(stdout);
+                if (reclaim_fatal) return 1;
+                continue;
+            }
                 const long long mn = std::strtoll(e1, &e2, 10);
                 if (bs.empty() || b < 0 || b >= (long) bs.size() || bs[(size_t) b].active || mn < 1 || e2 == e1) {
                     std::printf("ERR BGEN: no such free slot (--batch %d) or a bad max_new\n", o.batch);

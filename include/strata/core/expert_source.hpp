@@ -728,6 +728,10 @@ public:
     // STRATA_EXCHANGE_ROTATE=1 can instead transfer buffer ownership (uniform, fully pinned/mapped slots).
     /// Whether the compact copy holds `(layer, expert)`.
     bool has_resident(int64_t layer, int64_t expert) const;
+    /// L4: prove that an expert omitted from the compact RAM complement has a stable,
+    /// contiguous mapped-file source before evicting its GPU slot. A dropped mapping or
+    /// GGUF/staged source is deliberately refused rather than promising an untested tier.
+    bool reclaim_file_fallback(int64_t layer, int64_t expert) const;
     /// Host room for `n` evicted blobs (page-locked when possible).  Idempotent for the same or a smaller `n`.
     bool reserve_exchanges(int64_t n, std::string& err);
     int64_t exchange_capacity() const { return xstage_cap_; }

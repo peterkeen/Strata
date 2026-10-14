@@ -325,3 +325,48 @@ expert-cache loss or first-overlap setup cost.
   correct fixed-context mixed-format resident-complement operation.
 - No live rollout or model unload without explicit authorization; revalidate the
   previously recorded memory/swap safety concern before isolated GPU work.
+
+## L4: coherent resident-complement cache reclaim (opt-in, CUDA canary pending)
+
+`STRATA_LAZY_CACHE_RECLAIM=1` enables the serve-protocol commands
+`CACHE_RECLAIM <keep_slots>` and `CACHE_REGROW` only with a segmented
+`--vram-elastic` cache, a mapped file source and one CUDA GPU. They do not
+activate batch slots automatically (L5 owns that hook). `VRAM` retains its
+resident-complement refusal; without the env var the default request path and
+outputs are unchanged. HIP/SYCL segmented reclaim is unsupported here.
+
+Once this command path has run, `VRAM` is refused for that engine lifetime to
+avoid mixing independent eviction ledgers, even after a full regrow.
+
+The resident complement stays the same size: each reclaimed slot's expert
+is served from its original mapped-file bytes. The offset sentinel already
+means "no RAM complement entry"; it must **not** be rewritten to a non-existent
+RAM offset. Before eviction, the command checks that *every* displaced expert
+has a contiguous mapped-file fallback. GGUF/staged and dropped mappings are
+refused for this path. This choice adds no page-locked RAM and needs no exchange
+buffer per reclaimed slot; it can increase file I/O, reported as file-tier
+misses. Adaptive swaps continue to use their existing staged exchange/commit
+contract for experts still in the GPU cache.
+
+At the between-requests admission boundary the command refuses batch decoding,
+active pipeline work and prefill loans, drains async adaptive work, waits for
+verifier commit, applies pending swaps and fences the device before entering
+`CacheReclaimGate` with the current generation and `ParallelSafePoint` facts.
+Shrink marks proposed tail residents absent on the device *before* VMM unmaps
+anything. A partial unmap reconciles with the actual mapped slot prefix; only
+still-mapped slots regain residency. Grow maps slots, copies their missing
+original owners from RAM or file, waits for copies and only then uploads
+residency. An owner relocated by the adaptive tier is never overwritten. A
+failed mapping/refill leaves coherent file-tier misses and reports `DEGRADED`;
+a failed residency upload terminates serving rather than decoding with a stale
+device table. The cache's startup `slot_of` table is not the adaptive tier's
+live ownership table; `host_res` and the uploaded `d_res` control hits.
+
+`tests/core/cache_reclaim_plan_test.cpp` covers tail selection, partial unmap,
+refill/remaining accounting and generation/safe-point rejection. GPU canary
+must confirm mapped-file fallback bytes for every evictee (including mixed
+blob sizes), `host_res == d_res` and no hit in an unmapped slot after each
+transition, complement offsets and contents unchanged, prefill loan layout
+valid, adaptive exchanges drained, original owners copied before publication,
+and no graph/DMA references into unmapped segments. Test forced VMM and refill
+failure and repeat reclaim/regrow before allowing an admission/handoff hook.

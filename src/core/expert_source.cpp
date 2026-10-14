@@ -3240,6 +3240,10 @@ bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {
     return resident_blob(index) != nullptr;
 }
 
+bool FileExpertSource::reclaim_file_fallback(int64_t layer, int64_t expert) const {
+    return complement_ready_ && mapped_blob(layer, expert) != nullptr;
+}
+
 bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     err.clear();
     if (n <= xstage_cap_) return true;

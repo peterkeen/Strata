@@ -353,6 +353,9 @@ if(STRATA_BUILD_TESTS)
   add_executable(cache_reclaim_gate_test tests/core/cache_reclaim_gate_test.cpp)
   target_include_directories(cache_reclaim_gate_test PRIVATE include)
   add_test(NAME cache_reclaim_gate_test COMMAND cache_reclaim_gate_test)
+  add_executable(cache_reclaim_plan_test tests/core/cache_reclaim_plan_test.cpp)
+  target_include_directories(cache_reclaim_plan_test PRIVATE include)
+  add_test(NAME cache_reclaim_plan_test COMMAND cache_reclaim_plan_test)
 
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
