@@ -52,6 +52,8 @@ class DryRunTests(unittest.TestCase):
         self.assertTrue(all("overlap-2" in row["slots"] for row in plan["workloads"]))
         self.assertIn("bounded", json.dumps(plan["workloads"]))
         self.assertIn("MemAvailable_floor_bytes", plan["stop_gates"]["memory"])
+        self.assertNotIn("SwapFree_floor_bytes", plan["stop_gates"]["memory"])
+        self.assertEqual(plan["stop_gates"]["memory"]["sustained_swap_stop"]["longer_than_s"], 30)
 
     def test_fresh_cli_dry_run_creates_no_files_or_bytecode(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -194,7 +194,11 @@ def stop_gates() -> dict[str, Any]:
     return {
         "memory": {
             "MemAvailable_floor_bytes": 10 * GIB,
-            "SwapFree_floor_bytes": 1 * GIB,
+            # Pete 2026-10-14 (str-inn.5 closed): no SwapFree floor - nibbler keeps cold pages in swap
+            "sustained_swap_stop": {"rate_bytes_per_s": 5_000_000, "longer_than_s": 30,
+                                    "direction": "swap-in or swap-out"},
+            "oom_stop": "global oom-kill, or one hitting strata/python; other memcg-constrained kills recorded only",
+            "recorded_not_stops": ["SwapFree", "memory PSI"],
             "record": ["MemAvailable", "SwapFree", "Cached", "AnonPages", "MemFree", "VmHWM", "VmRSS"],
         },
         "gpu_vram": {

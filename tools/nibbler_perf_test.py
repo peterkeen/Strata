@@ -116,10 +116,56 @@ class CalibrationTests(unittest.TestCase):
 
     def test_threshold_exact_and_below(self):
         p.safety({'MemAvailable': 10*p.GIB, 'SwapFree': p.GIB})
-        for values in ({'MemAvailable': 10*p.GIB-1, 'SwapFree': p.GIB},
-                       {'MemAvailable': 10*p.GIB, 'SwapFree': p.GIB-1}):
-            with self.assertRaises(p.Stop):
-                p.safety(values)
+        with self.assertRaises(p.Stop):
+            p.safety({'MemAvailable': 10*p.GIB-1, 'SwapFree': p.GIB})
+
+    def test_swap_free_is_not_a_stop(self):
+        # str-inn.5 closed: nibbler keeps cold pages in swap; SwapFree near zero at rest is normal
+        p.safety({'MemAvailable': 20*p.GIB, 'SwapFree': 0})
+
+    def test_sustained_swap_rate_stops(self):
+        page = 4096
+        fast = int(p.SWAP_RATE_STOP / page) + 1          # pages/s just above the limit
+        rate = p.SwapRate({'pswpin': 0, 'pswpout': 0}, now=0.0)
+        t, n = 0.0, 0
+        for _ in range(30):                              # 30 s above the limit: not yet
+            t += 1.0; n += fast
+            rate.update({'pswpin': n, 'pswpout': 0}, now=t)
+        t += 1.0; n += fast
+        with self.assertRaisesRegex(p.Stop, 'sustained swapping'):
+            rate.update({'pswpin': n, 'pswpout': 0}, now=t)
+
+    def test_swap_burst_resets(self):
+        page = 4096
+        fast = int(p.SWAP_RATE_STOP / page) + 1
+        rate = p.SwapRate({'pswpin': 0, 'pswpout': 0}, now=0.0)
+        t, n = 0.0, 0
+        for i in range(120):                             # 20 s bursts separated by a quiet second
+            t += 1.0; n += 0 if i % 21 == 20 else fast
+            rate.update({'pswpin': 0, 'pswpout': n}, now=t)
+        self.assertLess(rate.run_s, p.SWAP_RUN_STOP_S)
+
+    def test_oom_classification(self):
+        foreign = ('[Tue Oct 14 09:33:21 2026] oom-kill:constraint=CONSTRAINT_MEMCG,nodemask=(null),'
+                   'cpuset=docker-x.scope,mems_allowed=0,oom_memcg=/system.slice/docker-x.scope,'
+                   'task_memcg=/system.slice/docker-x.scope,task=ffprobe,pid=1,uid=1000')
+        ours = foreign.replace('task=ffprobe', 'task=strata')
+        globl = ('[Tue Oct 14 09:33:21 2026] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),'
+                 'cpuset=/,mems_allowed=0,global_oom,task_memcg=/x,task=java,pid=2,uid=0')
+        self.assertEqual(p.oom_stops({foreign}), [])
+        self.assertEqual(len(p.oom_stops({ours})), 1)
+        self.assertEqual(len(p.oom_stops({globl})), 1)
+
+    def test_monitor_oom_baseline_then_new_kill_stops(self):
+        with tempfile.TemporaryDirectory() as d:
+            monitor = p.Monitor(Path(d), 'http://127.0.0.1:1', 100)
+            old = 'oom-kill:constraint=CONSTRAINT_NONE,global_oom,task=old,pid=1'
+            with patch.object(p, 'oom_lines', return_value={old}):
+                monitor.check_ooms()                     # baseline: earlier kills never stop a window
+                monitor.check_ooms()
+            with patch.object(p, 'oom_lines', return_value={old, old.replace('task=old', 'task=java')}):
+                with self.assertRaisesRegex(p.Stop, 'oom-kill'):
+                    monitor.check_ooms()
 
     def test_config_preserves_production_and_is_private(self):
         before = json.dumps(CFG, sort_keys=True)

@@ -94,11 +94,69 @@ def memory():
     return values
 
 
+# Stop rules (Pete, 2026-10-14; str-inn.5 closed): MemAvailable < 10 GiB; swap-in or swap-out above
+# SWAP_RATE_STOP for more than SWAP_RUN_STOP_S; a global (or strata/python) oom-kill. SwapFree is recorded,
+# never a stop: nibbler normally keeps other services' cold pages in swap, so it sits near zero at rest.
+# Memory PSI is recorded only (a 64 GiB pinned-arena load alone drives it to 13-16 % for seconds).
+SWAP_RATE_STOP = 5e6        # bytes/s, in or out
+SWAP_RUN_STOP_S = 30.0
+
+
 def safety(sample):
+    """Point-in-time gate (before unload/restore): only the MemAvailable floor can be judged from one sample."""
     if sample["MemAvailable"] < 10 * GIB:
         raise Stop("MemAvailable < 10 GiB")
-    if sample["SwapFree"] < GIB:
-        raise Stop("SwapFree < 1 GiB")
+
+
+def vmstat_swap():
+    out = {}
+    for line in Path("/proc/vmstat").read_text().splitlines():
+        k, v = line.split()
+        if k in ("pswpin", "pswpout"):
+            out[k] = int(v)
+    return out
+
+
+def oom_lines():
+    try:
+        text = subprocess.run(["dmesg", "-T"], capture_output=True, text=True, timeout=20).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {line for line in text.splitlines() if "oom-kill:" in line or "Out of memory" in line}
+
+
+def oom_stops(new_lines):
+    """New kernel OOM lines that stop a window. A memcg-constrained kill in another cgroup (the twice-daily
+    ffprobe container kills) is recorded, not a stop; anything global, or hitting strata/python, is."""
+    stops = []
+    for line in sorted(new_lines):
+        m = re.search(r"constraint=([A-Z_]+).*?task=([^,]+)", line)
+        if m and m.group(1) == "CONSTRAINT_MEMCG" and not re.search(r"strata|python", m.group(2)):
+            continue
+        if "oom-kill:" in line:
+            stops.append(line[:300])
+    return stops
+
+
+class SwapRate:
+    """Sustained-swapping stop: swap-in or swap-out above SWAP_RATE_STOP for more than SWAP_RUN_STOP_S."""
+
+    def __init__(self, counters=None, now=None):
+        self.prev = counters if counters is not None else vmstat_swap()
+        self.prev_t = now if now is not None else time.monotonic()
+        self.run_s = 0.0
+
+    def update(self, counters=None, now=None):
+        counters = counters if counters is not None else vmstat_swap()
+        now = now if now is not None else time.monotonic()
+        dt = max(now - self.prev_t, 1e-6)
+        rin = (counters["pswpin"] - self.prev["pswpin"]) * 4096 / dt
+        rout = (counters["pswpout"] - self.prev["pswpout"]) * 4096 / dt
+        self.prev, self.prev_t = counters, now
+        self.run_s = self.run_s + dt if max(rin, rout) > SWAP_RATE_STOP else 0.0
+        if self.run_s > SWAP_RUN_STOP_S:
+            raise Stop(f"sustained swapping {self.run_s:.0f} s (in {rin / 1e6:.1f} / out {rout / 1e6:.1f} MB/s)")
+        return {"swapin_bps": round(rin), "swapout_bps": round(rout), "swap_run_s": round(self.run_s, 1)}
 
 
 def gpu():
@@ -299,6 +357,8 @@ class Monitor:
         self.process = None
         self.logs = []
         self.phase = "preflight"
+        self.swap = None
+        self.ooms = None
         self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def check(self):
@@ -317,15 +377,32 @@ class Monitor:
     def sample(self):
         s = {"time": time.time(), "phase": self.phase, **memory(), "gpu": gpu(),
              "load": list(os.getloadavg())}
+        if self.swap is None:
+            self.swap = SwapRate()
+        else:
+            s.update(self.swap.update())
         safety(s)
         return s
+
+    def check_ooms(self):
+        lines = oom_lines()
+        if self.ooms is None:
+            self.ooms = lines
+            return
+        new, self.ooms = lines - self.ooms, self.ooms | lines
+        stops = oom_stops(new)
+        if stops:
+            raise Stop("kernel oom-kill: " + stops[0])
 
     def _loop(self):
         try:
             with (self.out / "samples.jsonl").open("x") as f:
                 n = 0
+                self.check_ooms()
                 while not self.done.is_set():
                     s = self.sample()
+                    if n % 10 == 0:
+                        self.check_ooms()
                     f.write(json.dumps(s) + "\n"); f.flush()
                     if time.monotonic() > self.deadline:
                         raise Stop("window deadline reached")

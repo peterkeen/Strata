@@ -152,11 +152,14 @@ The runner's intended safeguards and records are:
   Wait for GPU memory used **< 2048 MiB** before any private load or unloaded-model
   restore; an already-ready original model needs only health verification.
 - Sample memory, swap, GPU use/free, active link state and load every second.
-  Stop on MemAvailable **< 10 GiB**, SwapFree **< 1 GiB**, errors, invalid output,
+  Stop on MemAvailable **< 10 GiB**, swap-in or swap-out **> 5 MB/s for > 30 s**, a
+  global (or strata/python) oom-kill, errors, invalid output,
   log/output bounds, private startup timeout, window deadline, or production
   Qwen unexpectedly reappearing. No parallel model loads or global cache/clock/
   BIOS/swap changes. One-second sampling cannot establish sub-second allocation
-  peaks.
+  peaks. (2026-10-14, str-inn.5 closed: the earlier SwapFree **< 1 GiB** floor is
+  retired. nibbler normally keeps other services' cold pages in swap, so SwapFree
+  sits near zero at rest; it and memory PSI are recorded, not stops.)
 - Capture per-arm binary/config/tokenizer/template and published model-manifest
   hashes. Manifest identity is **not a new full model payload verification**;
   rehashing the 63 GiB expert payload would itself perturb cache state.
