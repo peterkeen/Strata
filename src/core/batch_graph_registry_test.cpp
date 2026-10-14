@@ -1,61 +1,67 @@
 #include "strata/core/batch_graph_registry.hpp"
 
-#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
 #include <string_view>
 #include <vector>
 
 using strata::core::BatchGraphRegistry;
 
+// Not <cassert>: the default Release build defines NDEBUG and would compile every check away.
+static int checks = 0;
+#define CHECK(x) do { ++checks; if (!(x)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #x); std::exit(1); } } while (0)
+
 int main() {
     BatchGraphRegistry registry;
-    assert(!registry.attached());
-    assert(registry.attach());
-    assert(!registry.attach());
+    CHECK(!registry.attached());
+    CHECK(registry.attach());
+    CHECK(!registry.attach());
     const uint64_t first_generation = registry.generation();
-    assert(registry.attached());
+    CHECK(registry.attached());
 
     const auto first_key = registry.graph_key({0, 1, 3});
-    assert(first_key.size() == 7);
-    assert(first_key[0] == 0 && first_key[1] == 1 && first_key[2] == 3);
+    CHECK(first_key.size() == 7);
+    CHECK(first_key[0] == 0 && first_key[1] == 1 && first_key[2] == 3);
 
     int invalidations = 0;
     bool allocation_live = true;
     bool invalidation_succeeds = false;
     std::string_view error;
-    assert(!registry.detach([&](uint64_t generation) {
+    CHECK(!registry.detach([&](uint64_t generation) {
         ++invalidations;
-        assert(generation == first_generation);
+        CHECK(generation == first_generation);
         if (!invalidation_succeeds) return false;
         allocation_live = false;
         return true;
     }, error));
-    assert(invalidations == 1);
-    assert(!error.empty());
-    assert(registry.attached());
-    assert(registry.generation() == first_generation);
-    assert(registry.graph_key({0, 1, 3}) == first_key);
+    CHECK(invalidations == 1);
+    CHECK(!error.empty());
+    CHECK(registry.attached());
+    CHECK(registry.generation() == first_generation);
+    CHECK(registry.graph_key({0, 1, 3}) == first_key);
     // A failed invalidation keeps the attached allocations owned; free is not reached.
-    assert(allocation_live);
+    CHECK(allocation_live);
 
     invalidation_succeeds = true;
-    assert(registry.detach([&](uint64_t generation) {
+    CHECK(registry.detach([&](uint64_t generation) {
         ++invalidations;
-        assert(generation == first_generation);
+        CHECK(generation == first_generation);
         if (!invalidation_succeeds) return false;
         allocation_live = false;
         return true;
     }, error));
-    assert(error.empty());
-    assert(!allocation_live);
-    assert(!registry.attached());
-    assert(registry.generation() == first_generation + 1);
-    assert(!registry.detach({}, error));
+    CHECK(error.empty());
+    CHECK(!allocation_live);
+    CHECK(!registry.attached());
+    CHECK(registry.generation() == first_generation + 1);
+    CHECK(!registry.detach({}, error));
 
-    assert(registry.attach());
-    assert(registry.generation() == first_generation + 2);
+    CHECK(registry.attach());
+    CHECK(registry.generation() == first_generation + 2);
     const auto reattached_key = registry.graph_key({0, 1, 3});
-    assert(reattached_key != first_key);
-    assert(registry.detach({}, error));
+    CHECK(reattached_key != first_key);
+    CHECK(registry.detach({}, error));
+    std::printf("batch_graph_registry_test: %d checks passed\n", checks);
     return 0;
 }
