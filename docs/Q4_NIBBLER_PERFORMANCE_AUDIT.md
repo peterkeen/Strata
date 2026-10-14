@@ -184,9 +184,43 @@ copy each evicted blob into the complement. The log's cumulative exchange count
 reaches 738,157 in the inspected prefix, so even a small per-exchange cost repeats
 often; actual time saved still needs measurement.
 
-Begin with a pure CPU size-class ownership model using `exchange_storage.hpp` and
-its tests. Do not pad the entire 64-GiB complement to the largest expert. Engine
-integration is a later bounded task after ownership and memory proofs.
+A pure CPU size-class ownership model now exists in `exchange_storage.hpp`, with
+tests in `exchange_storage_test`. It does not change `expert_source.cpp` or the
+runtime `STRATA_EXCHANGE_ROTATE` eligibility gate yet. The existing uniform model
+is kept for equal-size slots; the new model describes the later mixed-size case:
+resident experts keep their compact offsets and each supported blob size gets its
+own spare queue. A commit between same-size experts swaps metadata only, recycles
+`in`'s old host/device alias as the same class's spare, and counts the avoided
+host-copy payload. Unsupported swaps (missing class, cross-size `in`/`out`, wrong
+staged pointer, exhausted class capacity, bad alignment/range) fail before
+changing residency, so engine integration can retain the current memcpy path for
+those cases.
+
+The real UD-Q4_K_XL routed-expert blob sizes are derived from the packer's rule in
+`tools/iq_pack.py`: `blob = gate_per_expert + up_per_expert + down_per_expert`.
+The format mix is documented in `docs/UNSLOTH_Q4.md`: gate/up are Q4_K except
+layer 2 Q5_K; down is Q5_1 except layers 2, 4, 30, 46 and 47 Q8_0. The expert
+shapes used by the prompt/expert code are gate/up as two 640 x 2560 projections
+and down as one 2560 x 640 projection; gguf block sizes are Q4_K 144 bytes per
+256 values, Q5_K 176 per 256, Q5_1 24 per 32 and Q8_0 34 per 32 (also asserted by
+`moe_fused_iq.cu`). Therefore:
+
+| Layer formats | Per-expert bytes |
+| --- | ---: |
+| Q4_K gate/up + Q5_1 down | `2 * 640 * 2560 / 256 * 144 + 2560 * 640 / 32 * 24 = 3,072,000` |
+| Q4_K gate/up + Q8_0 down | `2 * 640 * 2560 / 256 * 144 + 2560 * 640 / 32 * 34 = 3,584,000` |
+| Q5_K gate/up + Q8_0 down | `2 * 640 * 2560 / 256 * 176 + 2560 * 640 / 32 * 34 = 3,993,600` |
+
+Bounded memory proof: the model stores one atomic slot id per expert, one immutable
+host/device pair per resident or spare buffer, one byte count per expert only in
+the classed model, and one small record per class. Spare payload is the configured
+sum of per-class buffers, e.g. one spare for each UD-Q4_K_XL class is 10,649,600
+bytes rather than `3 * 3,993,600 = 11,980,800` bytes, and no rule pads the 64-GiB
+resident complement to the maximum blob. Wiring points for a later integration are
+limited to building a class table from `layer_blob_bytes_` in `reserve_exchanges`,
+allocating mapped exchange buffers per class, making `exchange_buffer(q)` and
+`stage_exchange` address a `(bytes, q)` class queue, and keeping the existing copy
+path whenever class setup or commit validation fails.
 
 ### Kernel experiments come after dispatch/memory opportunities
 
