@@ -1,0 +1,25 @@
+{
+  "model_name": "qwen3.8-flash-next-q4-k-xl",
+  "parallel": 2,
+  "cwd": "/tmp/strata-q4-fixture",
+  "exe": "tools/testdata/q4_perf/fake-strata",
+  "log": "/tmp/strata-q4-fixture/engine.log",
+  "tokenizer": "/models/qwen-tokenizer",
+  "env": {
+    "STRATA_DECODE_TIMING": "1",
+    "STRATA_SPLIT_TIMING": "1"
+  },
+  "args": [
+    "--pack", "/models/unsloth-UD-Q4_K_XL/pack",
+    "--native", "/models/unsloth-UD-Q4_K_XL/experts.gguf",
+    "--max-context", "262144",
+    "--kv", "int8",
+    "--kv-resident", "32768",
+    "--prefill", "auto:8192",
+    "--spec", "4",
+    "--spec-min-p", "0.5",
+    "--resident-budget-gib", "64",
+    "--expert-profile", "/models/unsloth-UD-Q4_K_XL/profile.json",
+    "--kv-unified"
+  ]
+}
