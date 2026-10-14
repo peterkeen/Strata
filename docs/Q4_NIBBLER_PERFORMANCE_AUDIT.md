@@ -296,6 +296,36 @@ Existing parallel MTP shares the main draft weights and owns only private slot
 state/buffers. The current Q4 config meets the basic gates; qualification remains
 `str-s1w.5`, independent of lazy resources. Neither feature was enabled live.
 
+## Live window and production change (2026-10-14)
+
+Matched private arms (same 8888253c binary and Q4 config, 3 repeats, greedy) and the
+Q4 batch-MTP gates ran on an isolated GPU, with only the Strata model unloaded.
+Per-task numbers are in the `str-s1w.2`-`.5` bead comments. Evidence:
+`/data/llm/Strata-tests/s1w-live-20261014T155045Z` (arms), `...163343Z-gates`,
+`...170331Z-pressure`.
+
+- `--short-read`: windows cost ~16 ms/token on this config; from ~40 tokens up the
+  batched read wins. `32` is best or tied at every residual length (45-64-token reads
+  100-260 ms faster than `64`; `128` adds 0.7-1.2 s above 64). No long-prefill change.
+- CPU prefill share (solo proxy; two-slot cannot use it yet): -16..-19 % on 256-512
+  token prompts. The two-slot engine reads short turns 250-350 ms slower than solo.
+- `pcie_frac` per request: > 0.55 is worse; 0.25-0.40 at most ~10 % better. No case for
+  an adaptive balancer yet.
+- `--batch-mtp`: all seven gates pass on Q4 (pressure through the correctness
+  artifact's hook-forced rejection: natural acceptance was 100 %). A stream in a batch
+  slot decodes 19.6 vs 15.0 tok/s (72 % of drafts accepted); solo and TTFT unchanged;
+  cost 40 expert slots (1750 vs 1790), ~22 MiB VRAM.
+- The native gate harnesses refused the engine's second startup INFO line
+  (adapt_fetch_*, since b5623dc9); fixed in e3a883ca and 722f2be4.
+- Limitation: in the two-stream fixture one stream ended early, so overlap figures
+  are mostly one stream in a batch slot, not sustained two-stream throughput.
+
+Applied to production at 17:15Z and 17:22Z, one flag per reload: `--short-read 32`,
+then `--batch-mtp`, each smoke-tested (two concurrent slots, two-turn reuse, thinking).
+Rollbacks: `/data/llm/Strata-backups/s1w-short-read-32-20261014T171515Z/rollback.sh`
+and `/data/llm/Strata-backups/s1w-batch-mtp-20261014T172242Z/rollback.sh` (the second
+restores the config with only `--short-read 32` applied).
+
 ## Ruled out as simple fixes
 
 - **Enable K-quant MMQ:** already enabled in deployed build cache.
