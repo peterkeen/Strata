@@ -578,6 +578,33 @@ class LifecycleTests(unittest.TestCase):
                 engine.close(False)
             self.assertIsNotNone(engine.p.poll())
 
+    def test_split_startup_info_lines_merge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.make_engine(tmp)
+            script = ('import time\n'
+                      f'print({"INFO " + " ".join(k + "=" + v for k, v in info().items())!r})\n'
+                      'print("INFO adapt_fetch_requested=0 adapt_fetch_effective=0 adapt_fetch_reason=off")\n'
+                      'print("READY 512 stop"); time.sleep(60)\n')
+            try:
+                self.start(engine, script)
+                self.assertEqual(engine.evidence['info']['adapt_fetch_reason'], 'off')
+                self.assertEqual(engine.evidence['info']['kv_unified'], '1')
+            finally:
+                engine.close(False)
+
+    def test_conflicting_startup_info_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = self.make_engine(tmp)
+            script = ('import time\n'
+                      f'print({"INFO " + " ".join(k + "=" + v for k, v in info().items())!r})\n'
+                      'print("INFO kv_unified=0")\n'
+                      'print("READY 512 stop"); time.sleep(60)\n')
+            try:
+                with self.assertRaisesRegex(AssertionError, 'conflicting startup INFO'):
+                    self.start(engine, script)
+            finally:
+                engine.close(False)
+
     def test_raw_reader_and_normal_quit(self):
         with tempfile.TemporaryDirectory() as tmp:
             engine = self.make_engine(tmp)

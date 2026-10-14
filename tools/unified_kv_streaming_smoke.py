@@ -225,8 +225,13 @@ class StreamingEngine(common.NativeEngine):
         while True:
             event = self.next_event(deadline)
             if event['kind'] == 'INFO':
-                require(info is None, 'duplicate startup INFO')
-                info = event['fields']
+                # The engine may print more than one INFO line (since b5623dc9 a separate
+                # adapt_fetch_* line); merge them, refusing only a field restated differently.
+                fields = event['fields']
+                if info is not None:
+                    clash = sorted(k for k in fields if k in info and info[k] != fields[k])
+                    require(not clash, f'conflicting startup INFO fields: {clash}')
+                info = {**(info or {}), **fields}
                 self.evidence['info'] = info
             elif event['kind'] == 'READY':
                 require(info is not None, 'READY without shared streaming INFO')
