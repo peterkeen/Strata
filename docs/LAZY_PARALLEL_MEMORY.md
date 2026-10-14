@@ -155,6 +155,97 @@ unmeasured and depends on alignment, profile, safety reserve and indexer changes
 First overlap pays allocation/initialization, cache eviction and graph warmup
 latency, so report that latency separately from steady parallel throughput.
 
+## CPU resource-policy model added by str-s1w.10
+
+`include/strata/core/parallel_resource_policy.hpp` is a GPU-free contract model,
+not runtime integration. It names the resource classes that a future lazy
+implementation must price and publish:
+
+| Class | Accounting rule |
+| --- | --- |
+| Shared main pools / weights | Baseline solo resources. The lazy lifecycle never frees or double-charges the main shared KV pools, RoPE, target weights, main draft weights or shared draft head storage. |
+| Private slot sessions | Per physical batch session private non-indexer bytes: GDN recurrent/conv state, per-session maps, workspaces, MoE/block buffers and PLE history. |
+| Brokered slot indexer | Per-slot private indexer bytes owned by `str-a2y`'s indexer/cache budget broker. The policy ledger reports these separately so indexer pooling/incremental savings and lazy-session savings are not added twice. |
+| Batch verifier and graphs | Batch-only verifier staging, tail snapshots, commit staging and graph-capture margin. Graphs are tied to an allocation generation. |
+| Slot draft rings/buffers | Optional batch-MTP private mutable draft state only. Shared draft weights are baseline, not duplicated per slot. |
+| Transition temporaries | Handoff images, exact-prefix/draft-transfer scratch and activation-only graph/copy margin. |
+| Safety reserve | Driver floor that remains unavailable to both expert-cache and session growth. A hidden permanent reserve is not counted as recovered solo cache capacity. |
+| Expert-cache capacity | The elastic source/sink for physical bytes. Giving capacity back must create coherent cache misses or valid refill targets, never stale residency. |
+
+The model keeps `parallel=2` as a **logical** advertised capacity while physical
+batch sessions can be absent in solo mode. Under the current main-admission
+architecture activation still requires two physical batch sessions for two
+clients, because the main session remains the prompt-admission owner. The pure
+state machine is:
+
+1. **solo**: main stream is valid; no private slot sessions, batch verifier,
+   batch graphs or slot-draft buffers are published.
+2. **activating**: a second stream is queued. At a safe boundary with commits,
+   DMA and adaptive transfers drained and no prefill loan outstanding, the
+   runtime asks the cache/indexer broker for the full activation budget. Only
+   after sufficient expert-cache capacity is coherently evicted or reclaimed may
+   it allocate slot sessions, bind logical slots, initialize the batch verifier,
+   capture generation-tagged graphs and optionally allocate slot drafters.
+3. **parallel**: publication happens only after every required allocation,
+   binding and graph generation is valid. Optional draft allocation failure may
+   fall back to target-only batch mode if partial draft state is released and
+   draft provenance stays explicit.
+4. **draining**: after one stream remains and the idle-grace hook allows
+   reclamation, the runtime first preserves the finished slot's warm
+   conversation or evicts it under an explicit replay policy, invalidates graphs,
+   detaches bindings, then frees private resources. Only after private pointers
+   are unreachable may capacity return to the expert cache.
+5. **solo**: main stream continues. If expert-cache grow/refill fails after
+   private resources are released, the engine is still in a coherent solo state
+   with fewer/hotter-missing cache entries; it must report that separately from
+   a clean refill.
+
+The CPU test `src/core/parallel_resource_policy_test.cpp` injects failures at
+cache shrink, partial slot mapping, binding/publication, graph invalidation,
+draft allocation and cache grow. The checked behavior is that the first stream
+remains intact, the second stream remains queued unless explicitly cancelled,
+logical advertised capacity stays consistent, and rollback releases only owned
+private slot/draft/verifier resources. The model deliberately has no callback
+that can free the shared main KV pools.
+
+The graph contract is generation-based: every successful activation captures
+batch graphs against one allocation generation; reclamation must invalidate those
+graphs before detach/free. A failed invalidation blocks detach so stale graph
+pointers cannot reference freed sessions. Runtime integration can satisfy this
+with graph destruction, stable virtual addresses, or another reviewed mechanism,
+but it must expose the same generation/fence semantics.
+
+The cache/indexer broker contract is intentionally aligned with
+[INDEXER_MEMORY_PLAN.md](INDEXER_MEMORY_PLAN.md): str-s1w.10 does not implement
+private-indexer VMM, pooled keys or a competing budget broker. A future runtime
+must submit the brokered indexer portion of the activation budget to that broker,
+respect its victim exclusions (in-flight copies, prefill loans, adaptive
+publication, retained pointers and unsupported multi-GPU cases), and treat
+partial publication failures as coherent cache misses rather than re-advertising
+stale experts. Because the live resident-complement configuration makes
+`vram_command` refuse resize when `src.complement_ready()`, the future feature
+needs a new safe handoff boundary and resident-complement-aware broker path; it
+cannot reuse the command by deleting that guard.
+
+This model proves the lifecycle shape and failure semantics only. It does **not**
+allocate runtime sessions, change serving behavior, recover VRAM, enable batch
+MTP, resize the expert cache, or benchmark first-overlap latency.
+
+## Follow-up implementation tasks proposed by str-s1w.10
+
+These are proposed Beads, not implemented work:
+
+| Proposed task | File scope | Acceptance | Verification |
+| --- | --- | --- | --- |
+| L1: deferred logical-slot registry | `include/strata/core/shared_kv_runtime.hpp`, `src/core/shared_kv_runtime.cpp` if split exists, focused tests under `src/core/` | Stable logical slot IDs can exist before physical sessions; attach publishes only fully initialized sessions; detach removes bindings without touching shared main KV. | CPU attach/detach/failure tests; CUDA/HIP/SYCL default builds still compile; isolated GPU gate exercises attach, detach and reattach with canary sequence IDs. |
+| L2: verifier slot attach/detach and graph generations | `include/strata/core/verify.hpp`, `src/core/verify.cpp`, batch graph tests | Replace one-shot `init_slots` assumptions with explicit slot attach/detach cleanup; graph keys include allocation generation or use stable addresses; failed graph invalidation blocks free. | CPU graph-registry/failure model; CUDA build and graph replay/destroy canary; HIP/SYCL build disclosure for touched declarations. |
+| L3: activation budget bridge to str-a2y broker | `include/strata/core/indexer_budget_broker.hpp`, `include/strata/core/parallel_resource_policy.hpp`, runtime planning seam only | One activation plan prices private non-indexer bytes, brokered indexer bytes, verifier/graph/draft bytes, temporaries and reserve; no hidden empty reserve; rejected/partial broker plans keep first stream and queued waiter safe. | CPU broker-policy integration matrix; backend builds for changed headers; isolated GPU low-memory negative with no stale expert residency. |
+| L4: expert-cache shrink/grow at serving handoff boundary | `src/program/generate.cpp` admission/handoff boundaries plus `include/strata/core/expert_cache.hpp` use sites only | Shrink happens only after commits, DMA/adaptive drain and no prefill loan; resident-complement mode uses a new coherent path rather than the refused `vram_command`; grow/refill after reclaim reports degraded-cache failures. | CPU scheduler-state test for safe-point gates; CUDA single-GPU shrink/grow/refill canary with resident complement; HIP/SYCL builds or explicit unsupported diagnostics. |
+| L5: private slot-session lazy allocation | `src/program/generate.cpp`, `src/core/session.cpp`, `include/strata/core/session.hpp` | Startup with configured parallel=2 does not allocate private slot sessions; cold first overlap allocates both current batch sessions; allocation/map/bind failure queues second request and preserves first request tokens/state/cancellation. | CPU fake-allocation lifecycle test based on this model; CUDA actual session allocation/free canary; model-serving smoke on isolated GPU for cold first overlap, cancellation and reactivation. |
+| L6: warm-conversation preservation or replay eviction | `src/program/generate.cpp`, conversation cache/session-save helpers (`include/strata/core/conversation_cache.hpp`, `src/core/conversation_*`) | Finished slots are either preserved for exact reuse or intentionally evicted with a replay record; `active=false` alone never discards a warm conversation. | CPU conversation policy tests; backend builds for touched helpers; isolated GPU handoff/restore test with exact-prefix and target-only restore cases. |
+| L7: optional lazy batch-MTP private state | `src/core/mtp.cpp`, MTP headers, `src/program/generate.cpp`, `include/strata/core/batch_mtp_policy.hpp` | Batch MTP remains optional; slot drafters share main weights, transfer only exact coherent prefix state, release partial draft allocations on failure and fall back to target-only when configured optional. | Existing and new CPU batch-MTP policy/draft-coherence tests; CUDA two-stream accept/reject/cancel gate; Q4 performance qualification remains str-s1w.5. |
+| L8: lifecycle telemetry and first-overlap report | CLI/reporting in `src/program/generate.cpp`, docs | Report logical capacity, physical allocated slots, expert-cache bytes/slots recovered, brokered indexer bytes, first-overlap activation latency, refill latency and degraded-cache state separately. | CPU formatting tests or log parser fixtures; CUDA isolated measurement harness from str-s1w.1; no production rollout without fresh safety approval. |
+
 ## Parallel MTP: what exists and what must be qualified
 
 `generate.cpp`'s `batch_mtp` gate (~4729) requires `--serve`, at least two slots,
