@@ -323,6 +323,13 @@ if(STRATA_BUILD_TESTS)
   target_include_directories(share_rules_test PRIVATE include)
   add_test(NAME share_rules_test COMMAND share_rules_test)
 
+  # str-s1w.3: the CPU pool lease between prompt chunks and batch decode windows: header-only, threads, no GPU
+  add_executable(prefill_pool_lease_test tests/prefill/prefill_pool_lease_test.cpp)
+  target_include_directories(prefill_pool_lease_test PRIVATE include)
+  target_link_libraries(prefill_pool_lease_test PRIVATE Threads::Threads)
+  add_test(NAME prefill_pool_lease_test COMMAND prefill_pool_lease_test)
+  set_tests_properties(prefill_pool_lease_test PROPERTIES TIMEOUT 60)
+
   # the Windows HIP auto prefill chunk cap (#1630) and the commit-limit verdict (#1607): header-only, no GPU
   add_executable(host_limits_test tests/platform/host_limits_test.cpp)
   target_include_directories(host_limits_test PRIVATE include)

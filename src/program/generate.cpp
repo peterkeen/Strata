@@ -72,6 +72,7 @@
 #include "strata/program/conv_cache.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/prefill/share_rules.hpp"
+#include "strata/prefill/pool_lease.hpp"
 #include "strata/platform/host_limits.hpp"
 #include "strata/program/split_ring.hpp"
 #include "strata/program/draft_kv_plan.hpp"
@@ -1066,6 +1067,23 @@ void drive_pool_multi(void* user, const float* x_f, const int32_t* ids, int64_t 
             std::fwrite(one, sizeof(float), (size_t) k, t->routing);
         }
     }
+}
+
+/// str-s1w.3: a verify window's pool call under the CPU pool lease (STRATA_PREFILL_SLOT_SHARE=1 with batch slots).
+/// On the serve loop a window never runs beside a prompt chunk (windows run between chunks on the same thread), so the
+/// acquire never waits; a holder that is still there after the bound is a broken invariant: the window fails loudly
+/// (drive.d.failed) instead of running two owners' jobs on one pool or deadlocking.
+void drive_pool_multi_leased(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
+                             int64_t layer) {
+    Drive* t = (Drive*) user;
+    strata::prefill::PoolLease::Hold h(strata::prefill::Prefill::cpu_pool_lease(), strata::prefill::PoolOwner::decode,
+                                       std::chrono::microseconds(2000000));
+    if (!h.held()) {
+        t->d.failed = true;
+        t->d.fail = "the CPU pool is held by a prompt chunk during a batch window (pool lease)";
+        return;
+    }
+    drive_pool_multi(user, x_f, ids, n_tok, k, out, layer);
 }
 
 /// Layer split: every verify stage shares one Drive (its counters, usage and failure flags); the GPU plan, the expert
@@ -7320,7 +7338,26 @@ int main(int argc, char** argv) {
             }
         }
 #endif
-        const bool share_pool = o.batch <= 0 && !o.no_pool;
+        // str-s1w.3: with batch slots the prompt path gets the pool only on the opt-in, and only where the pool is
+        // quiescent between chunks (one batch group, one GPU); both owners then go through the one lease.
+        strata::prefill::SlotShareInputs ssi;
+        {
+            const char* e = std::getenv("STRATA_PREFILL_SLOT_SHARE");
+            ssi.opt_in = e != nullptr && e[0] != '\0' && e[0] != '0';
+        }
+        ssi.batch = o.batch;
+        ssi.batch_groups = o.batch_groups;
+        ssi.batch_groups_auto = o.batch_groups_auto;
+        ssi.layer_split = !stages.empty();
+        ssi.multi_gpu = multi_gpu;
+        ssi.no_pool = o.no_pool;
+#if defined(STRATA_USE_HIP) || defined(STRATA_HIP_GFX906)
+        ssi.hip = true;
+#endif
+        const strata::prefill::SlotShareVerdict slot_share = strata::prefill::slot_share_verdict(ssi);
+        if (o.batch > 0)
+            std::fprintf(stderr, "strata serve: CPU prefill share beside batch slots: %s\n", slot_share.why);
+        const bool share_pool = (o.batch <= 0 || slot_share.pool_to_prompt) && !o.no_pool;
         bool share_has_work = strata::prefill::share_rules::default_share_has_work(
             (int64_t) xcache.slots(), (int64_t) (g.n_layers * g.n_expert));   // #1595
         if (!share_has_work)
@@ -8012,7 +8049,10 @@ int main(int argc, char** argv) {
             }
         }
         // the pool the verify windows call: with a layer split, the wrapper that routes each layer to its stage
-        const strata::core::PoolMultiFn win_pool_fn = n_stages > 1 ? &drive_pool_split : &drive_pool_multi;
+        // str-s1w.3: beside the prompt path's CPU share (slot_share), every window pool call goes through the lease
+        const strata::core::PoolMultiFn win_pool_fn = n_stages > 1 ? &drive_pool_split
+                                                      : slot_share.pool_to_prompt ? &drive_pool_multi_leased
+                                                                                  : &drive_pool_multi;
         void* const win_pool_user = n_stages > 1 ? (void*) &split_drive : (void*) &drive;
         mem_mark("the verifier and the drafter's binding");
         ver.set_split(o.spec_split);
