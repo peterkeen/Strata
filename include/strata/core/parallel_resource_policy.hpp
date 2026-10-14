@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "strata/core/indexer_budget_broker.hpp"
+
 namespace strata::core {
 
 // CPU-only resource ledger and lifecycle model for demand-allocated parallel
@@ -208,6 +210,33 @@ struct ParallelResourceLedger {
         return true;
     }
 };
+
+// Combined planning result passed to the safe-point runtime seam. The broker
+// prices private indexer growth and the remaining runtime bytes as a live
+// external activation reservation. Its reserve/transient floors remain broker
+// policy and are not added again to required_total_bytes.
+struct ParallelBrokerActivationPlan {
+    ParallelActivationBudget budget;
+    IndexerBudgetBroker::GrowthPlan broker_plan;
+};
+
+inline bool build_parallel_broker_activation_plan(
+    const ParallelResourceLedger& ledger,
+    const IndexerBudgetBroker& broker,
+    const std::vector<IndexerBudgetBroker::ExpertVictimCandidate>& candidates,
+    ParallelBrokerActivationPlan& out,
+    std::string& error) {
+    out = {};
+    if (!ledger.build_activation_budget(out.budget, error)) return false;
+    out.broker_plan = broker.plan_growth(
+        {out.budget.required_brokered_indexer_bytes, 0, 0, out.budget.required_runtime_bytes}, candidates);
+    if (out.broker_plan.outcome != IndexerBudgetBroker::Outcome::ready) {
+        error = "parallel activation: indexer broker rejected combined activation budget";
+        return false;
+    }
+    error.clear();
+    return true;
+}
 
 struct ParallelSafePoint {
     bool commits_drained = false;

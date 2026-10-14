@@ -64,6 +64,7 @@ public:
         uint64_t expert_mapped_bytes = 0;
         uint64_t evicted_recoverable_bytes = 0;
         uint64_t unused_bytes = 0;       // Headroom above reserve/transient floors.
+        uint64_t external_activation_bytes = 0;
         bool poisoned = false;
     };
 
@@ -73,6 +74,8 @@ public:
         // Optional/best-effort growth is deliberately not part of feasibility.
         // The broker evicts only for the minimum required request.
         uint64_t optional_growth_bytes = 0;
+        // Non-indexer activation memory that must coexist with this growth.
+        uint64_t external_activation_bytes = 0;
     };
 
     struct ExpertVictimCandidate {
@@ -97,6 +100,7 @@ public:
         uint64_t free_headroom_bytes = 0;
         uint64_t recovered_bytes = 0;
         uint64_t shortfall_bytes = 0;
+        uint64_t external_activation_bytes = 0;
         std::vector<PlannedVictim> victims;
         std::string_view reason = "uninitialized";
         uint64_t generation = 0;
@@ -146,6 +150,7 @@ public:
         t.actual_indexer_commitment_bytes = private_indexer_committed_bytes_ + pooled_slab_committed_bytes_;
         t.expert_mapped_bytes = expert_mapped_bytes_;
         t.evicted_recoverable_bytes = evicted_recoverable_bytes_;
+        t.external_activation_bytes = external_activation_bytes_;
         t.unused_bytes = free_headroom();
         t.poisoned = poisoned_;
         return t;
@@ -154,6 +159,7 @@ public:
     GrowthPlan plan_growth(const GrowthRequest& request, const std::vector<ExpertVictimCandidate>& candidates) const {
         GrowthPlan plan;
         plan.optional_ignored_bytes = request.optional_growth_bytes;
+        plan.external_activation_bytes = request.external_activation_bytes;
         plan.generation = generation_;
         if (poisoned_) return fatal_plan(plan, "poisoned");
         uint64_t required = 0;
@@ -161,13 +167,16 @@ public:
             return fatal_plan(plan, "growth overflow");
         plan.required_growth_bytes = required;
         plan.free_headroom_bytes = free_headroom();
-        if (required <= plan.free_headroom_bytes) {
+        uint64_t total_required = 0;
+        if (!checked_add(required, request.external_activation_bytes, total_required))
+            return fatal_plan(plan, "activation growth overflow");
+        if (total_required <= plan.free_headroom_bytes) {
             plan.outcome = Outcome::ready;
             plan.reason = "headroom";
             return plan;
         }
 
-        const uint64_t need = required - plan.free_headroom_bytes;
+        const uint64_t need = total_required - plan.free_headroom_bytes;
         bool unsupported_candidate_needed = false;
         for (const ExpertVictimCandidate& c : candidates) {
             if (c.bytes == 0) continue;
@@ -203,11 +212,12 @@ public:
                 return poison_and_fail();
             if (committed != plan.required_growth_bytes) return poison_and_fail();
             if (!can_apply_delta(report_evicted, report.private_indexer_committed_bytes,
-                                 report.pooled_slab_committed_bytes))
+                                 report.pooled_slab_committed_bytes, plan.external_activation_bytes))
                 return poison_and_fail();
             apply_evictions(report_evicted);
             private_indexer_committed_bytes_ += report.private_indexer_committed_bytes;
             pooled_slab_committed_bytes_ += report.pooled_slab_committed_bytes;
+            external_activation_bytes_ += plan.external_activation_bytes;
             ++generation_;
             return state_fits_budget();
         }
@@ -215,6 +225,14 @@ public:
         if (report_evicted > expert_mapped_bytes_) return poison_and_fail();
         apply_evictions(report_evicted);
         if (report.result == CommitResult::restore_failed || report.result == CommitResult::uncertain) poisoned_ = true;
+        ++generation_;
+        return state_fits_budget();
+    }
+
+    // Release only after private activation resources are detached and freed.
+    bool release_external_activation(uint64_t bytes) {
+        if (poisoned_ || bytes == 0 || bytes > external_activation_bytes_) return false;
+        external_activation_bytes_ -= bytes;
         ++generation_;
         return state_fits_budget();
     }
@@ -300,7 +318,8 @@ private:
         if (!checked_add(total, config_.transient_allowance_bytes, total) ||
             !checked_add(total, private_indexer_committed_bytes_, total) ||
             !checked_add(total, pooled_slab_committed_bytes_, total) ||
-            !checked_add(total, expert_mapped_bytes_, total))
+            !checked_add(total, expert_mapped_bytes_, total) ||
+            !checked_add(total, external_activation_bytes_, total))
             return std::numeric_limits<uint64_t>::max();
         return total;
     }
@@ -317,7 +336,8 @@ private:
         evicted_recoverable_bytes_ += evicted_bytes;
     }
 
-    bool can_apply_delta(uint64_t evicted_bytes, uint64_t private_growth, uint64_t pooled_growth) const {
+    bool can_apply_delta(uint64_t evicted_bytes, uint64_t private_growth, uint64_t pooled_growth,
+                         uint64_t external_growth) const {
         if (evicted_bytes > expert_mapped_bytes_) return false;
         uint64_t expert_after = expert_mapped_bytes_ - evicted_bytes;
         uint64_t private_after = 0, pooled_after = 0;
@@ -327,7 +347,9 @@ private:
         uint64_t used = config_.reserve_floor_bytes;
         return checked_add(used, config_.transient_allowance_bytes, used) &&
                checked_add(used, private_after, used) && checked_add(used, pooled_after, used) &&
-               checked_add(used, expert_after, used) && used <= config_.device_budget_bytes;
+               checked_add(used, expert_after, used) &&
+               checked_add(used, external_activation_bytes_, used) &&
+               checked_add(used, external_growth, used) && used <= config_.device_budget_bytes;
     }
 
     bool validate_report_against_plan(const GrowthPlan& plan, const ApplyReport& report,
@@ -363,6 +385,7 @@ private:
     uint64_t pooled_slab_committed_bytes_ = 0;
     uint64_t expert_mapped_bytes_ = 0;
     uint64_t evicted_recoverable_bytes_ = 0;
+    uint64_t external_activation_bytes_ = 0;
     bool poisoned_ = false;
     uint64_t generation_ = 1;
 };
