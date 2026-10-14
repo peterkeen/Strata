@@ -1,6 +1,14 @@
 // Host-owned logical mappings for one full-resident or host-backed shared KV pool.
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+#ifndef STRATA_SHARED_KV_REGISTRY_ONLY
 #include "strata/core/session.hpp"
 #include "strata/core/shared_kv_pages.hpp"
 #include "strata/core/shared_kv_reservation.hpp"
@@ -10,9 +18,60 @@
 
 #include <array>
 #include <memory>
-#include <stdexcept>
+#endif
 
 namespace strata::core {
+
+// Stable logical IDs are reserved independently of physical session lifetime.
+// A binding becomes visible only after its initializer succeeds. Mutations are
+// serialized by the serving thread; generation changes invalidate dependent
+// graph/binding state whenever an attach or detach completes.
+template <typename Session>
+class SharedKvLogicalSlots {
+public:
+    explicit SharedKvLogicalSlots(size_t count) : sessions_(count, nullptr), generations_(count, 0) {
+        if (count == 0) throw std::invalid_argument("unified KV: no logical slots");
+    }
+
+    size_t size() const { return sessions_.size(); }
+    Session* get(size_t id) const { return id < sessions_.size() ? sessions_[id] : nullptr; }
+    uint64_t generation(size_t id) const {
+        if (id >= generations_.size()) throw std::out_of_range("unified KV: logical slot out of range");
+        return generations_[id];
+    }
+
+    template <typename Initialize>
+    bool attach(size_t id, Session* session, Initialize&& initialize, std::string& error) {
+        if (id >= sessions_.size() || !session || sessions_[id]) {
+            error = "unified KV: invalid or occupied logical slot";
+            return false;
+        }
+        if (!std::forward<Initialize>(initialize)(*session, error)) return false;
+        sessions_[id] = session;
+        ++generations_[id];
+        error.clear();
+        return true;
+    }
+
+    template <typename Detach>
+    bool detach(size_t id, Detach&& detach_binding, std::string& error) {
+        if (id >= sessions_.size() || !sessions_[id]) {
+            error = "unified KV: logical slot is not attached";
+            return false;
+        }
+        if (!std::forward<Detach>(detach_binding)(*sessions_[id], error)) return false;
+        sessions_[id] = nullptr;
+        ++generations_[id];
+        error.clear();
+        return true;
+    }
+
+private:
+    std::vector<Session*> sessions_;
+    std::vector<uint64_t> generations_;
+};
+
+#ifndef STRATA_SHARED_KV_REGISTRY_ONLY
 
 // Mutations run on the serving thread, outside graphs, with an explicit device
 // fence before touching authoritative bytes or residency. Session zero never
@@ -241,5 +300,7 @@ private:
         return true;
     }
 };
+
+#endif // STRATA_SHARED_KV_REGISTRY_ONLY
 
 } // namespace strata::core

@@ -231,6 +231,25 @@ This model proves the lifecycle shape and failure semantics only. It does **not*
 allocate runtime sessions, change serving behavior, recover VRAM, enable batch
 MTP, resize the expert cache, or benchmark first-overlap latency.
 
+## L1 implementation note: stable logical slot registry
+
+`SharedKvLogicalSlots` in `include/strata/core/shared_kv_runtime.hpp` is a
+small serving-thread registry primitive. Its logical IDs are created at
+construction and are independent of whether a physical session pointer is
+present. Attach runs an initialization callback before publishing the pointer;
+a failed callback leaves the slot empty and does not advance its generation.
+Detach runs its binding-removal callback before clearing the pointer; failure
+leaves the existing binding intact. Successful attach, detach and reattach each
+advance that slot's generation, which is the key consumers use to invalidate
+allocation-dependent state.
+
+`src/core/shared_kv_runtime_lazy_test.cpp` exercises this CPU-only registry
+contract, including initialization failure, detach failure, and stable-ID
+reattach. The existing CUDA `SharedKvRuntime` session/page-pool implementation
+remains on its eager constructor path; this registry primitive does not itself
+add runtime CUDA attach/detach calls or prove GPU pool safety. Therefore actual
+runtime attach/detach integration and the canary GPU gate remain outstanding.
+
 ## Follow-up implementation tasks proposed by str-s1w.10
 
 These are proposed Beads, not implemented work:
