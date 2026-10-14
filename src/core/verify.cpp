@@ -475,12 +475,17 @@ void Verifier::diag(std::FILE* f) const {
 }
 
 Verifier::~Verifier() {
+    std::string batch_detach_error;
+    const bool batch_detached = !batch_graph_registry_.attached() || detach_slots(batch_detach_error);
     const Verifier* self = this;
     g_diag_verifier.compare_exchange_strong(self, nullptr);
     for (auto& slot : g_live) {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
     }
+    // If graph destruction failed, intentionally leak this verifier's resources rather than free memory
+    // that a surviving graph may still reference.
+    if (!batch_detached) return;
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
     for (auto& e : exec_)
@@ -488,12 +493,14 @@ Verifier::~Verifier() {
     for (auto& e : exec_nr_)
         if (e) cudaGraphExecDestroy(e);
     if (commit_exec_) cudaGraphExecDestroy(commit_exec_);
-    for (auto& kv : exec_bm_)
-        if (kv.second) cudaGraphExecDestroy(kv.second);
-    for (auto& kv : commit_bm_)
-        if (kv.second) cudaGraphExecDestroy(kv.second);
-    if (arena_b_) cudaFree(arena_b_);
-    if (h_commitb_) cudaFreeHost(h_commitb_);
+    if (batch_detached) {
+        for (auto& kv : exec_bm_)
+            if (kv.second) cudaGraphExecDestroy(kv.second);
+        for (auto& kv : commit_bm_)
+            if (kv.second) cudaGraphExecDestroy(kv.second);
+        if (arena_b_) cudaFree(arena_b_);
+        if (h_commitb_) cudaFreeHost(h_commitb_);
+    }
     if (qcnt_) cudaFree(qcnt_);
     if (d_spec_) cudaFree(d_spec_);
     if (logit_bias_device_) cudaFree(logit_bias_device_);
@@ -2608,8 +2615,16 @@ bool Verifier::wait_commit(std::string& err) {
 // ================================ BATCH WINDOWS (see init_slots) ================================
 
 bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& err) {
+    return attach_slots(slots, err);
+}
+
+bool Verifier::attach_slots(const std::vector<SessionState*>& slots, std::string& err) {
     const OnDevice on_device(device_);
-    if (g_ == nullptr || ss_ == nullptr) { err = "verify: init_slots before init"; return false; }
+    if (g_ == nullptr || ss_ == nullptr) { err = "verify: attach_slots before init"; return false; }
+    if (batch_graph_registry_.attached() || arena_b_ != nullptr || h_commitb_ != nullptr) {
+        err = "verify: detach existing slots before attaching a new allocation";
+        return false;
+    }
     if (slots.empty()) {
         err = "verify: init_slots needs at least one session";
         return false;
@@ -2639,8 +2654,79 @@ bool Verifier::init_slots(const std::vector<SessionState*>& slots, std::string& 
     tail_snap_b_ = (float*) ((uint8_t*) d + a);
     slots_ = slots;
     slot_sp_.assign(slots.size(), sampling_);   // greedy until set_slot_sampling
+    if (!batch_graph_registry_.attach()) {
+        err = "verify: batch graph allocation generation could not be advanced";
+        slots_.clear();
+        slot_sp_.clear();
+        cudaFree(arena_b_);
+        arena_b_ = nullptr;
+        commitb_ = nullptr;
+        tail_snap_b_ = nullptr;
+        cudaFreeHost(h_commitb_);
+        h_commitb_ = m_commitb_ = nullptr;
+        return false;
+    }
     std::fprintf(stderr, "strata verify: batch windows of up to %lld sequences (layers [%lld, %lld))\n", (long long) S,
                  (long long) lb_, (long long) le_);
+    return true;
+}
+
+bool Verifier::detach_slots(std::string& err) {
+    if (!batch_graph_registry_.attached()) {
+        err = "verify: no attached batch slots to detach";
+        return false;
+    }
+    const OnDevice on_device(device_);
+    if (b_running_ || commit_pending_ || !wait_commit(err)) {
+        if (err.empty()) err = "verify: batch work is still in flight";
+        return false;
+    }
+    std::string_view registry_error;
+    const bool detached = batch_graph_registry_.detach([&](uint64_t) {
+        if (cs_ != nullptr && cudaStreamSynchronize(cs_) != cudaSuccess) {
+            err = "verify: synchronizing before batch graph invalidation failed";
+            return false;
+        }
+        for (auto& entry : exec_bm_) {
+            if (entry.second == nullptr) continue;
+            if (cudaGraphExecDestroy(entry.second) != cudaSuccess) {
+                err = "verify: destroying a batch graph failed; slot allocations remain attached";
+                return false;
+            }
+            entry.second = nullptr;
+        }
+        for (auto& entry : commit_bm_) {
+            if (entry.second == nullptr) continue;
+            if (cudaGraphExecDestroy(entry.second) != cudaSuccess) {
+                err = "verify: destroying a batch commit graph failed; slot allocations remain attached";
+                return false;
+            }
+            entry.second = nullptr;
+        }
+        exec_bm_.clear();
+        commit_bm_.clear();
+        bm_used_.clear();
+        if (arena_b_ != nullptr && cudaFree(arena_b_) != cudaSuccess) {
+            err = "verify: freeing batch buffers failed after graph invalidation";
+            return false;
+        }
+        arena_b_ = nullptr;
+        commitb_ = nullptr;
+        tail_snap_b_ = nullptr;
+        if (h_commitb_ != nullptr && cudaFreeHost(h_commitb_) != cudaSuccess) {
+            err = "verify: freeing batch commit staging failed after graph invalidation";
+            return false;
+        }
+        h_commitb_ = m_commitb_ = nullptr;
+        return true;
+    }, registry_error);
+    if (!detached) {
+        if (err.empty()) err = "verify: batch graph invalidation failed; slot allocations remain attached";
+        return false;
+    }
+    slots_.clear();
+    slot_sp_.clear();
+    err.clear();
     return true;
 }
 

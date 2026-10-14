@@ -23,6 +23,7 @@
 
 #include <cstdio>
 
+#include "strata/core/batch_graph_registry.hpp"
 #include "strata/core/expert_source.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
@@ -36,6 +37,7 @@
 #include <map>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace strata::core {
@@ -190,9 +192,14 @@ public:
     // per window for all the sequences.  Row s's arithmetic is the single-token window's, so a slot's greedy
     // tokens are its solo greedy tokens (modulo the multi-token CPU kernel choice: STRATA_IQ_MT_MIN=1).
     //
-    // Greedy only, no drafts (MTP) in a batch window.  `init_slots` once after `init` (S <= max_t); a layer
-    // split's stages each get their own sessions, and run_slots/commit_slots continue into the next stage.
+    // Greedy only, no drafts (MTP) in a batch window. Attach slots after `init` (S <= max_t); detach them
+    // before freeing/replacing their sessions. A layer split's stages each get their own sessions, and
+    // run_slots/commit_slots continue into the next stage.
     bool init_slots(const std::vector<SessionState*>& slots, std::string& err);
+    /// Attach a fresh set of slot sessions. The allocation generation is part of every captured graph key.
+    bool attach_slots(const std::vector<SessionState*>& slots, std::string& err);
+    /// Invalidate every batch graph before dropping slot addresses or freeing batch staging. Failure keeps slots attached.
+    bool detach_slots(std::string& err);
     int n_slots() const { return (int) slots_.size(); }
     /// One batch window over slots [0, S): tokens[s] at positions pos[s]; out[s] = the greedy pick after it.
     bool run_slots(int S, const int32_t* tokens, const int64_t* pos, PoolMultiFn pool, void* user, int32_t* out,
@@ -345,15 +352,16 @@ private:
     int row_base_ = 0;                     ///< ... its hand-off rows start here (a pipeline group's own rows)
     int brow_[8] = {};                     ///< ... and row t is slot brow_[t]
     bool last_batch_ = false;              ///< the last run was a batch window (set_plan_slot: one group)
-    std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< full row layout avoids slot-ID collisions
+    std::map<std::vector<int>, cudaGraphExec_t> exec_bm_, commit_bm_;   ///< generation-tagged row layouts
     std::map<std::vector<int>, uint64_t> bm_used_;   ///< last use of each captured layout (LRU)
+    BatchGraphRegistry batch_graph_registry_;
     uint64_t bm_tick_ = 0;
     size_t batch_graph_limit_ = 0;         ///< 0: keep every captured batch graph (0.1.39); N: LRU-evict beyond N layouts
     int last_rows_[8] = {};                ///< the slots of the last batch window's rows
     std::vector<int> bkey(const int* rows, int S, int hbase) const {   // #871: the doorbell variant has its own graphs
         std::vector<int> k = batch_key(rows, S, hbase);
         k.push_back(ar_off_ ? 1 : 0);
-        return k;
+        return batch_graph_registry_.graph_key(std::move(k));
     }
     static std::vector<int> batch_key(const int* rows, int S, int hbase) {
         std::vector<int> k;
