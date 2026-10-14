@@ -804,6 +804,8 @@ const uint8_t* FileExpertSource::io_blob(int64_t layer, int64_t expert) {
 
 bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     close();
+    const char* reusable_workers = std::getenv("STRATA_FETCH_WORKERS");
+    fetch_workers_enabled_ = reusable_workers != nullptr && std::strcmp(reusable_workers, "1") == 0;
     if (n_layers <= 0 || n_expert <= 0) { err = "FileExpertSource: the geometry is empty"; return false; }
     const auto& layout = strata::kernels::cpu::expert_layout();
     if (layout.n_layers != n_layers || layout.n_expert != n_expert) {
@@ -975,6 +977,8 @@ bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64
 }
 
 void FileExpertSource::close() {
+    fetch_workers_.shutdown();
+    fetch_workers_enabled_ = false;
     io_stop();
     inputs_.clear();
     if (complement_arena_ != nullptr) {
@@ -1567,6 +1571,15 @@ void FileExpertSource::fill_many(const std::vector<Fill>& todo) {
         }
     }
 #endif
+    // Opt-in persistent team for mapped-path demand fills. Its run fence preserves the
+    // stage publication and async-copy lifetime boundary; the default keeps the exact
+    // per-call thread creation and join path below.
+    if (fetch_workers_enabled_) {
+        fetch_workers_.run(todo.size(), (size_t) fetch_threads_, [&](size_t i) {
+            (void) fill_stage(todo[i].v, todo[i].layer, todo[i].e, todo[i].dst);
+        });
+        return;
+    }
     // the page faults of a mapped read are one outstanding request each: several threads keep the SSD's queue full
     std::atomic<size_t> next{0};
     auto work = [&] {

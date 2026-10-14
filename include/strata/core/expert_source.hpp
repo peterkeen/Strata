@@ -23,6 +23,7 @@
 
 #include "strata/core/expert_cache.hpp"
 #include "strata/core/exchange_storage.hpp"
+#include "strata/core/fetch_workers.hpp"
 #include "strata/core/hit_hook.hpp"
 #include "strata/kernels/cpu/pool.hpp"
 
@@ -932,6 +933,8 @@ private:
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
     mutable std::atomic<int64_t> direct_fallbacks_{0};
+    bool fetch_workers_enabled_ = false;  ///< STRATA_FETCH_WORKERS=1; the legacy per-call path remains the default.
+    FetchWorkers fetch_workers_;
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;

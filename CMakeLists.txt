@@ -342,6 +342,13 @@ if(STRATA_BUILD_TESTS)
   add_test(NAME prefill_pool_lease_test COMMAND prefill_pool_lease_test)
   set_tests_properties(prefill_pool_lease_test PROPERTIES TIMEOUT 60)
 
+  # str-s1w.6: the reusable synchronous fetch-worker team (STRATA_FETCH_WORKERS=1): header-only, threads, no GPU
+  add_executable(file_fetch_workers_test tests/core/file_fetch_workers_test.cpp)
+  target_include_directories(file_fetch_workers_test PRIVATE include)
+  target_link_libraries(file_fetch_workers_test PRIVATE Threads::Threads)
+  add_test(NAME file_fetch_workers_test COMMAND file_fetch_workers_test)
+  set_tests_properties(file_fetch_workers_test PROPERTIES TIMEOUT 120)
+
   # str-s1w.14 (lazy-parallel L4): the expert-cache reclaim safe-point gate: header-only, no GPU
   add_executable(cache_reclaim_gate_test tests/core/cache_reclaim_gate_test.cpp)
   target_include_directories(cache_reclaim_gate_test PRIVATE include)
