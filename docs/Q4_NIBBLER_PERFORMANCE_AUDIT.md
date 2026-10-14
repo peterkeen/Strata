@@ -326,6 +326,25 @@ Rollbacks: `/data/llm/Strata-backups/s1w-short-read-32-20261014T171515Z/rollback
 and `/data/llm/Strata-backups/s1w-batch-mtp-20261014T172242Z/rollback.sh` (the second
 restores the config with only `--short-read 32` applied).
 
+Later the same day (str-s1w.3, .4):
+
+- 18:56Z: build `910d6b18` with `STRATA_PREFILL_SLOT_SHARE=1`. The CPU prefill share runs
+  beside batch slots through an owner-tagged pool lease, cutting 256-512-token prompts
+  by 13-20 % and 45-124-token continuations by 15-25 %. The default auto share is not
+  token-exact against a solo reference (the same property as the solo engine's share).
+  Rollback: `/data/llm/Strata-backups/s1w-slot-share-20261014T185532Z/rollback.sh`.
+- Two-stream window (`/data/llm/Strata-tests/s1w-live-20261014T203352Z-twostream`):
+  `--batch-mtp` gives +14 % pair throughput, +15 % per stream and +25 % decode in
+  conversation churn. TTFT is unchanged on fresh pairs and mixed on restore turns.
+  Natural rejections and target-only fallbacks on restores were observed, with no errors.
+- 21:02Z: `--pcie-frac 0.40`, +5 % pair throughput in both repeats; the startup link probe
+  is skipped with an explicit value. Rollback:
+  `/data/llm/Strata-backups/s1w-pcie-frac-040-20261014T210144Z/rollback.sh`.
+
+The production Q4 config is now `910d6b18` + `--short-read 32 --batch-mtp --pcie-frac 0.40`
++ `STRATA_PREFILL_SLOT_SHARE=1`. str-s1w.2-.5 are closed; the adaptive short-read policy
+and the adaptive PCIe balancer were not built (fixed values captured the measured gain).
+
 ## Ruled out as simple fixes
 
 - **Enable K-quant MMQ:** already enabled in deployed build cache.
