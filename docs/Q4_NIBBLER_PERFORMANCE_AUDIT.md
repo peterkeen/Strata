@@ -112,6 +112,7 @@ work. Existing memory work remains a major complementary opportunity.
 | P1 | **str-s1w.3** | Safely reuse the CPU expert pool for small prefills with two slots; reduces sparse-expert GPU streaming |
 | P1 | **str-s1w.4** | Slot-aware CPU/PCIe decode balancing; removes a measured-cost optimization's batch exclusion |
 | P1 | **str-s1w.5** | Qualify existing batch MTP specifically for Q4; potentially substantial overlapping-decode benefit, offset by draft VRAM cost |
+| P1 | **str-s1w.10** | Model demand-allocated batch sessions and reversible expert-cache budgeting; avoid paying the ~1 GiB slot cost during solo use |
 | P1, existing | **str-a2y** | Incremental/pooled indexer storage and actual cache-capacity brokerage; do not duplicate this epic |
 | P2 | **str-s1w.6** | Reuse bounded GGUF fetch workers instead of creating/joining threads for each demand staging call |
 | P2 | **str-s1w.7** | Prove size-class ownership rotation for mixed-format adaptive exchanges; removes a host memcpy eligibility gap |
@@ -242,10 +243,24 @@ binary disassembly or deployed-tree identity audit.
   512-bit vector width are distinct; do not label all fallback projections AVX2-only.
 
 Conclusion: `.8` is not just enabling a missing build flag. It can explore a
- genuinely different Q4_K gate/up dot/reuse implementation versus an already
+genuinely different Q4_K gate/up dot/reuse implementation versus an already
 optimized AVX2/FMA baseline compiled natively. Compiler-emitted instructions have
 not been disassembled, so this is not a claim that the resulting function contains
 zero AVX-512-encoded instructions. No speedup is established.
+
+## Follow-up: defer parallel VRAM and qualify parallel MTP
+
+[LAZY_PARALLEL_MEMORY.md](LAZY_PARALLEL_MEMORY.md) records the full-source
+investigation. Two extra ~512-MiB sessions are allocated before expert-cache sizing,
+even while the main session handles a single request. Lazy allocation is feasible
+but requires shared-runtime/verifier binding changes and safe cache capacity
+exchange; the existing resize command refuses this resident-complement mode.
+P1 `str-s1w.10` owns the resource model and implementation breakdown, coordinated
+with `str-a2y` (the indexer savings overlap, not add).
+
+Existing parallel MTP shares the main draft weights and owns only private slot
+state/buffers. The current Q4 config meets the basic gates; qualification remains
+`str-s1w.5`, independent of lazy resources. Neither feature was enabled live.
 
 ## Ruled out as simple fixes
 
