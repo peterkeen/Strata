@@ -4867,7 +4867,22 @@ int main(int argc, char** argv) {
         }
         std::vector<strata::core::SessionState*> sessions{&ss};
         for (auto& slot : bslot_ss[0]) sessions.push_back(slot.get());
-        unified_kv = std::make_unique<strata::core::SharedKvRuntime>(g, std::move(sessions));
+        const char* lazy_parallel = std::getenv("STRATA_LAZY_PARALLEL");
+        if (lazy_parallel != nullptr && std::strcmp(lazy_parallel, "1") == 0) {
+            // L1 exercises the attach path with the same eagerly initialized
+            // sessions. Actual deferred allocation belongs to L5. No batch
+            // graphs exist yet; session init/zero and transfers have drained.
+            unified_kv = std::make_unique<strata::core::SharedKvRuntime>(g, &ss, sessions.size() - 1);
+            const strata::core::ParallelSafePoint safe{true, true, true, 0};
+            for (size_t id = 1; id < sessions.size(); ++id) {
+                if (!unified_kv->attach_slot(id, sessions[id], safe, err)) {
+                    std::fprintf(stderr, "strata generate: unified KV slot attach failed: %s\n", err.c_str());
+                    return 1;
+                }
+            }
+        } else {
+            unified_kv = std::make_unique<strata::core::SharedKvRuntime>(g, std::move(sessions));
+        }
         if (!unified_kv->ensure(0, 0, strata::kernels::kVerifyMaxT, err)) {
             std::fprintf(stderr, "strata generate: unified KV initialization failed: %s\n", err.c_str());
             return 1;
@@ -9999,21 +10014,6 @@ int main(int argc, char** argv) {
                         (long long) (free_b >> 20), (long long) o.prefill_chunk);
             return true;
         };
-        // ---- --batch: the slots of the batch windows
-        struct BatchMtpStats {
-            int64_t windows = 0, offered = 0, accepted = 0, rejected = 0, discarded = 0;
-            int64_t fallback_attempts = 0, fallback_incoherent = 0, fallback_not_ready = 0;
-            int64_t fallback_limits = 0, fallback_capacity = 0, fallback_reserve = 0;
-            bool reported = false;
-        };
-        struct BSlot {
-            bool active = false, stop = false;
-            int32_t x = 0;                 ///< the token the next window feeds (not yet in the slot's state)
-            std::array<int32_t, strata::kernels::kVerifyMaxT> draft{}; ///< the slot's next MTP proposal
-            bool draft_ready = false;
-            strata::core::BatchDraftCoherence draft_state; // committed target frontier; private ring may hold lookahead
-            BatchMtpStats mtp_stats;
-            int64_t p = 0;                 ///< its position
         // L4: explicit, opt-in safe-point resize. VRAM keeps its resident-mode refusal.
         const bool lazy_cache_reclaim = [] {
             const char* v = std::getenv("STRATA_LAZY_CACHE_RECLAIM");
@@ -10138,6 +10138,21 @@ int main(int argc, char** argv) {
                 (long long) xcache.slots(), (long long) xcache.full_slots(), reclaim_evicted.size(),
                 (long long) file_tier, (unsigned long long) reclaim_generation, e.empty() ? "" : " degraded=1");
         };
+        // ---- --batch: the slots of the batch windows
+        struct BatchMtpStats {
+            int64_t windows = 0, offered = 0, accepted = 0, rejected = 0, discarded = 0;
+            int64_t fallback_attempts = 0, fallback_incoherent = 0, fallback_not_ready = 0;
+            int64_t fallback_limits = 0, fallback_capacity = 0, fallback_reserve = 0;
+            bool reported = false;
+        };
+        struct BSlot {
+            bool active = false, stop = false;
+            int32_t x = 0;                 ///< the token the next window feeds (not yet in the slot's state)
+            std::array<int32_t, strata::kernels::kVerifyMaxT> draft{}; ///< the slot's next MTP proposal
+            bool draft_ready = false;
+            strata::core::BatchDraftCoherence draft_state; // committed target frontier; private ring may hold lookahead
+            BatchMtpStats mtp_stats;
+            int64_t p = 0;                 ///< its position
             int64_t produced = 0, max_new = 0;
             Clock::time_point t0;
             // the slot's own conversation cache: the tokens its sessions hold (the prompt, then every token a window
@@ -11026,9 +11041,20 @@ int main(int argc, char** argv) {
             if (line.rfind("VRAM", 0) == 0) {   // #533 (above): between requests, not a request
                 std::string verr;
                 if (batch_on()) verr = "VRAM: not while batch slots are decoding";
+                else if (reclaim_generation != 0) verr = "VRAM: CACHE_RECLAIM owns the resized cache; use CACHE_REGROW";
                 else vram_command(line, verr);
                 if (!verr.empty()) std::printf("ERR %s\n", verr.c_str());
                 std::fflush(stdout);
+                continue;
+            }
+            if (line.rfind("CACHE_RECLAIM", 0) == 0 || line.rfind("CACHE_REGROW", 0) == 0) {
+                std::string cerr;
+                if (batch_on() || (piped && pipe_inflight())) cerr = "CACHE_RECLAIM: batch slots are decoding";
+                else if (!adapt_tick(true)) cerr = "CACHE_RECLAIM: adaptive drain failed";
+                else cache_reclaim_command(line, cerr);
+                if (!cerr.empty()) std::printf("ERR %s\n", cerr.c_str());
+                std::fflush(stdout);
+                if (reclaim_fatal) return 1;
                 continue;
             }
             // a command may touch the expert cache (a request lends slots, a K/V growth moves them, a session restore
@@ -11041,22 +11067,11 @@ int main(int argc, char** argv) {
             main_required_end = -1;
             parking_held = 0;
             bool admit_was_partial = false;
-                else if (reclaim_generation != 0) verr = "VRAM: CACHE_RECLAIM owns the resized cache; use CACHE_REGROW";
             if (line.rfind("BGEN ", 0) == 0 || line.rfind("BGENI ", 0) == 0) {
                 const bool bimg = line.rfind("BGENI ", 0) == 0;
                 char* e1 = nullptr;
                 const long b = std::strtol(line.c_str() + (bimg ? 6 : 5), &e1, 10);
                 char* e2 = nullptr;
-            if (line.rfind("CACHE_RECLAIM", 0) == 0 || line.rfind("CACHE_REGROW", 0) == 0) {
-                std::string cerr;
-                if (batch_on() || (piped && pipe_inflight())) cerr = "CACHE_RECLAIM: batch slots are decoding";
-                else if (!adapt_tick(true)) cerr = "CACHE_RECLAIM: adaptive drain failed";
-                else cache_reclaim_command(line, cerr);
-                if (!cerr.empty()) std::printf("ERR %s\n", cerr.c_str());
-                std::fflush(stdout);
-                if (reclaim_fatal) return 1;
-                continue;
-            }
                 const long long mn = std::strtoll(e1, &e2, 10);
                 if (bs.empty() || b < 0 || b >= (long) bs.size() || bs[(size_t) b].active || mn < 1 || e2 == e1) {
                     std::printf("ERR BGEN: no such free slot (--batch %d) or a bad max_new\n", o.batch);

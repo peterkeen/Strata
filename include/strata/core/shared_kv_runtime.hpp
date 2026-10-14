@@ -8,6 +8,8 @@
 #include <utility>
 #include <vector>
 
+#include "strata/core/parallel_resource_policy.hpp"
+
 #ifndef STRATA_SHARED_KV_REGISTRY_ONLY
 #include "strata/core/session.hpp"
 #include "strata/core/shared_kv_pages.hpp"
@@ -71,6 +73,21 @@ private:
     std::vector<uint64_t> generations_;
 };
 
+// The caller owns token and graph lifetime. Reject detach until the stream has
+// been parked, all reservations released, graphs invalidated, and the policy
+// safe-point reached. Main/admission sequence 0 is never detachable.
+struct SharedKvSlotDetachGate {
+    static bool ready(size_t seq, bool live_tokens, bool reserved, bool graphs_invalidated,
+                      const ParallelSafePoint& safe, std::string& error) {
+        if (seq == 0 || live_tokens || reserved || !graphs_invalidated || !safe.ready()) {
+            error = "unified KV: detach requires parked slot, released reservations, invalidated graphs and safe point";
+            return false;
+        }
+        error.clear();
+        return true;
+    }
+};
+
 #ifndef STRATA_SHARED_KV_REGISTRY_ONLY
 
 // Mutations run on the serving thread, outside graphs, with an explicit device
@@ -117,6 +134,92 @@ public:
             if (!publish(i, error)) throw std::runtime_error(error);
     }
 
+    // Deferred logical IDs include the non-detachable owner at ID 0. Physical
+    // slots can be absent while the main KV pool stays owned by sessions_[0].
+    SharedKvRuntime(const ModelGeometry& g, SessionState* owner, size_t slot_count)
+        : g_(g), sessions_(slot_count + 1, nullptr),
+          pages_(capacity(std::vector<SessionState*>{owner}), slot_count + 1),
+          streamed_(owner->qsa_states[owner->qsa_primary()].kv_mode == 1),
+          logical_slots_(std::make_unique<SharedKvLogicalSlots<SessionState>>(slot_count + 1)) {
+        sessions_[0] = owner;
+        std::string error;
+        if (!prepare(*owner, error)) throw std::invalid_argument(error);
+        if (streamed_) {
+            int32_t* p = nullptr;
+            if (!checked(cudaMalloc(reinterpret_cast<void**>(&p), pages_.capacity() * sizeof(int32_t)), error))
+                throw std::runtime_error(error);
+            invalidation_ids_.reset(p);
+        }
+        if (!publish(0, error)) throw std::runtime_error(error);
+        published_ = true;
+    }
+
+    bool lazy_slots() const { return logical_slots_ != nullptr; }
+    SessionState* slot(size_t id) const {
+        return logical_slots_ && id != 0 ? logical_slots_->get(id) : (id < sessions_.size() ? sessions_[id] : nullptr);
+    }
+    uint64_t slot_generation(size_t id) const {
+        return logical_slots_ ? logical_slots_->generation(id) : 0;
+    }
+    bool attach_slot(size_t id, SessionState* session, const ParallelSafePoint& safe, std::string& error) {
+        if (!logical_slots_ || id == 0 || id >= sessions_.size() || !safe.ready()) {
+            error = "unified KV: attach requires a free lazy slot and safe point";
+            return false;
+        }
+        try {
+            const bool attached = logical_slots_->attach(id, session, [&](SessionState& s, std::string& e) {
+                if (!pages_.mapping(id).empty()) {
+                    e = "unified KV: slot still holds a reservation";
+                    return false;
+                }
+                if (!prepare(s, e)) return false;
+                // publish writes only the candidate's private page tables. It is
+                // not visible through sessions_ or the registry until completion.
+                sessions_[id] = &s;
+                const bool was_published = published_;
+                published_ = false; // force a full empty-table upload, even on reattach
+                bool ok = false;
+                try { ok = publish(id, e); }
+                catch (...) {
+                    published_ = was_published;
+                    sessions_[id] = nullptr;
+                    throw;
+                }
+                published_ = was_published;
+                sessions_[id] = nullptr;
+                return ok;
+            }, error);
+            if (attached) sessions_[id] = session;
+            return attached;
+        } catch (const std::bad_alloc&) {
+            error = "unified KV: slot attach allocation failed";
+            return false;
+        } catch (const std::length_error&) {
+            error = "unified KV: slot attach allocation exceeds limits";
+            return false;
+        }
+    }
+    bool detach_slot(size_t id, bool live_tokens, bool graphs_invalidated,
+                     const ParallelSafePoint& safe, std::string& error) {
+        if (!logical_slots_ || id >= sessions_.size() || !logical_slots_->get(id)) {
+            error = "unified KV: logical slot is not attached";
+            return false;
+        }
+        if (!SharedKvSlotDetachGate::ready(id, live_tokens, !pages_.mapping(id).empty(),
+                                           graphs_invalidated, safe, error)) return false;
+        if (!sync(error)) return false; // no graph/DMA may retain this slot's private tables
+        if (!logical_slots_->detach(id, [&](SessionState& s, std::string& e) {
+            // No reservations remain. Clear only this slot's private mapping;
+            // keep shared_kv true so session cleanup cannot zero owner pools.
+            for (int64_t j = 0; j < s.qsa_alloc; ++j)
+                s.qsa_states[s.qsa_ord0 + j].shared_page_table.clear();
+            e.clear();
+            return true;
+        }, error)) return false;
+        sessions_[id] = nullptr;
+        return true;
+    }
+
     const SharedKvPages& pages() const { return pages_; }
     bool streamed() const { return streamed_; }
     int64_t capacity_cells() const { return int64_t(pages_.capacity()) * kernels::qsa_real_shapes().page_size; }
@@ -129,7 +232,7 @@ public:
     }
 
     bool ensure(size_t seq, int64_t begin, int64_t end, std::string& error) {
-        if (seq >= sessions_.size() || begin < 0 || end < begin || end > sessions_[seq]->max_cells) {
+        if (seq >= sessions_.size() || !sessions_[seq] || begin < 0 || end < begin || end > sessions_[seq]->max_cells) {
             error = "unified KV: invalid write extent";
             return false;
         }
@@ -182,7 +285,7 @@ public:
     }
 
     bool truncate(size_t seq, int64_t cells, std::string& error) {
-        if (cells < 0 || seq >= sessions_.size() || cells > sessions_[seq]->max_cells) {
+        if (cells < 0 || seq >= sessions_.size() || !sessions_[seq] || cells > sessions_[seq]->max_cells) {
             error = "unified KV: invalid truncate extent";
             return false;
         }
@@ -193,7 +296,7 @@ public:
     }
 
     bool clone_prefix(size_t from, size_t to, int64_t cells, std::string& error) {
-        if (from >= sessions_.size() || to >= sessions_.size() || cells < 0 || cells > sessions_[from]->max_cells) {
+        if (from >= sessions_.size() || to >= sessions_.size() || !sessions_[from] || !sessions_[to] || cells < 0 || cells > sessions_[from]->max_cells) {
             error = "unified KV: invalid clone extent";
             return false;
         }
@@ -204,7 +307,7 @@ public:
 
     // Transfer the COMPLETE reservation, including modest unwritten headroom.
     bool move(size_t from, size_t to, std::string& error) {
-        if (from >= sessions_.size() || to >= sessions_.size()) {
+        if (from >= sessions_.size() || to >= sessions_.size() || !sessions_[from] || !sessions_[to]) {
             error = "unified KV: invalid move sequence";
             return false;
         }
@@ -217,7 +320,7 @@ public:
     }
 
     bool release(size_t seq, std::string& error) {
-        if (seq >= sessions_.size()) { error = "unified KV: invalid release sequence"; return false; }
+        if (seq >= sessions_.size() || !sessions_[seq]) { error = "unified KV: invalid release sequence"; return false; }
         if (pages_.mapping(seq).empty()) { error.clear(); return true; }
         std::vector<int32_t> freed;
         if (!sync(error)) return false;
@@ -235,6 +338,45 @@ private:
     bool streamed_ = false;
     std::unique_ptr<int32_t, DeviceFree> invalidation_ids_;
     bool published_ = false;
+    std::unique_ptr<SharedKvLogicalSlots<SessionState>> logical_slots_;
+
+    bool prepare(SessionState& s, std::string& error) {
+        if (!s.qsa_states || s.qsa_alloc != sessions_[0]->qsa_alloc || s.max_cells != sessions_[0]->max_cells ||
+            s.layer_lo != sessions_[0]->layer_lo || s.layer_hi != sessions_[0]->layer_hi ||
+            s.qsa_ord0 != sessions_[0]->qsa_ord0) {
+            error = "unified KV: incompatible session";
+            return false;
+        }
+        for (int64_t j = 0; j < s.qsa_alloc; ++j) {
+            auto& q = s.qsa_states[s.qsa_ord0 + j];
+            const auto& owner = sessions_[0]->qsa_states[sessions_[0]->qsa_ord0 + j];
+            if (!q.page_table || (&s != sessions_[0] &&
+                (!q.shared_kv || q.page_table == owner.page_table)) ||
+                q.kv_mode != (streamed_ ? 1 : 0) ||
+                (streamed_ ? q.n_pages : q.n_slots) != int64_t(pages_.capacity()) ||
+                q.n_slots != owner.n_slots || q.kv_int8 != owner.kv_int8 ||
+                q.kv_q4 != owner.kv_q4 || q.kv_hybrid != owner.kv_hybrid ||
+                q.k_pool != owner.k_pool || q.v_pool != owner.v_pool ||
+                q.k_q != owner.k_q || q.v_q != owner.v_q ||
+                q.k_q4 != owner.k_q4 || q.v_q4 != owner.v_q4 ||
+                q.k_scale != owner.k_scale || q.v_scale != owner.v_scale ||
+                q.cos_tab != owner.cos_tab || q.sin_tab != owner.sin_tab ||
+                (streamed_ && (!q.shared_kv || !q.host.present() || !q.host.logical_pages ||
+                    q.host.resident_pages != owner.map.page_table || q.map.page_table != owner.map.page_table ||
+                    q.page_table == q.map.page_table || q.map.n_blocks != int64_t(pages_.capacity())))) {
+                error = "unified KV: incompatible physical pool or missing shared streaming bindings";
+                return false;
+            }
+        }
+        // All validation completes before the first binding is changed.
+        for (int64_t j = 0; j < s.qsa_alloc; ++j) {
+            auto& q = s.qsa_states[s.qsa_ord0 + j];
+            q.shared_page_table.assign(size_t(q.n_pages), -1);
+            q.shared_kv = true;
+        }
+        error.clear();
+        return true;
+    }
 
     static size_t capacity(const std::vector<SessionState*>& sessions) {
         if (sessions.empty() || !sessions[0] || !sessions[0]->qsa_states || sessions[0]->qsa_alloc <= 0)

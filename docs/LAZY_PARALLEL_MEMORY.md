@@ -248,7 +248,24 @@ contract, including initialization failure, detach failure, and stable-ID
 reattach. The existing CUDA `SharedKvRuntime` session/page-pool implementation
 remains on its eager constructor path; this registry primitive does not itself
 add runtime CUDA attach/detach calls or prove GPU pool safety. Therefore actual
-runtime attach/detach integration and the canary GPU gate remain outstanding.
+runtime attach/detach integration and the canary GPU gate were outstanding
+at the end of part 1.
+
+L1 part 2 adds an opt-in `SharedKvRuntime` constructor with stable slot IDs
+and an explicit `attach_slot` / `detach_slot` lifecycle. The original eager
+constructor is unchanged. With `STRATA_LAZY_PARALLEL=1`, generate still allocates
+and zeroes the same slots at startup, then attaches them one at a time; this
+is a path check, **not** lazy VRAM allocation or cache recovery. Each successful
+attach/detach advances its logical registry generation; consumers must key
+allocation-dependent graphs on this generation and invalidate them before
+calling detach. Detach refuses main ID 0, live tokens, reserved pages, pending
+graphs and missing commit/DMA/adaptive safe-point facts. It fences the device
+before dropping the private slot binding. The serving caller supplies the live
+token and graph-invalidated facts; automatic draining, warm-conversation
+preservation and graph invalidation belong to later lifecycle work. A failed
+attach does not publish the slot or change the shared main KV pages. CPU tests
+cover the registry and detach gate; the CUDA session test extends the actual
+runtime attach/detach/reattach checks, but an isolated GPU run is still needed.
 
 ## Follow-up implementation tasks proposed by str-s1w.10
 

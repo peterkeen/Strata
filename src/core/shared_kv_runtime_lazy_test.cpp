@@ -69,6 +69,23 @@ int main() {
     check(slots.get(1) == &slot_b && slots.size() == 3,
           "duplicate attach leaves published mapping unchanged");
 
+    using strata::core::ParallelSafePoint;
+    using strata::core::SharedKvSlotDetachGate;
+    const ParallelSafePoint safe{true, true, true, 0};
+    const ParallelSafePoint unsafe{true, false, true, 0};
+    check(!SharedKvSlotDetachGate::ready(0, false, false, true, safe, error),
+          "main/admission session cannot detach");
+    check(!SharedKvSlotDetachGate::ready(1, true, false, true, safe, error),
+          "live tokens block detach");
+    check(!SharedKvSlotDetachGate::ready(1, false, true, true, safe, error),
+          "live reservation blocks detach");
+    check(!SharedKvSlotDetachGate::ready(1, false, false, false, safe, error),
+          "live batch graph blocks detach");
+    check(!SharedKvSlotDetachGate::ready(1, false, false, true, unsafe, error),
+          "DMA in flight blocks detach");
+    check(SharedKvSlotDetachGate::ready(1, false, false, true, safe, error) && error.empty(),
+          "parked and graph-invalidated slot may detach at a safe point");
+
     std::printf("shared_kv_runtime_lazy: %d checks passed\n", checks);
     return 0;
 }

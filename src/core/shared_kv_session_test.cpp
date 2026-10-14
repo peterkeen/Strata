@@ -295,6 +295,52 @@ void runtime_cow(SharedKvRuntime& runtime, SessionState& owner, SessionState& bo
     require(runtime.release(0, error), "release full-capacity reservation");
 }
 
+void lazy_runtime_case(int format) {
+    const ModelGeometry g;
+    configure(format);
+    DeviceSession owner; owner.init(g);
+    DeviceSession borrower; borrower.init(g, &owner.state);
+    DeviceSession replacement; replacement.init(g, &owner.state);
+    SharedKvRuntime runtime(g, &owner.state, 2);
+    std::string error;
+    const ParallelSafePoint safe{true, true, true, 0};
+    require(runtime.lazy_slots() && !runtime.slot(1) && !runtime.slot(2) &&
+            runtime.slot_generation(1) == 0, "logical slots are empty before attach");
+    require(runtime.ensure(0, 0, 8, error), "main retains a mapped prefix before attach");
+    const auto main_pages = runtime.pages().mapping(0);
+    const auto& q = owner.state.qsa_states[owner.state.qsa_primary()];
+    auto planes = pools(owner.state.qsa_states[owner.state.qsa_ord0], g);
+    fill(page(planes[0], main_pages[0]), 0x5c);
+    auto before = read(page(planes[0], main_pages[0]));
+    SessionState bad = replacement.state;
+    bad.max_cells++;
+    require(!runtime.attach_slot(2, &bad, safe, error) && !error.empty() &&
+            runtime.slot(2) == nullptr && runtime.slot_generation(2) == 0 &&
+            runtime.pages().mapping(0) == main_pages, "failed attach preserves runtime and owner pages");
+    require(runtime.attach_slot(1, &borrower.state, safe, error) &&
+            runtime.slot(1) == &borrower.state && runtime.slot_generation(1) == 1,
+            "attach publishes fully initialized borrower");
+    mapping(borrower.state, {});
+    require(runtime.clone_prefix(0, 1, 8, error), "borrower shares main prefix");
+    require(!runtime.detach_slot(1, true, true, safe, error), "live tokens refuse detach");
+    require(!runtime.detach_slot(1, false, true, safe, error), "reservation refuses detach");
+    require(runtime.release(1, error), "park/release borrower reservation");
+    require(!runtime.detach_slot(1, false, false, safe, error), "graphs must be invalidated before detach");
+    require(runtime.detach_slot(1, false, true, safe, error) &&
+            runtime.slot(1) == nullptr && runtime.slot_generation(1) == 2,
+            "detach removes borrower binding and advances generation");
+    require(runtime.pages().mapping(0) == main_pages &&
+            read(page(planes[0], main_pages[0])) == before &&
+            q.n_slots == kCells / 4, "detach leaves main mappings, physical pool and session zero untouched");
+    mapping(owner.state, main_pages);
+    require(runtime.attach_slot(1, &replacement.state, safe, error) &&
+            runtime.slot(1) == &replacement.state && runtime.slot_generation(1) == 3,
+            "same logical ID reattaches to fresh private session");
+    mapping(replacement.state, {});
+    require(runtime.detach_slot(1, false, true, safe, error) && runtime.release(0, error),
+            "clean up reattached session and owner reservation");
+}
+
 void format_case(int format) {
     const ModelGeometry g;
     configure(format);
@@ -754,7 +800,10 @@ int main() {
 #endif
     try {
         mtp_ring_boundaries();
-        for (int format = 0; format < 4; ++format) format_case(format);
+        for (int format = 0; format < 4; ++format) {
+            format_case(format);
+            lazy_runtime_case(format);
+        }
         for (int format = 0; format < 3; ++format) streaming_case(format);
         hybrid_stream_rejected();
         configure(0);
