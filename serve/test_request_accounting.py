@@ -9,7 +9,8 @@ import urllib.request
 from pathlib import Path
 
 from serve.frontend import ChatTemplate
-from serve.server import ByteTokenizer, EngineDied, Service, add_carry, carry_leg, request_timings, serve
+from serve.server import (ByteTokenizer, EngineDied, Service, add_carry, carry_leg, request_stats, request_timings,
+                          serve)
 from serve.test_server import ThinkingEngine
 
 
@@ -203,6 +204,24 @@ class SlotLegAccounting(unittest.TestCase):
         total = add_carry(carry, {"generated": 5, "decode_ms": 50.0, "prompt_ms": 1.0})
         self.assertEqual((total["generated"], total["decode_ms"], total["prompt_ms"]), (35, 450.0, 50.0))
         self.assertNotIn("prompt_read", total)
+
+    def test_rejection_before_work_does_not_set_the_cache_hit(self):
+        # str-7ze.31: a deferred restore (`DONE 0 <n> 0 0 pressure 0 0 0`), then the restore (125003 reused), then a
+        # replay whose reuse includes this request's own output: the client's cache hit is the restore's
+        rejected = {"generated": 0, "prompt_tokens": 149998, "prompt_ms": 0.0, "decode_ms": 0.0, "finish": "pressure",
+                    "drafts_accepted": 0, "drafts_offered": 0, "reused": 0}
+        restored = {"generated": 3, "prompt_tokens": 149998, "prompt_ms": 18500.0, "decode_ms": 28.0,
+                    "finish": "pressure", "reused": 125003, "prompt_read": 24995}
+        replay = {"generated": 9, "prompt_tokens": 150001, "prompt_ms": 20.0, "decode_ms": 300.0, "finish": "stop",
+                  "reused": 150000, "prompt_read": 1}
+        stats = request_stats([rejected, rejected, restored, replay])
+        self.assertEqual((stats["reused"], stats["prompt_read"]), (125003, 24995))
+        self.assertEqual((stats["generated"], stats["prompt_ms"]), (12, 18520.0))
+        # a pressure leg that read part of the prompt is work: its own reuse stands
+        partial = {**rejected, "prompt_ms": 900.0, "prompt_read": 4096}
+        self.assertEqual(request_stats([partial, restored])["reused"], 0)
+        # every leg rejected (cancelled while deferred): still the first one's figures
+        self.assertEqual(request_stats([rejected, {**rejected, "finish": "cancel"}])["reused"], 0)
 
     def test_prompt_n_is_what_was_read(self):
         # the slot already held the whole prompt: 1 token read, the conversation cache off (reused 0)

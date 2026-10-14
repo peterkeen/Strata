@@ -406,6 +406,25 @@ class IncrementalKV(unittest.TestCase):
         self.assertEqual([r['cap'] for r in self.admissions(10)], [4, 4, 2])
         self.assertEqual(self.engine.pressure_waits, {})
 
+    def test_rejected_admission_does_not_hide_the_retry_cache_hit(self):
+        # str-7ze.31: a deferred conversation-cache restore is `DONE 0 <n> 0 0 pressure 0 0 0` - nothing read, reused
+        # 0.  The retry restores the prefix (reused 2 here); that is the client's cache hit, not the rejection's 0.
+        self.start(force_batch=True, zero=True)
+        tok = ByteTokenizer()
+        svc = Service(self.engine, tok, ChatTemplate(Path(__file__).parent / 'chat_template.jinja'))
+        a = threading.Thread(target=lambda: list(svc.run([10, 3, 99], False, False, 4, {'seed': 77},
+                                                           threading.Event())), daemon=True)
+        a.start()
+        self.wait(lambda: bool(self.engine.pressure_waits))
+        other, _ = self.launch(11, cap=1)                # native progress lets the deferred request retry
+        other.join(4); a.join(4)
+        self.assertFalse(other.is_alive() or a.is_alive())
+        self.assertEqual(self.errors, [])
+        self.assertEqual([r['cap'] for r in self.admissions(10)], [4, 4, 2])
+        row = [h for h in svc.history if h['pressure_pauses']][0]
+        self.assertEqual(row['prompt_tokens'], 3)
+        self.assertEqual(row['reused'], 2, 'the retry reused the prompt; the rejection before it read nothing')
+
     def test_zero_progress_pressure_wait_can_cancel_without_retry_or_stop(self):
         self.start(force_batch=True, zero=True)
         worker, cancel = self.launch(10, cap=4)

@@ -1513,7 +1513,8 @@ class StrataEngine:
 
     def _summarize_pressure(self, plen: int, generated: int, segments: list[dict]):
         """One logical request, not the last replay segment. Replay reuse includes output tokens, so only
-        the first segment's original-prompt reuse is a client cache hit. Other native counters are work totals."""
+        the first working segment's original-prompt reuse is a client cache hit (a rejection before any work - a
+        deferred restore - reports 0 and is skipped: str-7ze.31). Other native counters are work totals."""
         terminal = dict(self.last or {})
         stats = segments + ([terminal] if terminal.get("finish") is not None else [])
         finish = terminal.get("finish")
@@ -1740,7 +1741,7 @@ class StrataEngine:
                                 self.last = {**self.last, "finish": "cancel" if cancel.is_set() else
                                              "stop" if out and out[-1] in EOS_IDS else "length"}
                             return
-                        if reused0 is None:
+                        if reused0 is None and not rejected_before_work(self.last):
                             reused0 = (self.last or {}).get("reused")
                         carry_leg(carry, self.last)         # #1869: the solo leg's figures; the slot's admission (a copy of
                                                             # the held prefix: prompt_read 1) and BDONE replace them
@@ -4861,14 +4862,23 @@ def request_timings(prompt_tokens: int, generated: int, last: dict) -> dict | No
                if last.get("drafts_offered") is not None else {})}
 
 
+def rejected_before_work(segment: dict | None) -> bool:
+    """str-7ze.31: the engine turned the request away before it read or generated anything (`DONE 0 <n> 0 0 pressure
+    0 0 0`: a unified-KV rejection or a deferred conversation-cache restore).  Its reused 0 says nothing about the
+    cache: the retry of the same prompt is the leg whose reuse is the client's cache hit."""
+    return (isinstance(segment, dict) and segment.get("finish") == "pressure" and not segment.get("generated")
+            and not segment.get("prompt_ms") and not segment.get("prompt_read"))
+
+
 def request_stats(segments: list[dict]) -> dict:
     """Keep input/cache accounting at the original API boundary and total native work across continuations."""
     if not segments:
         return {}
     result = dict(segments[-1])
+    first = next((segment for segment in segments if not rejected_before_work(segment)), segments[0])
     for key in ("reused", "prompt_read"):
-        if key in segments[0]:
-            result[key] = segments[0][key]
+        if key in first:
+            result[key] = first[key]
         else:
             result.pop(key, None)
     for key in ("prompt_ms", "decode_ms", "generated", "drafts_offered", "drafts_accepted",
