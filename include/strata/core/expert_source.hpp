@@ -929,12 +929,12 @@ private:
     std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim
     std::condition_variable stage_cv_;
     int fetch_threads_ = 8;
+    bool fetch_workers_enabled_ = false;  ///< STRATA_FETCH_WORKERS=1; the legacy per-call path remains the default.
+    FetchWorkers fetch_workers_;
     std::atomic<uint64_t> file_blob_bytes_{0}, file_us_{0};
     std::unique_ptr<std::atomic<uint32_t>[]> warm_stamp_;   ///< per (layer, expert): epoch_ + 1 when warmed
     std::atomic<int64_t> warm_hits_{0}, warm_count_{0};
     mutable std::atomic<int64_t> direct_fallbacks_{0};
-    bool fetch_workers_enabled_ = false;  ///< STRATA_FETCH_WORKERS=1; the legacy per-call path remains the default.
-    FetchWorkers fetch_workers_;
     std::unordered_map<int64_t, size_t> stage_of_;
     uint64_t stage_blob_ = 0;
     uint64_t stage_seq_ = 0;
