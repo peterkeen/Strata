@@ -217,6 +217,36 @@ whether RAM should go to parking or the expert complement. Existing small/long
 prefix reuse does not prove parking is working; in-slot reuse is separate.
 Do not blindly restore an 8–12 GiB parking budget onto a pinned 64-GiB Q4 arena.
 
+## Follow-up: actual ggml Q4 fallback (2026-10-14)
+
+For `str-s1w.8`, a temporary invocation-local increase of the existing path-read
+probe limit to 2 MiB allowed complete reads of the deployed build's
+`compile_commands.json`, ggml `ggml-cpu.c`, and x86 `quants.c`. The existing
+allowlist/audit logging remained active; no repository or host config changed.
+This resolves the source/compile-command question for this fallback, not a full
+binary disassembly or deployed-tree identity audit.
+
+- Build source is `/data/llm/Strata/third_party/llama.cpp/ggml`, selected by
+  `STRATA_GGML_DIR`, not a llama.cpp tree under the newer Q4 checkout.
+- The generated command for `ggml-cpu/arch/x86/quants.c` is GCC 15, `-O3`,
+  **`-march=native`**, with no later ISA override. Thus cache entries such as
+  `GGML_AVX512=OFF` do not mean the native build excludes AVX-512.
+- `ggml-cpu.c:311–313` maps Q4_K's `.vec_dot` to `ggml_vec_dot_q4_K_q8_K`.
+- In the host's x86 `quants.c:2038–2214`, that function selects an **AVX2**
+  implementation, then AVX, then generic. Its hot loop uses 256-bit
+  `_mm256_maddubs_epi16`, `_mm256_madd_epi16` and FMA. There is **no explicit
+  AVX-512/512-bit or VNNI-specialized Q4_K dot-product branch**.
+- The Q5_K dot similarly uses an AVX2 implementation. Q5_1 and Q8_0 down dots
+  differ: their 256-bit helper can select AVX-512 VNNI+VL via
+  `_mm256_dpbusd_epi32` (`mul_sum_us8_pairs_float`, ~106). AVX-512 ISA use and
+  512-bit vector width are distinct; do not label all fallback projections AVX2-only.
+
+Conclusion: `.8` is not just enabling a missing build flag. It can explore a
+ genuinely different Q4_K gate/up dot/reuse implementation versus an already
+optimized AVX2/FMA baseline compiled natively. Compiler-emitted instructions have
+not been disassembled, so this is not a claim that the resulting function contains
+zero AVX-512-encoded instructions. No speedup is established.
+
 ## Ruled out as simple fixes
 
 - **Enable K-quant MMQ:** already enabled in deployed build cache.
