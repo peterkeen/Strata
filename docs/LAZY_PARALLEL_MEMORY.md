@@ -387,3 +387,45 @@ transition, complement offsets and contents unchanged, prefill loan layout
 valid, adaptive exchanges drained, original owners copied before publication,
 and no graph/DMA references into unmapped segments. Test forced VMM and refill
 failure and repeat reclaim/regrow before allowing an admission/handoff hook.
+
+## L5: first-overlap private sessions (opt-in; GPU gate outstanding)
+
+`STRATA_LAZY_PARALLEL=2` is restricted to `--serve --batch 2 --kv-unified
+--vram-elastic` on one GPU. The default and `=1` continue through their
+original eager allocation paths. Startup makes only the main session; logical
+shared-KV slots exist without private sessions, verifier batch staging, batch
+graphs or slot MTP state. Auto expert-cache sizing therefore sees solo free VRAM.
+The initial solo `GEN` still runs on the main session. The frontend's `HANDOFF`
+ends that leg before its promoted `BGEN` reaches the engine; activation runs at
+that BGEN boundary, **before** its slot's paused state or admission is touched.
+A first request which begins as BGEN without a solo leg uses the same boundary.
+
+The serving thread waits for verifier commits, adaptive work and the device,
+checks that prefill loans are absent, prices both private session arenas plus
+batch staging/graph and optional draft allowances, and requests segment-granular
+L4 reclaim internally. An insufficient file-backed cache, capacity shortage or
+failed allocation/binding gives the existing terminal `ERR BGEN:` refusal (the
+frontend parks/retries that slot). Completed partial bindings are detached
+before arenas are freed; cache regrow after a failed activation is best-effort,
+with coherent file-tier misses if refill degrades. Detach/invalidation failure
+is fatal rather than freeing GPU pointers still referenced by graphs. The
+runtime keeps sessions after activation; draining and warm-conversation policy
+belong to L6. An optional draft allocation failure releases partial drafters
+and runs target-only batch windows. `STRATA_LAZY_PARALLEL_FAIL_AT` accepts
+`shrink`, `allocate0`, `allocate1`, `attach0`, `attach1`, `verifier`, `draft0`,
+`draft1` for isolated failure canaries; without that environment variable the
+hook does nothing. The first successful overlap logs elapsed activation ms
+separately from request decode time.
+
+The present runtime uses the ledger for whole private arenas and a conservative
+verifier/draft allowance; it does **not** connect a live indexer-budget broker or
+split private indexer bytes from those arenas. That accounting and the actual
+allowances need GPU confirmation. CPU tests cover the segment-prefix budget
+selector and policy rollback, not CUDA allocator/graph safety. Before any
+rollout run an isolated CUDA canary: compare startup slots and bytes to eager;
+cold overlap and exact token parity of both streams; cancel while activation
+is paused; each injected shrink/allocation/attach/verifier/draft failure and a
+successful retry; then end one stream and begin another (retained-session reuse).
+Check resident-complement fallback, live GPU residency, cache refill degradation,
+shared-KV generation and graph invalidation. HIP/SYCL and the production GPU
+window remain unverified.

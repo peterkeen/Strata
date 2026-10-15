@@ -108,6 +108,10 @@ uint64_t session_init(const ModelGeometry& g, int64_t max_cells, int64_t k, void
 /// Before the memory `session_init` carved is freed: forgets what points into it from outside the session (the
 /// rope kernels' registered angle table, #280), so a later session never rotates by freed memory.
 void session_release(SessionState& s);
+/// Release a private, quiesced session after its verifier graphs and shared-KV
+/// bindings have been detached. Does not free borrowed owner K/V or RoPE.
+/// `arena` is the allocation passed to session_init (including on init failure).
+void session_dispose_private(SessionState& s, void* arena);
 /// Zeroes every layer's state - the residual to `R_init`, everything else to zero, so a fresh sequence starts
 /// from the reference's own `zeros()`.
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream);

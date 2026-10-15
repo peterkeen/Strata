@@ -86,6 +86,7 @@
 #include "strata/core/progress.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/cache_reclaim_gate.hpp"
+#include "strata/core/parallel_resource_policy.hpp"
 #include "strata/core/emulate.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX   // gguf_reader.hpp includes windows.h
@@ -4768,7 +4769,22 @@ int main(int argc, char** argv) {
             batch_mtp = false;
         }
     }
+    const char* lazy_parallel_env = std::getenv("STRATA_LAZY_PARALLEL");
+    const bool lazy_parallel_slots = lazy_parallel_env != nullptr && std::strcmp(lazy_parallel_env, "2") == 0;
+    if (lazy_parallel_slots && (!o.kv_unified || o.batch != 2 || !o.serve || !o.vram_elastic ||
+                                !stages.empty() || multi_gpu)) {
+        std::fprintf(stderr, "strata generate: STRATA_LAZY_PARALLEL=2 needs --serve --batch 2 --kv-unified "
+                             "--vram-elastic on one GPU\n");
+        return 1;
+    }
+#if defined(STRATA_USE_HIP)
+    if (lazy_parallel_slots) {
+        std::fprintf(stderr, "strata generate: STRATA_LAZY_PARALLEL=2 needs CUDA segmented expert-cache reclaim\n");
+        return 1;
+    }
+#endif
     std::vector<std::vector<std::unique_ptr<strata::core::SessionState>>> bslot_ss;
+    std::vector<std::vector<void*>> lazy_slot_arenas;
     std::unique_ptr<strata::core::SharedKvRuntime> unified_kv;
     if (o.batch != 0) {
         const int cap = strata::kernels::kVerifyMaxT;
@@ -4810,6 +4826,7 @@ int main(int argc, char** argv) {
     }
     if (o.batch > 0) {
         bslot_ss.resize(1 + stages.size());
+        if (lazy_parallel_slots) lazy_slot_arenas.resize(bslot_ss.size());
         int fit = o.batch;   // the slots every stage could carve
         uint64_t bytes0 = 0;
         for (size_t k = 0; k < bslot_ss.size(); ++k) {
@@ -4820,7 +4837,7 @@ int main(int argc, char** argv) {
             const auto* share_kv = o.kv_unified ? &ss : nullptr;
             const uint64_t bytes = strata::core::session_bytes(g, o.max_context, K, lo, hi, share_kv);
             if (k == 0) bytes0 = bytes;
-            for (int b = 0; b < fit; ++b) {
+            for (int b = 0; b < fit && !lazy_parallel_slots; ++b) {
                 auto u = std::make_unique<strata::core::SessionState>();
                 void* buf = nullptr;
                 if (cudaMalloc(&buf, bytes) != cudaSuccess || strata::core::session_init(g, o.max_context, K, buf, *u, lo, hi, share_kv) == 0) {
@@ -4854,9 +4871,13 @@ int main(int argc, char** argv) {
             resolve_groups_auto();   // (the slots that fit may not be the ones asked for)
             if (o.batch_groups > 1 && o.batch % o.batch_groups != 0) o.batch_groups = 1;
             // the sessions' VRAM is the expert cache's: say what it costs (docs/BATCHING.md has the measured trade)
-            std::fprintf(stderr, "strata generate: --batch %d: the slot sessions take %.2f GiB of VRAM on CUDA0 that the "
-                                 "expert cache would otherwise hold\n", o.batch,
-                         (double) bytes0 * o.batch / 1073741824.0);
+            if (lazy_parallel_slots)
+                std::fprintf(stderr, "strata generate: --batch %d: private slot sessions deferred (%.2f GiB priced)\n",
+                             o.batch, (double) bytes0 * o.batch / 1073741824.0);
+            else
+                std::fprintf(stderr, "strata generate: --batch %d: the slot sessions take %.2f GiB of VRAM on CUDA0 that the "
+                                     "expert cache would otherwise hold\n", o.batch,
+                             (double) bytes0 * o.batch / 1073741824.0);
         }
     }
 
@@ -4868,11 +4889,12 @@ int main(int argc, char** argv) {
         std::vector<strata::core::SessionState*> sessions{&ss};
         for (auto& slot : bslot_ss[0]) sessions.push_back(slot.get());
         const char* lazy_parallel = std::getenv("STRATA_LAZY_PARALLEL");
-        if (lazy_parallel != nullptr && std::strcmp(lazy_parallel, "1") == 0) {
+        if (lazy_parallel_slots || (lazy_parallel != nullptr && std::strcmp(lazy_parallel, "1") == 0)) {
             // L1 exercises the attach path with the same eagerly initialized
             // sessions. Actual deferred allocation belongs to L5. No batch
             // graphs exist yet; session init/zero and transfers have drained.
-            unified_kv = std::make_unique<strata::core::SharedKvRuntime>(g, &ss, sessions.size() - 1);
+            unified_kv = std::make_unique<strata::core::SharedKvRuntime>(g, &ss,
+                lazy_parallel_slots ? size_t(o.batch) : sessions.size() - 1);
             const strata::core::ParallelSafePoint safe{true, true, true, 0};
             for (size_t id = 1; id < sessions.size(); ++id) {
                 if (!unified_kv->attach_slot(id, sessions[id], safe, err)) {
@@ -4919,7 +4941,7 @@ int main(int argc, char** argv) {
         if (o.pipeline_windows >= 2) mtp.set_force_capture(true);
         if (!o.mtp.empty() && !mtp.load(o.mtp, draft_geometry, last_st ? last_st->ss : ss, mtp_t, err, o.mtp_window)) { std::fprintf(stderr, "strata generate: %s%s\n", err.c_str(), vram_free_note().c_str()); return 1; }
         mtp.set_ple_session(&ss);
-        if (batch_mtp) {
+        if (batch_mtp && !lazy_parallel_slots) {
             // Slot b's drafter lives where the solo drafter does (the guard above: the last stage's GPU), carved from the
             // LAST stage's slot-b session (bslot_ss.back(): stage 0's on one GPU): it borrows that session's context
             // length and RoPE table, which are on that device.  Its PLE history is the first stage's slot session: PLE
@@ -8015,7 +8037,7 @@ int main(int argc, char** argv) {
         if (pipe) mtp.set_source_R(ver.final_R_all());   // the serial decode's rows (the last stage's even verifier)
         auto free_slot_mtp_rows = [](float* p) { if (p != nullptr) (void) cudaFree(p); };
         std::vector<std::unique_ptr<float, decltype(free_slot_mtp_rows)>> slot_mtp_rows;
-        if (batch_mtp) {
+        if (batch_mtp && !lazy_parallel_slots) {
             // like the solo drafter's `bind` above: the last stage's weights (embedding) and head, and the residual
             // buffers on the drafter's device (the last stage's GPU with a layer split)
             const strata::core::OnDevice on_slot_mtp(mtp.device());
@@ -8037,7 +8059,7 @@ int main(int argc, char** argv) {
             }
         }
         // each stage's verifier gets its stage's slot sessions
-        if (o.batch > 0) {
+        if (o.batch > 0 && !lazy_parallel_slots) {
             for (size_t k = 0; k < bslot_ss.size(); ++k) {
                 std::vector<strata::core::SessionState*> ptrs;
                 for (auto& u : bslot_ss[k]) ptrs.push_back(u.get());
@@ -10023,8 +10045,8 @@ int main(int argc, char** argv) {
         uint64_t reclaim_generation = 0;
         std::vector<strata::core::CacheReclaimEntry> reclaim_evicted;
         bool reclaim_fatal = false;
-        auto cache_reclaim_command = [&](const std::string& cmd, std::string& e) {
-            if (!lazy_cache_reclaim) { e = "CACHE_RECLAIM requires STRATA_LAZY_CACHE_RECLAIM=1"; return; }
+        auto cache_reclaim_command = [&](const std::string& cmd, std::string& e, bool activation = false) {
+            if (!lazy_cache_reclaim && !activation) { e = "CACHE_RECLAIM requires STRATA_LAZY_CACHE_RECLAIM=1"; return; }
             if (!xcache.segmented() || d_res == nullptr || srcp != &src || peer.valid() || !stages.empty() || kvg.on) {
                 e = "CACHE_RECLAIM requires --vram-elastic, a file source and one CUDA GPU (no elastic KV)"; return;
             }
@@ -10134,9 +10156,10 @@ int main(int argc, char** argv) {
                     ++file_tier;
             relend();
             finish();
-            std::printf("CACHE expert_slots=%lld expert_slots_full=%lld unrefilled=%zu file_tier=%lld generation=%llu%s\n",
-                (long long) xcache.slots(), (long long) xcache.full_slots(), reclaim_evicted.size(),
-                (long long) file_tier, (unsigned long long) reclaim_generation, e.empty() ? "" : " degraded=1");
+            if (!activation)
+                std::printf("CACHE expert_slots=%lld expert_slots_full=%lld unrefilled=%zu file_tier=%lld generation=%llu%s\n",
+                    (long long) xcache.slots(), (long long) xcache.full_slots(), reclaim_evicted.size(),
+                    (long long) file_tier, (unsigned long long) reclaim_generation, e.empty() ? "" : " degraded=1");
         };
         // ---- --batch: the slots of the batch windows
         struct BatchMtpStats {
@@ -10957,6 +10980,165 @@ int main(int argc, char** argv) {
                 if (!pump(false)) return false;
             return true;
         };
+        // L5: BGEN is the first safe boundary after a solo GEN's HANDOFF/DONE.
+        // No slot state or admission ownership is changed until this succeeds.
+        strata::core::ParallelState parallel_state = strata::core::ParallelState::solo;
+        uint64_t parallel_generation = 0;
+        auto activate_parallel = [&](std::string& reason) -> bool {
+            if (!lazy_parallel_slots || parallel_state == strata::core::ParallelState::parallel) return true;
+            const auto started = Clock::now();
+            const char* fail_at = std::getenv("STRATA_LAZY_PARALLEL_FAIL_AT");
+            auto fail = [&](const char* point) { return fail_at && std::strcmp(fail_at, point) == 0; };
+            const strata::core::ParallelSafePoint safe{true, true, true, 0};
+            if (!ver.wait_commit(reason)) return false;
+            for (const auto& part : pf_parts)
+                if (!part.lent.empty()) { reason = "prefill loan outstanding"; return false; }
+            if (astate != AState::Idle || (ajob && !ajob->idle()) ||
+                !pending.empty() || agate.active.load(std::memory_order_acquire) || !safe.ready()) {
+                reason = "adaptive transfers not drained"; return false;
+            }
+            if (cudaDeviceSynchronize() != cudaSuccess) { reason = "device fence failed"; return false; }
+            if (!xcache.segmented() || d_res == nullptr || srcp != &src || peer.valid() || kvg.on ||
+                xcache.slots() != xcache.full_slots() || !vram_evicted.empty()) {
+                reason = "full elastic file-backed expert cache unavailable"; return false;
+            }
+            parallel_state = strata::core::ParallelState::activating;
+            // All private allocations are paid from the cache, not a hidden
+            // startup reserve. The verifier allowance includes batch staging;
+            // optional MTP receives its own allowance and may fall back.
+            const uint64_t slot_bytes = strata::core::session_bytes(g, o.max_context, K, 0, -1, &ss);
+            strata::core::ParallelResourceLedger ledger;
+            ledger.logical_capacity = ledger.required_physical_batch_sessions = (uint32_t) o.batch;
+            ledger.private_slot_session_bytes = slot_bytes;
+            ledger.batch_verifier_graph_bytes = 64ull << 20;
+            ledger.slot_draft_private_bytes = 256ull << 20;
+            ledger.lazy_mtp_requested = batch_mtp;
+            strata::core::ParallelActivationBudget budget;
+            if (slot_bytes == 0 || !ledger.build_activation_budget(budget, reason)) {
+                if (reason.empty()) reason = "invalid private session geometry";
+                parallel_state = strata::core::ParallelState::solo; return false;
+            }
+            size_t free_b = 0, total_b = 0;
+            if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess) {
+                parallel_state = strata::core::ParallelState::solo; reason = "VRAM query failed"; return false;
+            }
+            const uint64_t floor = 256ull << 20; // retain driver/graph headroom after activation
+            uint64_t needed = 0;
+            const bool priced = strata::core::ParallelResourceLedger::checked_add(
+                budget.required_total_bytes, floor, needed);
+            int64_t keep = xcache.slots();
+            bool reclaimed = false;
+            if (fail("shrink") || !priced || !strata::core::parallel_activation_keep_slots(
+                    xcache.slots(), uint64_t(xcache.mapped_bytes()), uint64_t(free_b),
+                    budget.required_total_bytes, floor, [&](int64_t n) { return uint64_t(xcache.bytes_of(n)); }, keep)) {
+                reason = "not enough reclaimable expert-cache capacity";
+            } else if (keep < xcache.slots()) {
+                const uint64_t before = reclaim_generation;
+                cache_reclaim_command("CACHE_RECLAIM " + std::to_string(keep), reason, true);
+                reclaimed = reclaim_generation != before;
+            }
+            size_t now_free = 0;
+            if (reason.empty() && (cudaMemGetInfo(&now_free, &total_b) != cudaSuccess ||
+                                   now_free < needed || reclaim_fatal))
+                reason = "expert-cache reclaim did not release the activation budget";
+            size_t attached = 0;
+            bool verifier_attached = false;
+            if (reason.empty()) {
+                for (int b = 0; b < o.batch && reason.empty(); ++b) {
+                    void* arena = nullptr;
+                    auto s = std::make_unique<strata::core::SessionState>();
+                    if (fail(b == 0 ? "allocate0" : "allocate1") ||
+                        cudaMalloc(&arena, slot_bytes) != cudaSuccess ||
+                        strata::core::session_init(g, o.max_context, K, arena, *s, 0, -1, &ss) == 0) {
+                        cudaGetLastError();
+                        strata::core::session_dispose_private(*s, arena);
+                        reason = "private session allocation/init failed"; break;
+                    }
+                    strata::core::session_zero(*s, g, nullptr, nullptr);
+                    if (cudaDeviceSynchronize() != cudaSuccess) {
+                        strata::core::session_dispose_private(*s, arena);
+                        reason = "private session zero failed"; break;
+                    }
+                    bslot_ss[0].push_back(std::move(s));
+                    lazy_slot_arenas[0].push_back(arena);
+                    if (fail(b == 0 ? "attach0" : "attach1") ||
+                        !unified_kv->attach_slot(size_t(b) + 1, bslot_ss[0].back().get(), safe, reason)) {
+                        if (reason.empty()) reason = "unified KV slot binding failed";
+                        break;
+                    }
+                    ++attached;
+                }
+            }
+            if (reason.empty()) {
+                std::vector<strata::core::SessionState*> slots;
+                for (auto& s : bslot_ss[0]) slots.push_back(s.get());
+                if (fail("verifier") || !ver.attach_slots(slots, reason)) {
+                    if (reason.empty()) reason = "batch verifier allocation failed";
+                } else verifier_attached = true;
+            }
+            if (reason.empty() && batch_mtp) {
+                const strata::core::OnDevice on_mtp(mtp.device());
+                for (int b = 0; b < o.batch; ++b) {
+                    auto d = std::make_unique<strata::core::MtpDrafter>();
+                    float* r = nullptr;
+                    const size_t bytes = size_t(o.spec) * size_t(g.hc) * size_t(g.n_embd) * sizeof(float);
+                    if (fail(b == 0 ? "draft0" : "draft1") ||
+                        !d->load(o.mtp, draft_geometry, *bslot_ss[0][size_t(b)], o.spec, reason, o.mtp_window, &mtp) ||
+                        cudaMalloc((void**) &r, bytes) != cudaSuccess) {
+                        if (r) cudaFree(r);
+                        batch_mtp = false; break;
+                    }
+                    d->set_max_drafts(1);
+                    d->set_ple_session(bslot_ss[0][size_t(b)].get());
+                    slot_mtp_rows.emplace_back(r, free_slot_mtp_rows);
+                    if (!d->bind(wt, &native_head, r, reason, &mtp)) {
+                        batch_mtp = false; break;
+                    }
+                    slot_mtp.push_back(std::move(d));
+                }
+                if (!batch_mtp) {
+                    slot_mtp.clear();
+                    slot_mtp_rows.clear();
+                    reason.clear();
+                    std::fprintf(stderr, "strata lazy parallel: slot draft unavailable; target-only batch\n");
+                }
+            }
+            if (reason.empty() && stop_req.load() == 1)
+                reason = "waiting admission cancelled during activation";
+            if (!reason.empty()) {
+                // No request has entered a slot. Invalidate graphs before
+                // detaching shared-KV bindings; keep allocations on any failed
+                // detach rather than leave dangling graph pointers.
+                std::string cleanup;
+                if (verifier_attached && !ver.detach_slots(cleanup)) {
+                    reason += "; verifier detach failed: " + cleanup;
+                    reclaim_fatal = true; return false;
+                }
+                for (size_t id = attached; id > 0; --id)
+                    if (!unified_kv->detach_slot(id, false, true, safe, cleanup)) {
+                        reason += "; slot detach failed: " + cleanup;
+                        reclaim_fatal = true; return false;
+                    }
+                for (size_t id = bslot_ss[0].size(); id > 0; --id) {
+                    strata::core::session_dispose_private(*bslot_ss[0][id - 1], lazy_slot_arenas[0][id - 1]);
+                }
+                bslot_ss[0].clear(); lazy_slot_arenas[0].clear();
+                if (reclaimed) {
+                    std::string refill;
+                    cache_reclaim_command("CACHE_REGROW", refill, true);
+                    if (!refill.empty()) std::fprintf(stderr, "strata lazy parallel: rollback cache: %s\n", refill.c_str());
+                }
+                parallel_state = strata::core::ParallelState::solo;
+                return false;
+            }
+            parallel_state = strata::core::ParallelState::parallel;
+            ++parallel_generation;
+            std::fprintf(stderr, "strata lazy parallel: first overlap activated generation=%llu in %.1f ms; "
+                                 "sessions=%zu cache_slots=%lld\n", (unsigned long long) parallel_generation,
+                         std::chrono::duration<double, std::milli>(Clock::now() - started).count(),
+                         bslot_ss[0].size(), (long long) xcache.slots());
+            return true;
+        };
         // 1: reserved, 0: shortage/cancel, -1: fatal. Optional image preparation
         // is exact and never evicts/waits. A real shortage gives active owners a
         // bounded quantum before pressure-parking one; paused BYIELD owners stay.
@@ -11082,6 +11264,18 @@ int main(int argc, char** argv) {
                     std::printf("ERR BGEN: no such free slot (--batch %d) or a bad max_new\n", o.batch);
                     std::fflush(stdout);
                     continue;
+                }
+                if (lazy_parallel_slots && parallel_state != strata::core::ParallelState::parallel) {
+                    std::string activation_error;
+                    if (!activate_parallel(activation_error)) {
+                        if (reclaim_fatal) { std::printf("ERR %s\n", activation_error.c_str()); return 1; }
+                        // The existing BGEN refusal is terminal and retried by the
+                        // frontend. No GEN/BADM or slot ownership has begun.
+                        std::fprintf(stderr, "strata lazy parallel: activation refused: %s\n", activation_error.c_str());
+                        std::printf("ERR BGEN: lazy parallel activation unavailable\n");
+                        std::fflush(stdout);
+                        continue;
+                    }
                 }
                 admit_slot = (int) b;
                 admit_max_new = mn;
@@ -12454,9 +12648,12 @@ int main(int argc, char** argv) {
                     if (ys >= 0) {
                         // only where the rest is read the same way after it (more than a chunk and more than a short
                         // read left), text only, and into a slot that is not decoding
+                        // L5: with lazy slots not yet activated there is no slot session to park the read in, so the
+                        // yield is not taken (the read goes on; the existing 'BYIELD not taken' path).
                         const bool can = ys < (int) bs.size() && !bs[(size_t) ys].active &&
                                          (admit_slot < 0 || ys == admit_slot) && req_imgs.empty() && o.prompt_cache > 0 &&
-                                         b0 - q > std::max<int64_t>(C, o.short_read);
+                                         b0 - q > std::max<int64_t>(C, o.short_read) &&
+                                         (size_t) ys < bslot_ss[0].size();
                         std::string ye;
                         const auto ty = Clock::now();
                         std::vector<int32_t> pre(ids.begin(), ids.begin() + q);

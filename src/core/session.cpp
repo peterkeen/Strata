@@ -184,6 +184,22 @@ void session_release(SessionState& s) {
         }
 }
 
+void session_dispose_private(SessionState& s, void* arena) {
+    session_release(s);
+    for (int64_t j = 0; s.qsa_states != nullptr && j < s.qsa_alloc; ++j) {
+        auto& q = s.qsa_states[s.qsa_ord0 + j];
+        if (q.host_step != nullptr) cudaFreeHost(q.host_step);
+        if (q.host_pos != nullptr) cudaFreeHost(q.host_pos);
+        // Borrowed K/V never owns pinned backing. An owner can use this helper
+        // too, but only after every borrower is gone.
+        if (q.kv_host_arena != nullptr) cudaFreeHost(q.kv_host_arena);
+    }
+    delete[] s.qsa_states;
+    if (arena != nullptr) cudaFree(arena);
+    s.qsa_states = nullptr;
+    s.qsa_alloc = 0;
+}
+
 void session_zero(SessionState& s, const ModelGeometry& g, const float* R_init, void* stream) {
     cudaStream_t cs = (cudaStream_t) stream;
     // the residual: `hc` copies of the one vector a caller hands in.  A real sequence's first token is the

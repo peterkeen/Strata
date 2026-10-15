@@ -238,6 +238,28 @@ inline bool build_parallel_broker_activation_plan(
     return true;
 }
 
+// Find the largest segment-aligned cache prefix that releases the activation
+// budget without spending the driver's free-memory floor. `bytes_of` must
+// return the mapped byte prefix for each slot count (not an average blob size).
+// No state changes on failure: the caller may refuse the waiting admission.
+template <class BytesOf>
+inline bool parallel_activation_keep_slots(int64_t slots, uint64_t mapped_bytes,
+                                           uint64_t free_bytes, uint64_t required_bytes,
+                                           uint64_t free_floor_bytes, BytesOf bytes_of,
+                                           int64_t& keep) {
+    keep = slots;
+    uint64_t target = 0;
+    if (slots < 0 || !ParallelResourceLedger::checked_add(required_bytes, free_floor_bytes, target)) return false;
+    for (;;) {
+        const uint64_t prefix = bytes_of(keep);
+        if (prefix > mapped_bytes) return false;
+        const uint64_t released = mapped_bytes - prefix;
+        if (free_bytes >= target || released >= target - free_bytes) return true;
+        if (keep == 0) return false;
+        --keep;
+    }
+}
+
 struct ParallelSafePoint {
     bool commits_drained = false;
     bool dma_drained = false;
