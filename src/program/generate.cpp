@@ -11052,7 +11052,12 @@ int main(int argc, char** argv) {
                 if (batch_on() || (piped && pipe_inflight())) cerr = "CACHE_RECLAIM: batch slots are decoding";
                 else if (!adapt_tick(true)) cerr = "CACHE_RECLAIM: adaptive drain failed";
                 else cache_reclaim_command(line, cerr);
-                if (!cerr.empty()) std::printf("ERR %s\n", cerr.c_str());
+                // One reply per command: a refusal is one ERR line; a reclaim/regrow that ran prints exactly one CACHE
+                // line (degraded=1 carries a partial result) and its degraded detail goes to the log, not a second ERR
+                // that the next command would read as its own reply.
+                const bool ran = cerr.find("DEGRADED") != std::string::npos;
+                if (!cerr.empty() && !ran) std::printf("ERR %s\n", cerr.c_str());
+                else if (ran) std::fprintf(stderr, "strata serve: %s\n", cerr.c_str());
                 std::fflush(stdout);
                 if (reclaim_fatal) return 1;
                 continue;
