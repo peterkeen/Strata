@@ -172,7 +172,10 @@ def main(argv=None):
             f = rec.get("fields") or {}
             if name.startswith("CACHE_RECLAIM"):
                 keep = int(name.split()[1])
-                smoke.require(int(f["expert_slots"]) == keep, f"reclaim mapped {f['expert_slots']} != {keep}")
+                # the cache shrinks in whole VMM segments: it keeps at least `keep`, and less than one segment more
+                got = int(f["expert_slots"])
+                smoke.require(keep <= got < keep + 140, f"reclaim mapped {got}, wanted {keep} (+ < one 512 MiB segment, ~128 slots)")
+                smoke.require(int(f["unrefilled"]) == full - got, f"reclaim lists {f['unrefilled']} displaced, want {full - got}")
                 smoke.require("degraded" not in f, f"reclaim reported degraded: {rec['reply']}")
             if name == "CACHE_REGROW":
                 smoke.require(int(f["expert_slots"]) == full, f"regrow mapped {f['expert_slots']} != {full}")
