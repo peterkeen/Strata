@@ -655,6 +655,8 @@ def btrace(*a):
         print("[batch-trace]", threading.get_ident() % 10000, *a, file=sys.stderr, flush=True)
 
 
+LAZY_PARALLEL_RETRY_S = 60.0  # after failed slot activation, serve solo before trying BGEN again
+
 EOS_IDS = {248044, 248046}   # <|endoftext|>, <|im_end|>: the engine's default --eos-ids
 
 
@@ -720,6 +722,7 @@ class StrataEngine:
         self.progress_ms = 0             # PP's own milliseconds since the prompt started (its third field)
         self.reused = 0                  # RESUME: prompt tokens not read again (a client takes them out of the work)
         self.solo_active = False          # batch-capable engine running GEN instead of a batch slot
+        self.lazy_parallel_retry_at = 0.0  # process-local; __init__ clears it on restart
         self.silent_note = None
         self.last_err = None
         try:                            # a ready-made engine's BUILD.json says its version
@@ -1674,6 +1677,7 @@ class StrataEngine:
         phase = "none"            # solo -> (admit -> slot) ; "done" once the engine has finished with this request
         stop_sent = False
         yields, solo_again, refused = 0, 0, 0
+        force_solo = False       # this request must replay after a failed activation, even if the timer expires
         admit_wait, admit_since, admit_said = False, 0.0, False   # #1603: waiting for a slot, since when, said
         try:
             while True:   # a request in a slot that is left alone goes back to the solo path
@@ -1685,7 +1689,20 @@ class StrataEngine:
                 with self.slot_cv:
                     self.pressure_waits.pop(pressure_key, None)
                     alone = not any(self.slot_busy) and self.waiting == 0
-                if alone and left > 1:
+                    solo_fallback = force_solo or time.monotonic() < self.lazy_parallel_retry_at
+                    slots_active = any(self.slot_busy)
+                if solo_fallback and slots_active:
+                    # Existing admitted slots must finish before GEN can own the main session. Do not hold ctl
+                    # while waiting: a paused slot may need it to complete its admission.
+                    self.ctl.release()
+                    holding = False
+                    with self.slot_cv:
+                        self.slot_cv.wait(timeout=0.5)
+                    if cancel.is_set():
+                        return
+                    yield None
+                    continue
+                if (alone and left > 1) or solo_fallback:
                     command_out, command_epoch = len(out), self._kv_progress_epoch
                     head = f"GENI {left}{keys} {embeddings}" if embeddings else f"GEN {left}{keys}"
                     self._last_done = None                  # (#879: this request's DONE decides below)
@@ -1697,15 +1714,16 @@ class StrataEngine:
                     self._ctl_erred = False
                     def others():
                         with self.slot_cv:
-                            return self.waiting > 0
+                            return self.waiting > 0 and time.monotonic() >= self.lazy_parallel_retry_at and not force_solo
                     for x in self._control(cancel, pending.append, stop_when=others):
                         while pending:
                             t = pending.pop(0)
                             out.append(t)
                             yield t
                         if x is None:                       # a heartbeat (False: a token, flushed above)
-                            if (reserved is None and not out and not embeddings and yields < self.YIELDS_MAX and
-                                    self._shorter_waiting(len(prompt), left)):
+                            if (not solo_fallback and time.monotonic() >= self.lazy_parallel_retry_at and
+                                    reserved is None and not out and not embeddings and
+                                    yields < self.YIELDS_MAX and self._shorter_waiting(len(prompt), left)):
                                 with self.slot_cv:          # the slot the part read will wait in
                                     reserved = self.pick_slot(prompt)
                                     if reserved is not None:
@@ -1855,6 +1873,23 @@ class StrataEngine:
                         # for a moment (busy here too), and wait for another one - never a 400 for the conversation.
                         if not (self._ctl_erred and str(e).startswith("BGEN:") and left >= 1 and not cancel.is_set()):
                             raise
+                        if str(e) == "BGEN: lazy parallel activation unavailable":
+                            # Native refused before reading or admitting anything. Resume the same prompt/output
+                            # and seed with GEN; no slot was published and no BADM/BDONE will follow.
+                            with self.slot_cv:
+                                self.lazy_parallel_retry_at = time.monotonic() + LAZY_PARALLEL_RETRY_S
+                                self.slot_live[slot] = None
+                                self.slot_held[slot] = []
+                                self.slot_busy[slot] = False
+                                self.slot_claims.discard(slot)
+                                self.slot_cv.notify_all()
+                            self.forget_request_slot()
+                            self._ctl_erred = False
+                            phase, paused, slot = "none", None, None
+                            force_solo = True
+                            print("[strata] parallel: slot activation unavailable; serving one request at a time",
+                                  flush=True)
+                            break
                         refused += 1
                         print(f"[strata] parallel: the engine refused slot {slot} ({e}); trying another slot "
                               f"({refused}/{self.BGEN_REFUSALS_MAX}) (issue #1994)", flush=True)
@@ -1881,6 +1916,8 @@ class StrataEngine:
                     if not cont and self._yielded is not None and self._yielded[0] == slot and not cancel.is_set():
                         continue                            # gave way: again once the shorter request is in
                     break
+                if force_solo and slot is None:
+                    continue
                 self.ctl.release()
                 holding = False
                 if not cont:
