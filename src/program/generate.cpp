@@ -8719,6 +8719,7 @@ int main(int argc, char** argv) {
         drive.d.pcie_num = std::max(0, std::min(256, (int) (o.pcie_frac * 256.0 + 0.5)));
         const bool all_experts_resident = !host_res.empty() &&
             std::all_of(host_res.begin(), host_res.end(), [](int32_t r) { return r >= 0; });
+        int tail_skip_solo_rank = 0;   // STRATA_TAIL_SKIP_SOLO (below): 0 = off
         // STRATA_ROUTE_TAIL_SKIP: ON BY DEFAULT on CUDA builds (owner decision, 0.1.42) and on HIP gfx1200/gfx1201 (0.1.43): a missed expert that every token of
         // a verify window routes at rank 7 or lower is neither copied nor computed (answers differ slightly from 0.1.41,
         // KL ~0.003-0.006; docs/DETAILS.md).  =0 restores 0.1.41's bytes.  Nothing to do, so no default and no line, when every
@@ -8749,6 +8750,19 @@ int main(int argc, char** argv) {
                                      "few are missed and skipping them costs more draft acceptance than it saves; "
                                      "STRATA_ROUTE_TAIL_SKIP=7 turns it on\n", 100.0 * (double) cached_experts / (double) host_res.size());
             if (tail_default_ok) strata::core::set_tail_skip_rank(7);
+            // str-s1w: STRATA_TAIL_SKIP_SOLO=R (opt-in; batch engines only): the skip at rank R in windows that hold ONE
+            // request (solo GEN with no slot decoding, or a batch window with one active slot) and off in mixed windows,
+            // so no request's skip ever depends on another's tokens.  Measured on nibbler (2026-10-15): the batch default
+            // (off) costs a lone request ~17% decode against a solo engine, almost all of it this skip.
+            if (o.batch > 0 && tse == nullptr && !all_experts_resident && o.peer_device < 0) {
+                const char* ss = std::getenv("STRATA_TAIL_SKIP_SOLO");
+                const int r = ss != nullptr ? std::atoi(ss) : 0;
+                if (r > 0 && r < 10) {
+                    tail_skip_solo_rank = r;
+                    std::fprintf(stderr, "strata serve: STRATA_TAIL_SKIP_SOLO=%d: route tail skip at rank %d in windows "
+                                         "with one request, off in mixed batch windows\n", r, r);
+                }
+            }
             if (strata::core::tail_skip_rank() > 0 && !all_experts_resident)
                 std::fprintf(stderr, "strata serve: STRATA_ROUTE_TAIL_SKIP=%d is ON%s: a missed expert that every token of a verify window routes at rank %d or "
                                      "lower is skipped (+10..20%% decode on 12-16 GB cards that miss experts, answers differ slightly from 0.1.41); "
@@ -10639,6 +10653,7 @@ int main(int argc, char** argv) {
                 bt_a_rounds0 = a_rounds; bt_a_swapped0 = a_swapped;
             }
             const Clock::time_point w0 = Clock::now();
+            if (tail_skip_solo_rank > 0) strata::core::set_tail_skip_rank(A == 1 ? tail_skip_solo_rank : 0);
             if (!ver.run_slot_rows(rows, S, tok, pos, win_pool_fn, win_pool_user, outb, err) || drive.d.failed) {
                 std::printf("ERR %s\n", drive.d.failed && drive.d.fail ? drive.d.fail : err.c_str());
                 return false;
@@ -12759,6 +12774,9 @@ int main(int argc, char** argv) {
                                  want && !strata::aux_cpus::enabled() ? " (asked for, but no CPU is spare: see the start-up line)" : "");
             }
             ver.pause_pcie_balance(req_pcie_set);   // the measured costs keep across requests
+            // STRATA_TAIL_SKIP_SOLO: a solo GEN's windows hold one request; batch windows that run between this request's
+            // own steps set their own rank (batch_step), so restore it here for the solo windows
+            if (tail_skip_solo_rank > 0) strata::core::set_tail_skip_rank(batch_on() ? 0 : tail_skip_solo_rank);
             drive.d.pcie_num = std::max(0, std::min(256, (int) (req_pcie_frac * 256.0 + 0.5)));
             // a layer split: CUDA0's share as asked; a later GPU keeps its own (its link) unless the request sets one
             for (int st = 0; st < split_drive.n; ++st)
