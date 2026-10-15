@@ -57,6 +57,10 @@ def engine_command(cfg, exe, context):
     env = dict(os.environ)
     env.update({str(k): str(v) for k, v in (cfg.get("env") or {}).items()})
     env["STRATA_LAZY_CACHE_RECLAIM"] = "1"
+    # Route tail skip (on by default on CUDA) drops a missed low-rank expert, so the answer depends on which experts
+    # are cached: a reclaim legitimately changes it.  Off here, so the canary's parity measures the tier substitution
+    # (the displaced experts served from RAM/file instead of VRAM), not a policy that keys on the cache size.
+    env["STRATA_ROUTE_TAIL_SKIP"] = "0"
     env.pop("STRATA_PREFILL_SLOT_SHARE", None)
     dirs = [smoke.resolve_path(d, cwd) for d in cfg.get("lib_dirs") or []]
     if dirs:
@@ -178,8 +182,17 @@ def main(argv=None):
                 smoke.require(int(f["unrefilled"]) == full - got, f"reclaim lists {f['unrefilled']} displaced, want {full - got}")
                 smoke.require("degraded" not in f, f"reclaim reported degraded: {rec['reply']}")
             if name == "CACHE_REGROW":
-                smoke.require(int(f["expert_slots"]) == full, f"regrow mapped {f['expert_slots']} != {full}")
-                smoke.require(int(f["unrefilled"]) == 0 and "degraded" not in f, f"regrow degraded: {rec['reply']}")
+                # A regrow maps what the driver can give back: other allocations may have taken part of the VRAM the
+                # reclaim released.  Then the command must SAY so (degraded=1) and account for every expert it could
+                # not refill (unrefilled == full - mapped, all on the file/RAM tier).  A full regrow must be clean.
+                got = int(f["expert_slots"])
+                smoke.require(got > a.keep, f"regrow mapped {got}, not above the reclaimed {a.keep}")
+                if got == full:
+                    smoke.require(int(f["unrefilled"]) == 0 and "degraded" not in f, f"full regrow degraded: {rec['reply']}")
+                else:
+                    smoke.require("degraded" in f and int(f["unrefilled"]) == full - got,
+                                  f"partial regrow must report degraded with unrefilled == {full - got}: {rec['reply']}")
+                ev.setdefault("regrow", []).append({"mapped": got, "full": full, "unrefilled": int(f["unrefilled"])})
             if "generation" in f:
                 g = int(f["generation"])
                 smoke.require(gen_before is None or g > gen_before, "generation did not advance")
