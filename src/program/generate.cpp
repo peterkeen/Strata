@@ -14182,6 +14182,14 @@ int main(int argc, char** argv) {
                                      "VRAM tier, %lld blob reads from the file\n",
                              (double) src.resident_bytes() / 1073741824.0, (long long) src.exchanges(),
                              (long long) src.file_reads());
+            if (src.exchange_stats_on()) {   // str-s1w.19: the host memcpy cost of the exchange commits, cumulative
+                const auto& xs = src.exchange_copy_stats();
+                std::fprintf(stderr, "strata serve: exchange copies: %lld copies, %.1f MB, %.1f ms host (%.2f GB/s); by size "
+                                     "3.07MB %lld / 3.58MB %lld / 3.99MB %lld / other %lld\n",
+                             (long long) xs.copies, xs.bytes / 1e6, xs.us / 1000.0,
+                             xs.us > 0 ? xs.bytes / (xs.us * 1e3) : 0.0, (long long) xs.by_size_n[0],
+                             (long long) xs.by_size_n[1], (long long) xs.by_size_n[2], (long long) xs.other_n);
+            }
             if (ajob)   // --adapt-async, cumulative (a round may still be in flight: it lands before the next request)
                 std::fprintf(stderr, "strata serve: asynchronous adaptive tier: %lld rounds, %lld experts swapped in, "
                                      "%.1f ms per round (start to flip, between windows)\n",

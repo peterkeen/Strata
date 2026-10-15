@@ -760,6 +760,15 @@ public:
     /// The compact copy's blob of `(layer, expert)`, or null; not counted as a read (any thread).
     const uint8_t* resident_blob(int64_t layer, int64_t expert) const;
     int64_t exchanges() const { return exchanges_; }
+    /// str-s1w.19 (STRATA_EXCHANGE_STATS=1, off by default): the commit copies' cost, cumulative - copies and bytes per
+    /// blob size (Q4: 3,072,000 / 3,584,000 / 3,993,600) and host wall microseconds spent in the memcpys.
+    struct ExchangeCopyStats {
+        int64_t copies = 0, bytes = 0, us = 0;
+        int64_t by_size_n[3] = {}, by_size_bytes[3] = {};
+        int64_t other_n = 0;
+    };
+    const ExchangeCopyStats& exchange_copy_stats() const { return xstats_; }
+    bool exchange_stats_on() const { return xstats_on_; }
     bool exchange_rotation() const { return exchange_storage_.active(); }
     uint64_t rotated_exchanges() const { return exchange_storage_.exchanges(); }
     uint64_t avoided_exchange_copy_bytes() const { return exchange_storage_.avoided_bytes(); }
@@ -1012,6 +1021,9 @@ private:
     int64_t xstage_cap_ = 0;
     uint64_t xstage_blob_ = 0;
     int64_t exchanges_ = 0;
+    bool xstats_on_ = false;                  ///< STRATA_EXCHANGE_STATS=1
+    ExchangeCopyStats xstats_;
+    void note_exchange_copy(uint64_t bytes, int64_t us);
     std::atomic<int64_t> file_reads_{0};
     int64_t reads_ = 0;
 #if defined(_WIN32)

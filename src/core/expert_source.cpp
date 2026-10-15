@@ -804,6 +804,10 @@ const uint8_t* FileExpertSource::io_blob(int64_t layer, int64_t expert) {
 
 bool FileExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
     close();
+    {
+        const char* xs = std::getenv("STRATA_EXCHANGE_STATS");
+        xstats_on_ = xs != nullptr && std::strcmp(xs, "1") == 0;
+    }
     const char* reusable_workers = std::getenv("STRATA_FETCH_WORKERS");
     fetch_workers_enabled_ = reusable_workers != nullptr && std::strcmp(reusable_workers, "1") == 0;
     if (n_layers <= 0 || n_expert <= 0) { err = "FileExpertSource: the geometry is empty"; return false; }
@@ -3357,7 +3361,11 @@ int64_t FileExpertSource::commit_exchanges() {
         const uint64_t at = complement_offsets_[x.in];
         if (src != nullptr && at != kNoComplement && at <= complement_bytes_ && x.bytes <= complement_bytes_ - at &&
             complement_host_ != nullptr) {
+            const auto t0 = xstats_on_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::memcpy((uint8_t*) complement_host_ + (size_t) at, src, (size_t) x.bytes);
+            if (xstats_on_)
+                note_exchange_copy(x.bytes, std::chrono::duration_cast<std::chrono::microseconds>(
+                                                std::chrono::steady_clock::now() - t0).count());
             if (detail::exchange_cache_complement(complement_offsets_, x.in, x.out)) ++n;
         }
         override_[x.out] = nullptr;
@@ -3373,9 +3381,26 @@ void FileExpertSource::commit_copies() {
         const uint8_t* src = override_.empty() ? nullptr : override_[x.out];
         const uint64_t at = complement_offsets_[x.in];
         if (src != nullptr && at != kNoComplement && at <= complement_bytes_ && x.bytes <= complement_bytes_ - at &&
-            complement_host_ != nullptr)
+            complement_host_ != nullptr) {
+            const auto t0 = xstats_on_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
             std::memcpy((uint8_t*) complement_host_ + (size_t) at, src, (size_t) x.bytes);
+            if (xstats_on_)
+                note_exchange_copy(x.bytes, std::chrono::duration_cast<std::chrono::microseconds>(
+                                                std::chrono::steady_clock::now() - t0).count());
+        }
     }
+}
+
+void FileExpertSource::note_exchange_copy(uint64_t bytes, int64_t us) {
+    // commit_copies runs on the adaptive job thread, commit_exchanges on the serving thread, never both at once for one
+    // round (the flip waits for the copies): plain counters, read only between requests.
+    xstats_.copies += 1;
+    xstats_.bytes += (int64_t) bytes;
+    xstats_.us += us;
+    static constexpr uint64_t kQ4[3] = {3072000, 3584000, 3993600};
+    for (int i = 0; i < 3; ++i)
+        if (bytes == kQ4[i]) { ++xstats_.by_size_n[i]; xstats_.by_size_bytes[i] += (int64_t) bytes; return; }
+    ++xstats_.other_n;
 }
 
 int64_t FileExpertSource::commit_flip() {
