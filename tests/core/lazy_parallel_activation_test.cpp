@@ -52,6 +52,18 @@ int main() {
     CHECK(result.ok() && model.physical_session_count() == 2 && model.generation() == 1);
     CHECK(model.bindings_published() && model.state() == ParallelState::parallel);
     (void) detached;
+    {   // segment-rounded prefixes (the runtime's kept_bytes): a keep count frees only whole segments, so a release that
+        // exact slot bytes would cover needs a smaller keep once rounded (the first GPU window's refusals)
+        const uint64_t seg = 100, slot = 30, mapped = 1000;   // 33 slots in 10 segments
+        auto exact = [&](int64_t n) { return uint64_t(n) * slot; };
+        auto rounded = [&](int64_t n) { const uint64_t b = uint64_t(n) * slot; return std::min<uint64_t>((b + seg - 1) / seg * seg, mapped); };
+        int64_t k_exact = -1, k_round = -1;
+        CHECK(parallel_activation_keep_slots(33, mapped, 50, 210, 50, exact, k_exact));
+        CHECK(parallel_activation_keep_slots(33, mapped, 50, 210, 50, rounded, k_round));
+        CHECK(mapped - rounded(k_round) + 50 >= 260);            // what the shrink really frees covers the need
+        CHECK(mapped - rounded(k_exact) + 50 < 260);             // the exact-bytes keep would have fallen short
+        CHECK(k_round < k_exact);
+    }
     std::printf("lazy_parallel_activation_test: %d checks passed\n", checks);
     return 0;
 }

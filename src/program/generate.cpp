@@ -11028,9 +11028,18 @@ int main(int argc, char** argv) {
                 budget.required_total_bytes, floor, needed);
             int64_t keep = xcache.slots();
             bool reclaimed = false;
+            // The cache shrinks in whole VMM segments (rounded UP to keep the first `keep` slots), so what stays mapped
+            // for a keep count is its byte prefix rounded up to a segment: price the release on that, or the reclaim
+            // frees up to a segment less than planned (the first GPU window refused every activation this way).
+            const uint64_t seg = uint64_t(std::max<int64_t>(xcache.segment_bytes(), 1));
+            const uint64_t mapped_now = uint64_t(xcache.mapped_bytes());
+            auto kept_bytes = [&](int64_t n) {
+                const uint64_t b = uint64_t(xcache.bytes_of(n));
+                return std::min<uint64_t>((b + seg - 1) / seg * seg, mapped_now);
+            };
             if (fail("shrink") || !priced || !strata::core::parallel_activation_keep_slots(
-                    xcache.slots(), uint64_t(xcache.mapped_bytes()), uint64_t(free_b),
-                    budget.required_total_bytes, floor, [&](int64_t n) { return uint64_t(xcache.bytes_of(n)); }, keep)) {
+                    xcache.slots(), mapped_now, uint64_t(free_b),
+                    budget.required_total_bytes, floor, kept_bytes, keep)) {
                 reason = "not enough reclaimable expert-cache capacity";
             } else if (keep < xcache.slots()) {
                 const uint64_t before = reclaim_generation;
@@ -11039,8 +11048,14 @@ int main(int argc, char** argv) {
             }
             size_t now_free = 0;
             if (reason.empty() && (cudaMemGetInfo(&now_free, &total_b) != cudaSuccess ||
-                                   now_free < needed || reclaim_fatal))
-                reason = "expert-cache reclaim did not release the activation budget";
+                                   now_free < needed || reclaim_fatal)) {
+                char buf[240];
+                std::snprintf(buf, sizeof buf, "expert-cache reclaim did not release the activation budget (need %.0f MiB "
+                              "free, have %.0f MiB; was %.0f MiB; cache %lld -> %lld slots, keep %lld)",
+                              needed / 1048576.0, now_free / 1048576.0, free_b / 1048576.0,
+                              (long long) xcache.full_slots(), (long long) xcache.slots(), (long long) keep);
+                reason = buf;
+            }
             size_t attached = 0;
             bool verifier_attached = false;
             if (reason.empty()) {
