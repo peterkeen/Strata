@@ -222,6 +222,45 @@ allocating mapped exchange buffers per class, making `exchange_buffer(q)` and
 `stage_exchange` address a `(bytes, q)` class queue, and keeping the existing copy
 path whenever class setup or commit validation fails.
 
+### Mixed-size exchange rotation follow-up (str-s1w.19, step 2)
+
+Step 1 on nibbler's production Q4 with `STRATA_EXCHANGE_STATS=1`, a pinned
+64-GiB compact complement, experts.bin and synchronous commits (no
+`--adapt-async`) measured 224–253 host commit copies/request, approximately
+13 GB/s and 8–12% of decode wall time. Blob payloads were 90% 3,072,000 B,
+8% 3,584,000 B and 2% 3,993,600 B. This measures the copy cost; it does
+not measure a rotation speedup.
+
+Step 2 adds an opt-in mixed-size `ExchangeStorage` path. It retains the compact
+complement's original allocation and addresses; each blob-size class has its own
+mapped pinned spare queue and commits change slot ownership only after D2H,
+H2D and CPU readers are fenced by the existing serving path. Unsupported
+ownership changes use the old copy path if they can be represented safely;
+class setup failures use the complete legacy copy path. `STRATA_EXCHANGE_STATS=1`
+reports copied counts/bytes/time as before and avoided counts/bytes separately.
+The default without `STRATA_EXCHANGE_ROTATE=1` uses the same max-size exchange
+allocation and copy branch as step 1.
+
+At `--adapt-swaps 192` the current synchronous reserve requests
+`min(192,96) = 96` exchange slots. Three queues of 96 at 3,072,000,
+3,584,000 and 3,993,600 B require **1,022,361,600 B (975 MiB)** of extra
+pinned/mapped RAM, reported on the activation line. That replaces the legacy
+96 × 3,993,600 B = 383,385,600 B (365.625 MiB) exchange allocation: the
+increment over that allocation is **638,976,000 B (609.375 MiB)**. It does not
+pad the 64-GiB complement. `--adapt-async` reserves up to 192 slots instead,
+which doubles both figures; this is not the measured production setting.
+Allocation failure frees all partial class queues before falling back to one
+legacy buffer allocation. The size is an allocation bound, not measured RSS.
+
+CPU `exchange_storage_test` release (`-O2 -DNDEBUG -Werror`), ASan/UBSan and
+TSan pass with a copy-based byte oracle after random mixed-size exchanges and
+rejected swaps; CUDA integration and an isolated Q4 A/B are still pending.
+The existing D2H call sites in `generate.cpp` must pass the layer to the new
+`exchange_buffer(q, layer)` overload *before* enabling this feature on mixed
+layouts. Until that call-site change is made, the mixed-size runtime path is
+**not ready to run**: the one-argument accessor cannot know the eviction's
+class before the D2H transfer. No live setting was changed by step 2.
+
 ### Kernel experiments come after dispatch/memory opportunities
 
 - `native_expert.cpp:168–176` has an opt-in AVX2 Q4 multi-token kernel, but no

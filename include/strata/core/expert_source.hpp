@@ -725,7 +725,7 @@ public:
     // buffer and calls `stage_exchange`: `out` is then read from that buffer, and `in` still from here (the CPU
     // computes both until the swap lands).  Once the slot copy has landed, `commit_exchanges` moves `out` into
     // `in`'s place, so the copy keeps holding exactly the experts the GPU does not - with no read of the file.
-    // STRATA_EXCHANGE_ROTATE=1 can instead transfer buffer ownership (uniform, fully pinned/mapped slots).
+    // STRATA_EXCHANGE_ROTATE=1 can instead transfer same-size buffer ownership (fully pinned/mapped slots).
     /// Whether the compact copy holds `(layer, expert)`.
     bool has_resident(int64_t layer, int64_t expert) const;
     /// L4: prove that an expert omitted from the compact RAM complement has a stable,
@@ -738,6 +738,9 @@ public:
     /// The exchange buffers are page-locked (cudaHostAlloc): copies to and from them are asynchronous.
     bool exchange_pinned() const { return xstage_pinned_; }
     uint8_t* exchange_buffer(int64_t q) const;
+    /// Mixed-size rotation needs the eviction's layer before D2H starts. The one-argument form
+    /// retains the legacy max-size queue when rotation is off or the layout is uniform.
+    uint8_t* exchange_buffer(int64_t q, int64_t layer) const;
     /// Requires `has_resident(layer, in)`, `!has_resident(layer, out)` and `exchange_buffer(q)` holding out's blob.
     bool stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q);
     /// --pipeline-windows: size the exchange table now, so a `stage_exchange` on the adaptive tier's thread never
@@ -766,6 +769,7 @@ public:
         int64_t copies = 0, bytes = 0, us = 0;
         int64_t by_size_n[3] = {}, by_size_bytes[3] = {};
         int64_t other_n = 0;
+        int64_t avoided_n = 0, avoided_bytes = 0;
     };
     const ExchangeCopyStats& exchange_copy_stats() const { return xstats_; }
     bool exchange_stats_on() const { return xstats_on_; }
@@ -1016,7 +1020,9 @@ private:
     std::vector<Exchange> staged_;
     std::vector<size_t> soft_in_;             ///< soft_commit_exchanges: per `out` index, the `in` whose place it will take (SIZE_MAX: none)
     const uint8_t* xstage_dev_ = nullptr;     ///< the exchange buffers' device alias (soft_commit_exchanges)
-    uint8_t* xstage_ = nullptr;               ///< exchange buffers, `xstage_cap_ x xstage_blob_`
+    uint8_t* xstage_ = nullptr;               ///< legacy/uniform exchange buffers, `xstage_cap_ x xstage_blob_`
+    struct ExchangeClassArena { size_t bytes; uint8_t* host; };
+    std::vector<ExchangeClassArena> xclasses_; ///< mapped pinned allocations; original owners until close
     bool xstage_pinned_ = false;
     int64_t xstage_cap_ = 0;
     uint64_t xstage_blob_ = 0;

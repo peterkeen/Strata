@@ -314,7 +314,7 @@ bool resident_stage_swaps(strata::core::FileExpertSource& src, const std::vector
         if (slot < 0) continue;
         const SwapHome home = locate(s.layer);
         const strata::core::OnDevice on(home.dev);
-        if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(q), home.cache->device_slot(slot),
+        if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(q, s.layer), home.cache->device_slot(slot),
                             (size_t) strata::kernels::cpu::expert_layout().blob_bytes(s.layer), cudaMemcpyDeviceToHost,
                             home.stream); e != cudaSuccess) {
             std::fprintf(stderr, "strata: copy back of layer %d slot %d (device %d) failed: %s\n", (int) s.layer,
@@ -9453,7 +9453,7 @@ int main(int argc, char** argv) {
                 const strata::core::OnDevice on(h.dev);
                 for (const ASwap& w : aswaps) {
                     if (w.home != hi || !w.exchange) continue;
-                    if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(w.j), h.cache->device_slot(w.slot),
+                    if (const cudaError_t e = cudaMemcpyAsync(src.exchange_buffer(w.j, w.layer), h.cache->device_slot(w.slot),
                                                               (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer),
                                                               cudaMemcpyDeviceToHost, h.stream); e != cudaSuccess) {
                         std::fprintf(stderr, "strata serve: adaptive tier: copy back of layer %d slot %d (CUDA%d) failed: %s\n",
@@ -9469,7 +9469,7 @@ int main(int argc, char** argv) {
             if (src.pinned(w.layer, w.in))
                 if (const uint8_t* b = src.resident_blob(w.layer, w.in)) return b;
             // pageable, or not in the RAM copy: through a bounce buffer (an async copy)
-            uint8_t* bb = src.exchange_buffer(a_cap + w.j);
+            uint8_t* bb = src.exchange_buffer(a_cap + w.j, w.layer);
             if (bb == nullptr || !src.copy_blob(w.layer, w.in, bb)) {
                 std::fprintf(stderr, "strata serve: adaptive tier: layer %d expert %d could not be read\n", (int) w.layer,
                              (int) w.in);

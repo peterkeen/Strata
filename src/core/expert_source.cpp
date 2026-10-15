@@ -998,6 +998,8 @@ void FileExpertSource::close() {
         if (xstage_pinned_) (void) cudaFreeHost(xstage_);
         else std::free(xstage_);
     }
+    for (const auto& cls : xclasses_) (void) cudaFreeHost(cls.host);
+    xclasses_.clear();
     xstage_ = nullptr;
     xstage_pinned_ = false;
     xstage_cap_ = 0;
@@ -1006,6 +1008,9 @@ void FileExpertSource::close() {
     staged_.clear();
     exchange_storage_.clear();
     exchanges_ = 0;
+    xstats_ = {};
+    xstage_dev_ = nullptr;
+    soft_in_.clear();
     file_reads_.store(0);
     complement_arena_ = nullptr;
     complement_host_ = nullptr;
@@ -3272,8 +3277,56 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     const bool requested = rotate_env && std::strcmp(rotate_env, "1") == 0;
     const bool uniform = std::all_of(layer_blob_bytes_.begin(), layer_blob_bytes_.end(),
                                     [blob](uint64_t b) { return b == blob; });
-    const bool eligible = requested && uniform && complement_pinned_ && !complement_partial_ &&
+    const bool eligible = requested && complement_pinned_ && !complement_partial_ &&
                           complement_host_ && complement_device_ && complement_bytes_ > 0;
+    if (requested && !uniform && !eligible)
+        std::fprintf(stderr, "FileExpertSource: exchange rotation unavailable; retaining copy path: requires a fully mapped/pinned RAM complement\n");
+    // Allocate a bounded queue for every class: any one layer can use all n
+    // simultaneous slots. No resident expert is padded or moved during setup.
+    if (eligible && !uniform) {
+        std::vector<uint64_t> sizes = layer_blob_bytes_;
+        std::sort(sizes.begin(), sizes.end());
+        sizes.erase(std::unique(sizes.begin(), sizes.end()), sizes.end());
+        std::vector<detail::ExchangeStorage::SpareClass> classes;
+        std::vector<ExchangeClassArena> arenas;
+        std::string reason;
+        bool ok = true;
+        try {
+            arenas.reserve(sizes.size());
+            classes.reserve(sizes.size());
+            for (uint64_t bytes : sizes) {
+                if (bytes > SIZE_MAX / (size_t)n) { reason = "class allocation overflow"; ok = false; break; }
+                void* p = nullptr;
+                void* dev = nullptr;
+                if (cudaHostAlloc(&p, (size_t)n * (size_t)bytes, cudaHostAllocMapped) != cudaSuccess || !p) {
+                    (void) cudaGetLastError(); reason = "class allocation could not be pinned"; ok = false; break;
+                }
+                arenas.push_back({(size_t)bytes, (uint8_t*)p});
+                if (cudaHostGetDevicePointer(&dev, p, 0) != cudaSuccess || !dev) {
+                    (void) cudaGetLastError(); reason = "class allocation could not be mapped"; ok = false; break;
+                }
+                classes.push_back({(size_t)bytes, (uint8_t*)p, (const uint8_t*)dev, (size_t)n});
+            }
+            if (ok) {
+                std::vector<size_t> expert_bytes((size_t)blobs_);
+                for (size_t i = 0; i < expert_bytes.size(); ++i)
+                    expert_bytes[i] = (size_t)layer_blob_bytes_[i / (size_t)n_expert_];
+                ok = exchange_storage_.initialize_size_classes(complement_offsets_, expert_bytes,
+                    (uint8_t*)complement_host_, complement_device_, complement_bytes_, classes, 16, reason);
+            }
+        } catch (const std::bad_alloc&) { reason = "class metadata allocation failed"; ok = false; }
+        if (ok) {
+            xclasses_ = std::move(arenas);
+            xstage_pinned_ = true;
+            xstage_cap_ = n;
+            xstage_blob_ = blob;
+            std::fprintf(stderr, "FileExpertSource: mixed-size exchange rotation enabled: %zu classes, %lld slots/class, %llu extra pinned bytes (complement unchanged); no supported host commit memcpy\n",
+                         xclasses_.size(), (long long)n, (unsigned long long)exchange_storage_.spare_bytes());
+            return true;
+        }
+        for (const auto& cls : arenas) (void) cudaFreeHost(cls.host);
+        std::fprintf(stderr, "FileExpertSource: exchange rotation unavailable; retaining copy path: %s\n", reason.c_str());
+    }
     const size_t total = (size_t) n * (size_t) blob;
     void* p = nullptr;
     if (cudaHostAlloc(&p, total, eligible ? cudaHostAllocMapped : cudaHostAllocDefault) == cudaSuccess && p != nullptr) {
@@ -3287,8 +3340,8 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
     xstage_ = (uint8_t*) p;
     xstage_cap_ = n;
     xstage_blob_ = blob;
-    if (requested) {
-        std::string reason = "requires equal-size expert blocks and a fully mapped/pinned RAM complement";
+    if (requested && uniform) {
+        std::string reason = "requires a fully mapped/pinned RAM complement";
         void* device = nullptr;
         if (eligible && xstage_pinned_ && cudaHostGetDevicePointer(&device, p, 0) == cudaSuccess && device) {
             try {
@@ -3309,21 +3362,28 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string& err) {
 }
 
 uint8_t* FileExpertSource::exchange_buffer(int64_t q) const {
-    if (xstage_ == nullptr || q < 0 || q >= xstage_cap_) return nullptr;
+    if (q < 0 || q >= xstage_cap_) return nullptr;
     if (exchange_storage_.active()) return exchange_storage_.spare((size_t)q).host;
-    return xstage_ + (size_t) q * (size_t) xstage_blob_;
+    return xstage_ ? xstage_ + (size_t) q * (size_t) xstage_blob_ : nullptr;
+}
+
+uint8_t* FileExpertSource::exchange_buffer(int64_t q, int64_t layer) const {
+    if (layer < 0 || layer >= n_layers_ || q < 0 || q >= xstage_cap_) return nullptr;
+    if (!xclasses_.empty())
+        return exchange_storage_.spare_for_bytes((size_t)layer_blob_bytes_[(size_t)layer], (size_t)q).host;
+    return exchange_buffer(q);
 }
 
 bool FileExpertSource::stage_exchange(int64_t layer, int64_t in, int64_t out, int64_t q) {
     if (out < 0 || out >= n_expert_ || !has_resident(layer, in) || has_resident(layer, out) ||
-        exchange_buffer(q) == nullptr) return false;
+        exchange_buffer(q, layer) == nullptr) return false;
     const size_t i_in = (size_t) layer * (size_t) n_expert_ + (size_t) in;
     const size_t i_out = (size_t) layer * (size_t) n_expert_ + (size_t) out;
     if (override_.empty()) override_.assign((size_t) blobs_, nullptr);
     if (override_[i_out] != nullptr) return false;
     for (const Exchange& x : staged_)
-        if (x.in == i_in || x.q == q) return false;
-    override_[i_out] = exchange_buffer(q);
+        if (x.in == i_in || (x.q == q && (!exchange_storage_.active() || x.bytes == layer_blob_bytes_[(size_t)layer]))) return false;
+    override_[i_out] = exchange_buffer(q, layer);
     staged_.push_back({i_in, i_out, q, layer_blob_bytes_[(size_t) layer]});
     return true;
 }
@@ -3349,10 +3409,20 @@ int64_t FileExpertSource::commit_exchanges() {
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_[x.out];
         if (exchange_storage_.active()) {
-            if (!exchange_storage_.commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
-                // Admitting the GPU swap after a failed RAM ownership update would lose an expert.
-                std::fprintf(stderr, "FileExpertSource: invalid exchange rotation commit; refusing corrupt residency\n");
-                std::abort();
+            if (exchange_storage_.can_commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
+                if (!exchange_storage_.commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) std::abort();
+                if (xstats_on_) { ++xstats_.avoided_n; xstats_.avoided_bytes += (int64_t)x.bytes; }
+            } else {
+                const auto dest = exchange_storage_.resident(x.in).host;
+                if (!dest || !src || x.bytes != layer_blob_bytes_[x.in / (size_t)n_expert_]) {
+                    std::fprintf(stderr, "FileExpertSource: invalid exchange copy fallback; refusing corrupt residency\n");
+                    std::abort();
+                }
+                const auto t0 = xstats_on_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                std::memcpy(dest, src, (size_t)x.bytes);
+                if (xstats_on_) note_exchange_copy(x.bytes, std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t0).count());
+                if (!exchange_storage_.commit_copy(x.in, x.out, (size_t)x.bytes)) std::abort();
             }
             ++n;
             override_[x.out] = nullptr;
@@ -3376,9 +3446,22 @@ int64_t FileExpertSource::commit_exchanges() {
 }
 
 void FileExpertSource::commit_copies() {
-    if (exchange_storage_.active()) return;   // STRATA_EXCHANGE_ROTATE: ownership moves in commit_flip, nothing to copy
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_.empty() ? nullptr : override_[x.out];
+        if (exchange_storage_.active()) {
+            if (!exchange_storage_.can_commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
+                const auto dest = exchange_storage_.resident(x.in).host;
+                if (!dest || !src || x.bytes != layer_blob_bytes_[x.in / (size_t)n_expert_]) {
+                    std::fprintf(stderr, "FileExpertSource: invalid exchange copy fallback; refusing corrupt residency\n");
+                    std::abort();
+                }
+                const auto t0 = xstats_on_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                std::memcpy(dest, src, (size_t)x.bytes);
+                if (xstats_on_) note_exchange_copy(x.bytes, std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - t0).count());
+            }
+            continue;
+        }
         const uint64_t at = complement_offsets_[x.in];
         if (src != nullptr && at != kNoComplement && at <= complement_bytes_ && x.bytes <= complement_bytes_ - at &&
             complement_host_ != nullptr) {
@@ -3407,9 +3490,12 @@ int64_t FileExpertSource::commit_flip() {
     int64_t n = 0;
     for (const Exchange& x : staged_) {
         const uint8_t* src = override_[x.out];
-        if (exchange_storage_.active()) {   // STRATA_EXCHANGE_ROTATE: the same ownership transfer as commit_exchanges
-            if (!exchange_storage_.commit(x.in, x.out, (size_t) x.q, src, (size_t) x.bytes)) {
-                std::fprintf(stderr, "FileExpertSource: invalid exchange rotation commit; refusing corrupt residency\n");
+        if (exchange_storage_.active()) {   // H2D and asynchronous copy fallback have both finished
+            if (exchange_storage_.can_commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) {
+                if (!exchange_storage_.commit(x.in, x.out, (size_t)x.q, src, (size_t)x.bytes)) std::abort();
+                if (xstats_on_) { ++xstats_.avoided_n; xstats_.avoided_bytes += (int64_t)x.bytes; }
+            } else if (!exchange_storage_.commit_copy(x.in, x.out, (size_t)x.bytes)) {
+                std::fprintf(stderr, "FileExpertSource: invalid exchange copy fallback; refusing corrupt residency\n");
                 std::abort();
             }
             ++n;

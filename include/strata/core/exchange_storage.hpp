@@ -203,10 +203,10 @@ public:
     }
     uint64_t spare_bytes() const { return spare_bytes_; }
 
-    // Only after every CPU reader and H2D copy of `in` has completed, and `out`
-    // has landed in spare(q). No allocation, memcpy, or CUDA operation here.
-    bool commit(size_t in, size_t out, size_t q, const uint8_t* staged, size_t bytes) {
-        if (!active_ || in >= expert_count_ || out >= expert_count_ || !staged) return false;
+    // Validate without mutating metadata. The caller may choose the existing copy
+    // path on rejection, but must still publish the resulting ownership here.
+    bool can_commit(size_t in, size_t out, size_t q, const uint8_t* staged, size_t bytes) const {
+        if (!active_ || in == out || in >= expert_count_ || out >= expert_count_ || !staged) return false;
         size_t spare_index = kAbsent;
         if (blob_bytes_ != 0) {
             if (bytes != blob_bytes_ || q >= spares_.size()) return false;
@@ -217,9 +217,32 @@ public:
             if (cls == kAbsent || q >= classes_[cls].count) return false;
             spare_index = classes_[cls].first_spare + q;
         }
+        return experts_[in].load(std::memory_order_acquire) != kAbsent &&
+               experts_[out].load(std::memory_order_acquire) == kAbsent &&
+               buffers_[spares_[spare_index]].host == staged;
+    }
+
+    // Copy fallback for a rejected rotation: bytes have already been copied into
+    // the incoming slot (or will be copied before this call by the caller).
+    // Only equal-size ownership can be represented by the compact complement.
+    bool commit_copy(size_t in, size_t out, size_t bytes) {
+        if (!active_ || in == out || in >= expert_count_ || out >= expert_count_ ||
+            (blob_bytes_ ? bytes != blob_bytes_ : expert_blob_bytes_[in] != bytes || expert_blob_bytes_[out] != bytes))
+            return false;
+        const size_t slot = experts_[in].load(std::memory_order_acquire);
+        if (slot == kAbsent || experts_[out].load(std::memory_order_acquire) != kAbsent) return false;
+        experts_[out].store(slot, std::memory_order_release);
+        experts_[in].store(kAbsent, std::memory_order_release);
+        return true;
+    }
+
+    // Only after every CPU reader and H2D copy of `in` has completed, and `out`
+    // has landed in spare(q). No allocation, memcpy, or CUDA operation here.
+    bool commit(size_t in, size_t out, size_t q, const uint8_t* staged, size_t bytes) {
+        if (!can_commit(in, out, q, staged, bytes)) return false;
+        size_t spare_index = q;
+        if (blob_bytes_ == 0) spare_index = classes_[find_class(classes_, bytes)].first_spare + q;
         const size_t incoming_slot = experts_[in].load(std::memory_order_acquire);
-        if (incoming_slot == kAbsent || experts_[out].load(std::memory_order_acquire) != kAbsent ||
-            buffers_[spares_[spare_index]].host != staged) return false;
         // A background router lookahead can query residency to skip redundant
         // file prefetches. Publish one atomic slot ID; the pointer/alias pair is
         // immutable. Actual compute readers still obey the completion contract.

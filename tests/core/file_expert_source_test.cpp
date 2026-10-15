@@ -707,6 +707,7 @@ void test_rotating_source(bool rotate, bool pin) {
         require(src.commit_exchanges() == 2, "commit count wrong");
         commit_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         require(src.commit_exchanges() == 0, "empty commit not empty");
+        require(src.exchange_buffer(0, 0) == src.exchange_buffer(0), "uniform layer-aware buffer changed");
         for (int q = 0; q < 2; ++q) {
             require(!src.has_resident(0, incoming[q]) && src.has_resident(0, outgoing[q]), "residency wrong");
             const uint8_t* held = src.blob(0, outgoing[q]);
@@ -729,6 +730,8 @@ void test_rotating_source(bool rotate, bool pin) {
     require(src.exchanges() == 64, "exchange accounting wrong");
     require(src.rotated_exchanges() == ((rotate && pin) ? 64u : 0u), "rotation accounting wrong");
     require(src.avoided_exchange_copy_bytes() == ((rotate && pin) ? 64 * bytes : 0u), "avoided bytes wrong");
+    require(src.exchange_buffer(-1, 0) == nullptr && src.exchange_buffer(0, 1) == nullptr,
+            "layer-aware exchange buffer accepted invalid geometry");
     std::cout << "rotation integration: rotate=" << rotate << " pinned=" << pin
               << " exchanges=64 commit_ms=" << commit_ms << " exact_bytes=PASS\n";
     src.close();
@@ -736,6 +739,93 @@ void test_rotating_source(bool rotate, bool pin) {
     require(src.open(dir.path.string(), 1, 5, err), err);
     require(!src.has_resident(0, 0) && !src.exchange_rotation(), "reopen retained residency");
 }
+
+#if defined(STRATA_NATIVE_EXPERTS)
+void test_mixed_rotating_source(bool rotate) {
+    using namespace strata::core;
+    using namespace strata::kernels::cpu;
+    constexpr int64_t layers = 2, experts = 4;
+    TempDirectory dir;
+    std::string err;
+    NativeFmt fmt[2];
+    require(native_fmt(GGML_TYPE_IQ3_XXS, GGML_TYPE_IQ4_NL, 2560, 640, fmt[0], err), err);
+    require(native_fmt(GGML_TYPE_IQ2_XS, GGML_TYPE_IQ4_NL, 2560, 640, fmt[1], err), err);
+    require(fmt[0].bytes != fmt[1].bytes, "mixed fixture has equal-size classes");
+    const size_t b[2] = {(size_t)fmt[0].bytes, (size_t)fmt[1].bytes};
+    {
+        std::ofstream meta(dir.path / "native_experts.txt");
+        meta << "0 " << GGML_TYPE_IQ3_XXS << ' ' << GGML_TYPE_IQ4_NL << " 0 " << b[0] << '\n';
+        meta << "1 " << GGML_TYPE_IQ2_XS << ' ' << GGML_TYPE_IQ4_NL << ' ' << b[0]*experts << ' ' << b[1] << '\n';
+    }
+    require(expert_layout_load(dir.path.string(), layers, experts, err), err);
+    std::vector<std::vector<uint8_t>> truth;
+    for (int l = 0; l < layers; ++l)
+        for (int e = 0; e < experts; ++e) {
+            truth.emplace_back(b[l]);
+            for (size_t i = 0; i < b[l]; ++i)
+                truth.back()[i] = (uint8_t)(i * 41u + (i >> 9) + l * 23 + e * 67);
+        }
+    {
+        std::ofstream pack(dir.path / "experts.bin", std::ios::binary);
+        for (const auto& row : truth) pack.write((const char*)row.data(), (std::streamsize)row.size());
+        require((bool)pack, "mixed fixture pack write failed");
+    }
+    set_env("STRATA_EXCHANGE_ROTATE", rotate ? "1" : "0");
+    set_env("STRATA_EXCHANGE_STATS", "1");
+    FileExpertSource src;
+    ExpertCache cache;
+    require(src.open(dir.path.string(), layers, experts, err), err);
+    require(cache.open_sized({(int64_t)b[0], (int64_t)b[1]}, layers, experts, err), err);
+    for (int l = 0; l < layers; ++l) {
+        const int slot = cache.admit(l, 2);
+        require(slot == l && cache.fill_slot_blocking(slot, truth[(size_t)l*experts + 2].data(), err, (int64_t)b[l]), err);
+    }
+    const std::vector<std::pair<int32_t, int32_t>> rank{{0,0},{0,1},{1,0},{1,1}};
+    require(src.pin_cache_complement(cache, err, true, {}, -1, 0, 2*(b[0]+b[1]), &rank), err);
+    require(src.reserve_exchanges(2, err) && src.exchange_rotation() == rotate, "mixed rotation state wrong: " + err);
+    require(src.exchange_buffer(0, 0) && src.exchange_buffer(1, 1), "mixed exchange buffers missing");
+    if (rotate) {
+        require(src.exchange_buffer(0, 0) != src.exchange_buffer(0, 1), "class buffers aliased");
+        require(!src.reserve_exchanges(3, err), "mixed live arena growth accepted");
+    }
+    int incoming[2] = {0,0}, outgoing[2] = {2,2};
+    for (int round = 0; round < 12; ++round) {
+        const uint8_t* before[2]{};
+        uint8_t* evicted[2]{};
+        for (int l = 0; l < layers; ++l) {
+            const size_t in = (size_t)l*experts + incoming[l], out = (size_t)l*experts + outgoing[l];
+            before[l] = src.resident_blob(l, incoming[l]);
+            evicted[l] = src.exchange_buffer(l, l);
+            require(before[l] && !std::memcmp(before[l], truth[in].data(), b[l]), "wrong mixed input");
+            require(cudaMemcpy(evicted[l], cache.device_slot(l), b[l], cudaMemcpyDeviceToHost) == cudaSuccess,
+                    "mixed D2H failed");
+            require(!src.stage_exchange(l, incoming[l], outgoing[l], 2), "exhausted mixed queue accepted");
+            require(src.stage_exchange(l, incoming[l], outgoing[l], l), "mixed stage failed");
+            require(!src.stage_exchange(l, incoming[l], outgoing[l], l), "duplicate mixed stage accepted");
+            require(!std::memcmp(src.blob(l, outgoing[l]), truth[out].data(), b[l]), "mixed override differs");
+            require(cache.fill_slot_blocking(l, before[l], err, (int64_t)b[l]), err);
+        }
+        require(src.commit_exchanges() == layers, "mixed commit failed");
+        for (int l = 0; l < layers; ++l) {
+            const size_t out = (size_t)l*experts + outgoing[l];
+            require(src.resident_blob(l, outgoing[l]) == (rotate ? evicted[l] : before[l]) &&
+                    (!rotate || src.exchange_buffer(l, l) == before[l]),
+                    "mixed ownership/alias rotation failed");
+            require(!std::memcmp(src.blob(l, outgoing[l]), truth[out].data(), b[l]), "mixed bytes differ");
+            require(cache.verify_slot(l, truth[(size_t)l*experts + incoming[l]].data(), err, (int64_t)b[l]), err);
+            std::swap(incoming[l], outgoing[l]);
+        }
+    }
+    require(src.exchange_copy_stats().avoided_n == (rotate ? 24 : 0) &&
+            src.exchange_copy_stats().copies == (rotate ? 0 : 24) &&
+            src.exchange_copy_stats().avoided_bytes == (rotate ? (int64_t)(12*(b[0]+b[1])) : 0),
+            "mixed copy counters wrong");
+    src.close();
+    require(!src.exchange_rotation() && !src.exchange_buffer(0, 0), "mixed close retained arena");
+    set_env("STRATA_EXCHANGE_ROTATE", nullptr);
+    set_env("STRATA_EXCHANGE_STATS", nullptr);
+}
+#endif
 
 }  // namespace
 
@@ -759,6 +849,10 @@ int main(int argc, char** argv) {
             test_rotating_source(false, true);
             test_rotating_source(true, true);
             test_rotating_source(true, false);
+#if defined(STRATA_NATIVE_EXPERTS)
+            test_mixed_rotating_source(false);
+            test_mixed_rotating_source(true);
+#endif
         }
         std::cout << "file_expert_source_test: PASS\n";
         return 0;

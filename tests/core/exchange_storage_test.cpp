@@ -207,7 +207,8 @@ void exercise_size_classes() {
                 const size_t other_out = (l + 1) * n_expert + 2;
                 require(!storage.commit(in, other_out, 0, staged.host, bytes), "cross-size exchange accepted");
             }
-            require(storage.resident(in).host == before_in.host && storage.resident(out).host == nullptr,
+            require(storage.resident(in).host == before_in.host && storage.resident(out).host == nullptr &&
+                    !storage.can_commit(in, out, 1, staged.host, bytes),
                     "failed classed commit changed residency");
 
             require(storage.commit(in, out, 0, staged.host, bytes), "classed valid swap rejected");
@@ -224,6 +225,34 @@ void exercise_size_classes() {
     }
     require(storage.exchanges() == exchanges && storage.avoided_bytes() ==
             4 * (q4k_q5_1_blob + q4k_q8_0_blob + q5k_q8_0_blob), "classed accounting wrong");
+    // Compare every resolved resident against a copy-based oracle after random
+    // exchanges. Include a rejected rotation followed by the engine's copy fallback.
+    std::mt19937 rng(4019);
+    for (size_t round = 0; round < 90; ++round) {
+        const size_t l = rng() % n_layers, bytes = layer_bytes[l];
+        std::vector<size_t> ins, outs;
+        for (size_t e = 0; e < n_expert; ++e)
+            (storage.resident(l * n_expert + e).host ? ins : outs).push_back(l * n_expert + e);
+        const size_t in = ins[rng() % ins.size()], out = outs[rng() % outs.size()];
+        const auto spare = storage.spare_for_bytes(bytes, 0);
+        std::memcpy(spare.host, reference[out].data(), bytes);
+        if (round % 7 == 0 || round % 11 == 0) {
+            const size_t q = round % 11 == 0 ? 1 : 0;
+            const uint8_t* staged = round % 11 == 0 ? spare.host : storage.resident(in).host;
+            require(!storage.can_commit(in, out, q, staged, bytes),
+                    "wrong staged pointer or exhausted class accepted");
+            std::memcpy(storage.resident(in).host, spare.host, bytes);
+            require(storage.commit_copy(in, out, bytes), "copy fallback rejected");
+        } else {
+            require(storage.can_commit(in, out, 0, spare.host, bytes) &&
+                    storage.commit(in, out, 0, spare.host, bytes), "random rotation rejected");
+            ++exchanges;
+        }
+        for (size_t i = 0; i < offsets.size(); ++i)
+            if (auto p = storage.resident(i).host)
+                require(!std::memcmp(p, reference[i].data(), expert_bytes[i]), "random rotation differs from copy oracle");
+    }
+    require(storage.exchanges() == exchanges, "copy fallback counted as rotation");
     for (size_t i = 0; i < offsets.size(); ++i)
         if (storage.resident(i).host) require(!std::memcmp(storage.resident(i).host, reference[i].data(), expert_bytes[i]),
                                       "classed resident bytes corrupt after repeated swaps");
