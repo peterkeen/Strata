@@ -427,6 +427,9 @@ bool ExpertCache::grow(int64_t want_bytes, std::string& err) {
     cudaGetDevice(&dev);
     const CUdeviceptr va = reinterpret_cast<CUdeviceptr>(base_);
     int64_t at = mapped_bytes();
+    // want_bytes counts slot bytes; the arena's last segment is rounded UP to the VMM granularity, so a request that
+    // covers every slot (full_bytes()) is a request for the whole arena, the last segment included.
+    if (want_bytes >= full_bytes()) want_bytes = (int64_t) reserved_;
     while (mapped_segs_ < (int64_t) segs_.size() && at + seg_size_[(size_t) mapped_segs_] <= want_bytes) {
         const size_t i = (size_t) mapped_segs_;
         if (!map_segment(v, dev, va + (CUdeviceptr) ((uint64_t) i * (uint64_t) seg_), (size_t) seg_size_[i],
