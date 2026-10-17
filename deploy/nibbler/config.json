@@ -58,6 +58,7 @@
     "/usr/local/cuda-13.3/bin",
     "/usr/local/cuda-13.3/lib64"
   ],
+  "reasoning_budget_tokens": 8192,
   "port": 8088,
   "gpu": 0,
   "gpus_asked": true,

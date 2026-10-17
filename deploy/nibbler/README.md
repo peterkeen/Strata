@@ -111,6 +111,15 @@ GPU vision, and these budgets:
   images or reserve OS RAM. These are retained settings, not newly measured
   safe headroom on the port.
 
+Separately from those memory budgets, `"reasoning_budget_tokens": 8192` caps how
+many tokens a request may think before the server closes the thinking and moves
+to the answer (#123, #984). A request may set its own value, and `0` turns the
+cap off. The setting belongs in this tracked file because the launcher refreshes
+`/data/llm/Strata-run/nibbler/config.json` from it on every start; a budget kept
+only in the runtime copy would be lost on the next restart. Do not also set a
+budget in the llama-swap router's alias filters: a request value there wins over
+this key, and two places that can disagree are one place too many.
+
 ## Port restrictions and config acceptance
 
 The port's unified serving path is single-GPU. The config selects GPU 0;
